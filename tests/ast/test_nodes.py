@@ -1,16 +1,6 @@
-from lazy_lab.ast.nodes import Program, SourceSpan
+from dataclasses import replace
 
-def test_empty_program():
-    program = Program(definitions=())
-
-    assert program.definitions == ()
-
-
-def test_source_span():
-    span = SourceSpan(1, 1, 1, 10)
-
-    assert span.start_line == 1
-    assert span.end_column == 10
+import pytest
 
 from lazy_lab.ast.nodes import (
     Application,
@@ -25,12 +15,27 @@ from lazy_lab.ast.nodes import (
     LocalBinding,
     Var,
     Program,
+    SourceSpan,
     ValueDefinition,
     FunctionEquation,
     VarPattern,
     NilPattern,
     ConsPattern,
 )
+
+
+def test_empty_program():
+    program = Program(definitions=())
+
+    assert program.definitions == ()
+
+
+def test_source_span():
+    span = SourceSpan(1, 1, 1, 10)
+
+    assert span.start_line == 1
+    assert span.end_column == 10
+
 
 # Simple Expressions
 def test_literals():
@@ -255,3 +260,112 @@ def test_multiple_equations():
     )
     assert program.definitions[0].name == "length"
     assert program.definitions[1].name == "length"
+
+
+@pytest.mark.parametrize(
+    "node",
+    [
+        pytest.param(Program((ValueDefinition("x", IntLiteral(1)),)), id="program"),
+        pytest.param(IntLiteral(1), id="integer"),
+        pytest.param(BoolLiteral(True), id="boolean"),
+        pytest.param(Var("x"), id="variable"),
+        pytest.param(UnaryOp("-", IntLiteral(1)), id="unary"),
+        pytest.param(BinaryOp("+", IntLiteral(1), IntLiteral(2)), id="binary"),
+        pytest.param(Application(Var("f"), IntLiteral(1)), id="application"),
+        pytest.param(LambdaExpr(("x",), Var("x")), id="lambda"),
+        pytest.param(IfExpr(BoolLiteral(True), IntLiteral(1), IntLiteral(2)), id="if"),
+        pytest.param(LocalBinding("x", (), IntLiteral(1)), id="local-binding"),
+        pytest.param(LetExpr((LocalBinding("x", (), IntLiteral(1)),), Var("x")), id="let"),
+        pytest.param(ListLiteral((IntLiteral(1),)), id="list"),
+        pytest.param(VarPattern("x"), id="variable-pattern"),
+        pytest.param(NilPattern(), id="nil-pattern"),
+        pytest.param(ConsPattern(VarPattern("x"), VarPattern("xs")), id="cons-pattern"),
+        pytest.param(ValueDefinition("x", IntLiteral(1)), id="value-definition"),
+        pytest.param(FunctionEquation("f", (VarPattern("x"),), Var("x")), id="function-equation"),
+    ],
+)
+def test_source_span_is_excluded_from_node_equality_and_hashing(node):
+    first = replace(node, span=SourceSpan(1, 1, 1, 2))
+    second = replace(node, span=SourceSpan(2, 3, 2, 4))
+
+    assert node == first == second
+    assert hash(node) == hash(first) == hash(second)
+
+
+def test_nested_node_equality_ignores_all_source_spans():
+    def make_program(span):
+        return Program(
+            (
+                FunctionEquation(
+                    "f",
+                    (
+                        ConsPattern(
+                            VarPattern("x", span=span),
+                            VarPattern("xs", span=span),
+                            span=span,
+                        ),
+                    ),
+                    LetExpr(
+                        (LocalBinding("y", (), Var("x", span=span), span=span),),
+                        Var("y", span=span),
+                        span=span,
+                    ),
+                    span=span,
+                ),
+            ),
+            span=span,
+        )
+
+    unlocated = make_program(None)
+    first = make_program(SourceSpan(1, 1, 1, 30))
+    second = make_program(SourceSpan(2, 1, 2, 40))
+
+    assert unlocated == first == second
+    assert hash(unlocated) == hash(first) == hash(second)
+
+
+@pytest.mark.parametrize(
+    "left,right",
+    [
+        pytest.param(IntLiteral(1), IntLiteral(2), id="literal-value"),
+        pytest.param(IntLiteral(1), BoolLiteral(True), id="node-type"),
+        pytest.param(Var("x"), Var("y"), id="name"),
+        pytest.param(
+            BinaryOp("+", IntLiteral(1), IntLiteral(2)),
+            BinaryOp("-", IntLiteral(1), IntLiteral(2)),
+            id="operator",
+        ),
+        pytest.param(
+            LambdaExpr(("x", "y"), Var("x")),
+            LambdaExpr(("y", "x"), Var("x")),
+            id="parameter-order",
+        ),
+        pytest.param(
+            ListLiteral((IntLiteral(1), IntLiteral(2))),
+            ListLiteral((IntLiteral(2), IntLiteral(1))),
+            id="child-order",
+        ),
+        pytest.param(
+            Program(
+                (
+                    FunctionEquation("f", (VarPattern("x"),), IntLiteral(0)),
+                    FunctionEquation("f", (NilPattern(),), IntLiteral(1)),
+                )
+            ),
+            Program(
+                (
+                    FunctionEquation("f", (NilPattern(),), IntLiteral(1)),
+                    FunctionEquation("f", (VarPattern("x"),), IntLiteral(0)),
+                )
+            ),
+            id="equation-order",
+        ),
+    ],
+)
+def test_structural_differences_still_affect_equality(left, right):
+    assert left != right
+
+
+def test_source_span_values_still_compare_by_position():
+    assert SourceSpan(1, 1, 1, 2) == SourceSpan(1, 1, 1, 2)
+    assert SourceSpan(1, 1, 1, 2) != SourceSpan(2, 1, 2, 2)

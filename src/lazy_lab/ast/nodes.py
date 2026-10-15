@@ -91,5 +91,28 @@ class LetExpr(Expr):
 class ListLiteral(Expr):
     elements: tuple[Expr, ...]
 
+@dataclass(frozen=True, slots=True)
+class VarPattern(Pattern):
+    name: str
 
 
+@dataclass(frozen=True, slots=True)
+class NilPattern(Pattern):
+    pass
+
+
+@dataclass(frozen=True, slots=True)
+class ConsPattern(Pattern):
+    head: VarPattern
+    tail: VarPattern
+
+@dataclass(frozen=True, slots=True)
+class ValueDefinition(Definition):
+    name: str
+    rhs: Expr
+
+@dataclass(frozen=True, slots=True)
+class FunctionEquation(Definition):
+    name: str
+    parameters: tuple[Pattern, ...]
+    rhs: Expr

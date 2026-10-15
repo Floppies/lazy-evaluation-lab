@@ -735,6 +735,10 @@ Every token records its starting source position, including:
 
 Source positions are one-based.
 
+AST nodes may carry a `SourceSpan` whose start is inclusive and whose end is exclusive. Coordinates must be positive integers, and the end must not precede the start. A span attached to a concrete syntax node must be non-empty, including empty-list expressions and patterns, whose delimiters occupy source text. An empty program may have an empty span. Nodes constructed without source locations may omit the span.
+
+Source spans are diagnostic metadata and do not affect structural equality or hashing of AST nodes. Diagnostics use the offending child's span when available, falling back to the nearest enclosing span when that child has no source location.
+
 #### 8.6.10 Lexical Errors
 
 Unrecognized characters produce lexical errors containing their source location.
@@ -763,6 +767,8 @@ The exact implementation order of grouping, name resolution and lowering will be
 ### 9.2 Preliminary Semantic Validation
 
 Reject: duplicate names in one scope; duplicate parameter binders; inconsistent arities within equation groups; separated groups reusing a top-level name; unknown identifiers; constructor patterns outside the supported position. Do **not** reject recursive dependencies simply for being cyclic, or non-exhaustive matching simply for being non-exhaustive.
+
+These frontend responsibilities are split between structural validation and name resolution. The AST structural validators check node and field types, container shapes, identifiers, supported operators, source spans, duplicate binders and definition groups, consistent equation arities, and pattern restrictions. They do not resolve references: an otherwise well-formed reference to an unknown identifier passes structural validation and must be rejected by the later semantic name-resolution stage. Successful structural validation does not imply that a program has resolved names or can execute without runtime errors.
 
 Runtime responsibilities include: type errors in primitives and conditions, pattern match failures, nontermination/blackhole behavior, exact evaluation order, environment allocation and result observation. The default entry choice (`main` or a selected expression) is independent of the observation depth: for lazy strategies, displaying only WHNF is not the same as forcing an entire list.
 

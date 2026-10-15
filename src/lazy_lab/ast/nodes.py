@@ -1,10 +1,16 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 
 @dataclass(frozen=True, slots=True)
 class SourceSpan:
+    """One-based source range with an inclusive start and exclusive end.
+
+    Structural validation rejects empty ranges on concrete syntax nodes;
+    an empty Program may have an empty range.
+    """
+
     start_line: int
     start_column: int
     end_line: int
@@ -13,7 +19,13 @@ class SourceSpan:
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class Node:
-    span: SourceSpan | None = None
+    """AST data with optional location metadata excluded from equality and hashing.
+
+    Constructors do not validate arguments. Structural validation enforces
+    field types and tuple containers before later frontend stages use them.
+    """
+
+    span: SourceSpan | None = field(default=None, compare=False)
 
 
 class Expr(Node):
@@ -31,6 +43,7 @@ class Definition(Node):
 @dataclass(frozen=True, slots=True)
 class Program(Node):
     definitions: tuple[Definition, ...]
+
 
 @dataclass(frozen=True, slots=True)
 class IntLiteral(Expr):
@@ -65,10 +78,12 @@ class Application(Expr):
     function: Expr
     argument: Expr
 
+
 @dataclass(frozen=True, slots=True)
 class LambdaExpr(Expr):
     parameters: tuple[str, ...]
     body: Expr
+
 
 @dataclass(frozen=True, slots=True)
 class IfExpr(Expr):
@@ -76,20 +91,24 @@ class IfExpr(Expr):
     then_branch: Expr
     else_branch: Expr
 
+
 @dataclass(frozen=True, slots=True)
 class LocalBinding(Node):
     name: str
     parameters: tuple[str, ...]
     rhs: Expr
 
+
 @dataclass(frozen=True, slots=True)
 class LetExpr(Expr):
     bindings: tuple[LocalBinding, ...]
     body: Expr
 
+
 @dataclass(frozen=True, slots=True)
 class ListLiteral(Expr):
     elements: tuple[Expr, ...]
+
 
 @dataclass(frozen=True, slots=True)
 class VarPattern(Pattern):
@@ -106,10 +125,12 @@ class ConsPattern(Pattern):
     head: VarPattern
     tail: VarPattern
 
+
 @dataclass(frozen=True, slots=True)
 class ValueDefinition(Definition):
     name: str
     rhs: Expr
+
 
 @dataclass(frozen=True, slots=True)
 class FunctionEquation(Definition):

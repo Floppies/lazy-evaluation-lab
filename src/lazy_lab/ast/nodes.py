@@ -64,3 +64,32 @@ class BinaryOp(Expr):
 class Application(Expr):
     function: Expr
     argument: Expr
+
+@dataclass(frozen=True, slots=True)
+class LambdaExpr(Expr):
+    parameters: tuple[str, ...]
+    body: Expr
+
+@dataclass(frozen=True, slots=True)
+class IfExpr(Expr):
+    condition: Expr
+    then_branch: Expr
+    else_branch: Expr
+
+@dataclass(frozen=True, slots=True)
+class LocalBinding(Node):
+    name: str
+    parameters: tuple[str, ...]
+    rhs: Expr
+
+@dataclass(frozen=True, slots=True)
+class LetExpr(Expr):
+    bindings: tuple[LocalBinding, ...]
+    body: Expr
+
+@dataclass(frozen=True, slots=True)
+class ListLiteral(Expr):
+    elements: tuple[Expr, ...]
+
+
+

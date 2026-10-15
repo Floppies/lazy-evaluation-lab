@@ -51,9 +51,16 @@ Expressions include:
 - List literals (`[ ... ]`) and list construction with `:`.
 
 ### 3.2 Function Application
-- Function application uses whitespace.
+
+- Function application uses **juxtaposition**: a function expression followed by an argument expression.
 - Application is left-associative.
 - Application has higher precedence than arithmetic operators.
+- Whitespace is required only when necessary to separate lexical tokens.
+- Parenthesized arguments may immediately follow a function without whitespace.
+
+For example, `f(2)` and `f (2)` are equivalent, as are `sum 3 4` and `((sum 3) 4)`.
+
+Application does not use comma-separated argument lists. Multiple arguments are represented through successive applications.
 
 ### 3.3 Operators
 - Arithmetic: +, -, *
@@ -526,6 +533,7 @@ The illustrative lines above demonstrate expression parsing; a complete source p
 - A definition consisting only of a bare expression is not valid at top level.
 - Variable-pattern equations do not require a match-time evaluation of the inspected argument; constructor-pattern equations may require evaluation to WHNF.
 - The initial grammar does not include division, logical operators, string literals or floating-point literals.
+- Function application is defined by juxtaposition rather than mandatory whitespace. Lexically distinct adjacent expressions may form an application (e.g., `f(2)`), while whitespace is required when adjacent characters would otherwise form a single token (e.g., `f x`). The parser determines application from the token sequence without inspecting whitespace between tokens.
 
 ### 8.4 Comments
 

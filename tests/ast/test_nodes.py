@@ -24,6 +24,12 @@ from lazy_lab.ast.nodes import (
     ListLiteral,
     LocalBinding,
     Var,
+    Program,
+    ValueDefinition,
+    FunctionEquation,
+    VarPattern,
+    NilPattern,
+    ConsPattern,
 )
 
 # Simple Expressions
@@ -172,3 +178,80 @@ def test_local_function():
     assert binding.name == "double"
     assert binding.parameters == ("x",)
     assert isinstance(binding.rhs, BinaryOp)
+
+def test_variable_pattern():
+    pattern = VarPattern("x")
+
+    assert pattern.name == "x"
+
+
+def test_nil_pattern():
+    pattern = NilPattern()
+
+    assert isinstance(pattern, NilPattern)
+
+
+def test_cons_pattern():
+    pattern = ConsPattern(
+        head=VarPattern("x"),
+        tail=VarPattern("xs")
+    )
+
+    assert pattern.head.name == "x"
+    assert pattern.tail.name == "xs"
+
+
+def test_value_definition():
+    definition = ValueDefinition(
+        name="answer",
+        rhs=IntLiteral(42)
+    )
+
+    assert definition.name == "answer"
+    assert definition.rhs == IntLiteral(42)
+
+
+def test_function_equation():
+    equation = FunctionEquation(
+        name="double",
+        parameters=(VarPattern("x"),),
+        rhs=BinaryOp(
+            "*",
+            Var("x"),
+            IntLiteral(2)
+        )
+    )
+
+    assert equation.name == "double"
+    assert len(equation.parameters) == 1
+    assert equation.parameters[0] == VarPattern("x")
+
+
+def test_multiple_equations():
+    program = Program(
+        definitions=(
+            FunctionEquation(
+                name="length",
+                parameters=(NilPattern(),),
+                rhs=IntLiteral(0)
+            ),
+            FunctionEquation(
+                name="length",
+                parameters=(
+                    ConsPattern(
+                        VarPattern("x"),
+                        VarPattern("xs")
+                    ),
+                ),
+                rhs=IntLiteral(1)
+            )
+        )
+    )
+
+    assert len(program.definitions) == 2
+    assert all(
+        isinstance(d, FunctionEquation)
+        for d in program.definitions
+    )
+    assert program.definitions[0].name == "length"
+    assert program.definitions[1].name == "length"

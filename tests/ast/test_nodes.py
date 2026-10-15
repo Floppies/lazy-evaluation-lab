@@ -1,6 +1,5 @@
 from lazy_lab.ast.nodes import Program, SourceSpan
 
-
 def test_empty_program():
     program = Program(definitions=())
 
@@ -16,13 +15,18 @@ def test_source_span():
 from lazy_lab.ast.nodes import (
     Application,
     BinaryOp,
-    BoolLiteral,
-    IntLiteral,
     UnaryOp,
+    BoolLiteral,
+    IfExpr,
+    IntLiteral,
+    LambdaExpr,
+    LetExpr,
+    ListLiteral,
+    LocalBinding,
     Var,
 )
 
-
+# Simple Expressions
 def test_literals():
     integer = IntLiteral(value=42)
     boolean = BoolLiteral(value=True)
@@ -86,3 +90,85 @@ def test_application_inside_binary_operation():
     assert isinstance(expression.left, Application)
     assert expression.operator == "+"
     assert expression.right == IntLiteral(2)
+
+# Complex Expressions
+
+def test_lambda():
+    expr = LambdaExpr(
+        parameters=("x", "y"),
+        body=BinaryOp("+", Var("x"), Var("y"))
+    )
+
+    assert expr.parameters == ("x", "y")
+    assert isinstance(expr.body, BinaryOp)
+
+
+def test_if_expression():
+    expr = IfExpr(
+        condition=BoolLiteral(True),
+        then_branch=IntLiteral(10),
+        else_branch=IntLiteral(20)
+    )
+
+    assert expr.condition == BoolLiteral(True)
+    assert expr.then_branch == IntLiteral(10)
+
+
+def test_local_bindings():
+    expr = LetExpr(
+        bindings=(
+            LocalBinding(
+                name="x",
+                parameters=(),
+                rhs=IntLiteral(10)
+            ),
+            LocalBinding(
+                name="y",
+                parameters=(),
+                rhs=Var("x")
+            )
+        ),
+        body=Var("y")
+    )
+
+    assert len(expr.bindings) == 2
+    assert expr.bindings[1].rhs == Var("x")
+    assert expr.body == Var("y")
+
+
+def test_list_literal():
+    expr = ListLiteral(
+        elements=(IntLiteral(1), IntLiteral(2))
+    )
+
+    assert len(expr.elements) == 2
+    assert expr.elements[0] == IntLiteral(1)
+
+
+def test_empty_list():
+    expr = ListLiteral(elements=())
+
+    assert expr.elements == ()
+
+
+def test_cons_expression():
+    expr = BinaryOp(
+        operator=":",
+        left=IntLiteral(1),
+        right=ListLiteral(elements=())
+    )
+
+    assert expr.operator == ":"
+    assert isinstance(expr.right, ListLiteral)
+
+
+def test_local_function():
+    binding = LocalBinding(
+        name="double",
+        parameters=("x",),
+        rhs=BinaryOp("*", Var("x"), IntLiteral(2))
+    )
+
+    assert binding.name == "double"
+    assert binding.parameters == ("x",)
+    assert isinstance(binding.rhs, BinaryOp)

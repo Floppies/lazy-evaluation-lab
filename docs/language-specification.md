@@ -646,6 +646,7 @@ Non-exhaustive pattern matching is permitted. Failure to match any equation prod
 - The default entry expression is conceptually a reference to `main`, even when its binding contains a more complex expression.
 - The entry point does **not** act like a `print` statement and does not determine whether the runtime observes a result to WHNF, to normal form, or only partially.
 - Unlike Haskell's conventional executable entry point, `main` is not an `IO` action in this initial language, which has no input/output primitives.
+- Only one main binding may exist in a program. It must be a top-level value definition without parameters. Multiple definitions of main, or function equations named main, are rejected during structural validation. The identifier main remains an ordinary identifier and is not a reserved keyword.
 
 #### 8.5.7 Limitations
 

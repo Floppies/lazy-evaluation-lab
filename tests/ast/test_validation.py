@@ -855,3 +855,17 @@ def test_source_span_error_location():
     expr = BinaryOp("?", IntLiteral(1), IntLiteral(2), span=_CHILD_SPAN)
     with pytest.raises(ASTValidationError, match=r"^3:10: Unsupported binary"):
         validate_expression(expr)
+
+def test_main_as_function_equation_error():
+    program = Program((
+        FunctionEquation("main", (VarPattern("x"),), Var("x")),
+    ))
+
+    with pytest.raises(ASTValidationError, match=r"\bmain\b"):
+        validate_program(program)
+
+def test_main_as_value_definition_is_valid():
+    program = Program((
+        ValueDefinition("main", IntLiteral(42)),
+    ))
+    validate_program(program)

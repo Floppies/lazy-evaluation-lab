@@ -220,6 +220,11 @@ def _check_definition(
     elif isinstance(definition, FunctionEquation):
         _check_identifier(definition.name, span)
         _require(
+            definition.name != "main",
+            "main must be a top-level value definition without parameters",
+            span
+        )
+        _require(
             isinstance(definition.parameters, tuple),
             "FunctionEquation parameters must be a tuple",
             span,

@@ -2,20 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-
-@dataclass(frozen=True, slots=True)
-class SourceSpan:
-    """One-based source range with an inclusive start and exclusive end.
-
-    Structural validation rejects empty ranges on concrete syntax nodes;
-    an empty Program may have an empty range.
-    """
-
-    start_line: int
-    start_column: int
-    end_line: int
-    end_column: int
-
+from ..source import SourceSpan
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class Node:

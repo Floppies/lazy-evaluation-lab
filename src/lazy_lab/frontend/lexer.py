@@ -5,7 +5,7 @@ from .tokens import Token, TokenKind
 from .errors import LexerError
 
 
-KEYWORDS = {
+_KEYWORDS = {
     "if": TokenKind.IF,
     "then": TokenKind.THEN,
     "else": TokenKind.ELSE,
@@ -13,6 +13,33 @@ KEYWORDS = {
     "in": TokenKind.IN,
     "True": TokenKind.TRUE,
     "False": TokenKind.FALSE,
+}
+
+_TWO_CHAR_TOKENS = {
+    "->": TokenKind.ARROW,
+    "<=": TokenKind.LTE,
+    ">=": TokenKind.GTE,
+    "==": TokenKind.EQEQ,
+    "!=": TokenKind.NEQ,
+}
+
+_ONE_CHAR_TOKENS = {
+    "+": TokenKind.PLUS,
+    "-": TokenKind.MINUS,
+    "*": TokenKind.STAR,
+    "<": TokenKind.LT,
+    ">": TokenKind.GT,
+    "=": TokenKind.EQUAL,
+    "\\": TokenKind.BACKSLASH,
+    ":": TokenKind.COLON,
+    "(": TokenKind.LPAREN,
+    ")": TokenKind.RPAREN,
+    "[": TokenKind.LBRACKET,
+    "]": TokenKind.RBRACKET,
+    "{": TokenKind.LBRACE,
+    "}": TokenKind.RBRACE,
+    ";": TokenKind.SEMICOLON,
+    ",": TokenKind.COMMA,
 }
 
 
@@ -85,8 +112,8 @@ class Lexer:
 
         lexeme = self.source[start_index:self.index]
 
-        if lexeme in KEYWORDS:
-            kind = KEYWORDS[lexeme]
+        if lexeme in _KEYWORDS:
+            kind = _KEYWORDS[lexeme]
         elif "a" <= lexeme[0] <= "z":
             kind = TokenKind.IDENT
         else:
@@ -132,6 +159,26 @@ class Lexer:
 
         self._emit(TokenKind.NEWLINE, "\n", start_line, start_column)
 
+    def _scan_symbol(self, length: int) -> None:
+        start_line = self.line
+        start_column = self.column
+
+        lexeme = self.source[self.index:self.index + length]
+
+        if length == 2:
+            kind = _TWO_CHAR_TOKENS[lexeme]
+        else:
+            kind = _ONE_CHAR_TOKENS[lexeme]
+
+        for _ in range(length):
+            self._advance()
+
+        self._emit(kind, lexeme, start_line, start_column)
+
+    def _skip_comment(self) -> None:
+        while self._peek() not in ("", "\n", "\r"):
+            self._advance()
+
     def tokenize(self) -> tuple[Token, ...]:
         while self.index < len(self.source):
             char = self._peek()
@@ -147,6 +194,15 @@ class Lexer:
 
             elif _is_digit(char):
                 self._scan_integer()
+
+            elif self.source.startswith("--", self.index):
+                self._skip_comment()
+
+            elif self.source[self.index:self.index + 2] in _TWO_CHAR_TOKENS:
+                self._scan_symbol(2)
+
+            elif char in _ONE_CHAR_TOKENS:
+                self._scan_symbol(1)
 
             else:
                 raise LexerError(

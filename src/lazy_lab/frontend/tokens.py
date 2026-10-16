@@ -51,8 +51,11 @@ class TokenKind(Enum):
     NEWLINE = auto()
     EOF = auto()
 
+
 @dataclass(frozen=True, slots=True)
 class Token:
+    """Immutable lexical data whose equality includes kind, lexeme and span."""
+
     kind: TokenKind
     lexeme: str
     span: SourceSpan

@@ -744,6 +744,8 @@ Every token records its starting source position, including:
 
 Source positions are one-based.
 
+ Source columns are one-based and count Unicode code points in the original Python source string, rather than visual display cells or encoded bytes: each horizontal tab advances one column. LF and CRLF each advance one logical line and reset the column to one. `NEWLINE` tokens use the normalized lexeme `"\n"` and span from the newline's starting position to column one of the next line. `EOF` has an empty lexeme and a zero-width span at the end of the source, including any trailing whitespace or comments.
+
 AST nodes may carry a `SourceSpan` whose start is inclusive and whose end is exclusive. Coordinates must be positive integers, and the end must not precede the start. A span attached to a concrete syntax node must be non-empty, including empty-list expressions and patterns, whose delimiters occupy source text. An empty program may have an empty span. Nodes constructed without source locations may omit the span.
 
 Source spans are diagnostic metadata and do not affect structural equality or hashing of AST nodes. Diagnostics use the offending child's span when available, falling back to the nearest enclosing span when that child has no source location.

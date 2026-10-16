@@ -61,6 +61,11 @@ def _is_digit(char: str) -> bool:
 
 
 class Lexer:
+    """Scan a fixed source string once.
+
+    Columns count source characters: a horizontal tab advances one column.
+    """
+
     def __init__(self, source: str):
         if not isinstance(source, str):
             raise TypeError("Source must be a string")
@@ -70,6 +75,7 @@ class Lexer:
         self.line = 1
         self.column = 1
         self.tokens: list[Token] = []
+        self._tokenize_called = False
 
     def _peek(self) -> str:
         if self.index >= len(self.source):
@@ -180,6 +186,18 @@ class Lexer:
             self._advance()
 
     def tokenize(self) -> tuple[Token, ...]:
+        """Return a token tuple with exactly one final EOF.
+
+        Reusing the scanner, even after a lexical error, raises RuntimeError.
+        """
+        if self._tokenize_called:
+            raise RuntimeError(
+                "Lexer.tokenize() can only be called once; create a new Lexer to scan again"
+            )
+        self._tokenize_called = True
+        return self._scan_tokens()
+
+    def _scan_tokens(self) -> tuple[Token, ...]:
         while self.index < len(self.source):
             char = self._peek()
 
@@ -228,4 +246,5 @@ class Lexer:
 
 
 def tokenize(source: str) -> tuple[Token, ...]:
+    """Tokenize source without parsing or resolving names."""
     return Lexer(source).tokenize()

@@ -12,8 +12,12 @@ from ..ast.nodes import (
     UnaryOp,
     BinaryOp,
     Application,
+    LambdaExpr,
+    IfExpr,
+    LocalBinding,
+    LetExpr,
+    ListLiteral,
 )
-
 _COMPARISON_KINDS = (
     TokenKind.EQEQ,
     TokenKind.NEQ,
@@ -29,6 +33,7 @@ _ATOM_STARTS = {
     TokenKind.FALSE,
     TokenKind.IDENT,
     TokenKind.LPAREN,
+    TokenKind.LBRACKET,
 }
 
 class _Parser:
@@ -116,6 +121,9 @@ class _Parser:
             self._expect(TokenKind.RPAREN)
             return expression
 
+        if token.kind == TokenKind.LBRACKET:
+            return self._parse_list()
+
         raise ParserError(
             f"Expected an expression, found {token.kind.name}",
             token,
@@ -201,13 +209,61 @@ class _Parser:
 
         return left
 
-    def _parse_expression(self) -> Expr:
-        return self._parse_comparison()
+    def _parse_list(self) -> ListLiteral:
+        start = self._expect(TokenKind.LBRACKET)
+        elements: list[Expr] = []
 
-    def parse_expression(self) -> Expr:
-        expression = self._parse_expression()
-        self._expect(TokenKind.EOF)
-        return expression
+        if self._peek().kind != TokenKind.RBRACKET:
+            elements.append(self._parse_expression())
+
+            while self._match(TokenKind.COMMA):
+                elements.append(self._parse_expression())
+
+        self._expect(TokenKind.RBRACKET)
+
+        return ListLiteral(
+            elements=tuple(elements),
+            span=self._span_from(start),
+        )
+
+    def _parse_lambda(self) -> LambdaExpr:
+        start = self._expect(TokenKind.BACKSLASH)
+
+        parameters = []
+
+        first = self._expect(TokenKind.IDENT)
+        parameters.append(first.lexeme)
+
+        while self._peek().kind == TokenKind.IDENT:
+            parameters.append(self._advance().lexeme)
+
+        self._expect(TokenKind.ARROW)
+
+        body = self._parse_expression()
+
+        return LambdaExpr(
+            parameters=tuple(parameters),
+            body=body,
+            span=self._span_from(start),
+        )
+
+    def _parse_if(self) -> IfExpr:
+        start = self._expect(TokenKind.IF)
+
+        condition = self._parse_expression()
+
+        self._expect(TokenKind.THEN)
+        then_branch = self._parse_expression()
+
+        self._expect(TokenKind.ELSE)
+        else_branch = self._parse_expression()
+
+        return IfExpr(
+            condition=condition,
+            then_branch=then_branch,
+            else_branch=else_branch,
+            span=self._span_from(start),
+        )
 
     def _parse_comparison(self) -> Expr:
         start = self._peek()
@@ -232,6 +288,66 @@ class _Parser:
             right=right,
             span=self._span_from(start),
         )
+
+    def _parse_local_binding(self) -> LocalBinding:
+        start = self._expect(TokenKind.IDENT)
+        name = start.lexeme
+
+        parameters = []
+
+        while self._peek().kind == TokenKind.IDENT:
+            parameters.append(self._advance().lexeme)
+
+        self._expect(TokenKind.EQUAL)
+
+        rhs = self._parse_expression()
+
+        return LocalBinding(
+            name=name,
+            parameters=tuple(parameters),
+            rhs=rhs,
+            span=self._span_from(start),
+        )
+
+    def _parse_let(self) -> LetExpr:
+        start = self._expect(TokenKind.LET)
+
+        self._expect(TokenKind.LBRACE)
+
+        bindings = [self._parse_local_binding()]
+
+        while self._match(TokenKind.SEMICOLON):
+            bindings.append(self._parse_local_binding())
+
+        self._expect(TokenKind.RBRACE)
+        self._expect(TokenKind.IN)
+
+        body = self._parse_expression()
+
+        return LetExpr(
+            bindings=tuple(bindings),
+            body=body,
+            span=self._span_from(start),
+        )
+    
+    def _parse_expression(self) -> Expr:
+        kind = self._peek().kind
+
+        if kind == TokenKind.LET:
+            return self._parse_let()
+
+        if kind == TokenKind.IF:
+            return self._parse_if()
+
+        if kind == TokenKind.BACKSLASH:
+            return self._parse_lambda()
+
+        return self._parse_comparison()
+
+    def parse_expression(self) -> Expr:
+        expression = self._parse_expression()
+        self._expect(TokenKind.EOF)
+        return expression
 
 def parse_expression(source: str) -> Expr:
     """Tokenize source and parse one complete expression."""

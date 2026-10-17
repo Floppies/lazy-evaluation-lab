@@ -9,9 +9,15 @@ from lazy_lab.ast.nodes import (
     UnaryOp,
     BinaryOp,
     Application,
+    LambdaExpr,
+    IfExpr,
+    LetExpr,
+    LocalBinding,
+    ListLiteral
 )
 from lazy_lab.frontend.parser import parse_expression
 from lazy_lab.frontend.errors import ParserError
+from lazy_lab.ast.validation import validate_expression
 
 
 @pytest.mark.parametrize(
@@ -199,3 +205,178 @@ def test_binary_operation_span_includes_grouping():
     result = parse_expression("(1 + 2) * 3")
 
     assert result.span == SourceSpan(1, 1, 1, 12)
+
+"""List"""
+
+@pytest.mark.parametrize(
+    "source, expected",
+    [
+        ("[]", ListLiteral(())),
+        ("[1]", ListLiteral((IntLiteral(1),))),
+        (
+            "[1, 2 + 3]",
+            ListLiteral((
+                IntLiteral(1),
+                BinaryOp("+", IntLiteral(2), IntLiteral(3)),
+            )),
+        ),
+        (
+            "f [1, 2]",
+            Application(
+                Var("f"),
+                ListLiteral((IntLiteral(1), IntLiteral(2))),
+            ),
+        ),
+    ],
+)
+def test_list_expressions(source, expected):
+    assert parse_expression(source) == expected
+
+
+def test_list_span_includes_brackets():
+    source = "[1, 2]"
+    result = parse_expression(source)
+
+    assert result.span == SourceSpan(1, 1, 1, len(source) + 1)
+
+"""Lambdas"""
+
+def test_lambda_expression():
+    result = parse_expression(r"\x y -> x + y")
+
+    expected = LambdaExpr(
+        parameters=("x", "y"),
+        body=BinaryOp("+", Var("x"), Var("y")),
+    )
+
+    assert result == expected
+
+
+def test_lambda_as_function_argument():
+    result = parse_expression(r"map (\x -> x * 2) xs")
+
+    expected = Application(
+        Application(
+            Var("map"),
+            LambdaExpr(
+                ("x",),
+                BinaryOp("*", Var("x"), IntLiteral(2)),
+            ),
+        ),
+        Var("xs"),
+    )
+
+    assert result == expected
+
+"""Conditionals"""
+
+def test_if_expression():
+    result = parse_expression("if x == 0 then 1 else x + 2")
+
+    expected = IfExpr(
+        condition=BinaryOp("==", Var("x"), IntLiteral(0)),
+        then_branch=IntLiteral(1),
+        else_branch=BinaryOp("+", Var("x"), IntLiteral(2)),
+    )
+
+    assert result == expected
+
+
+def test_nested_if():
+    result = parse_expression(
+        "if a then if b then 1 else 2 else 3"
+    )
+
+    expected = IfExpr(
+        Var("a"),
+        IfExpr(
+            Var("b"),
+            IntLiteral(1),
+            IntLiteral(2),
+        ),
+        IntLiteral(3),
+    )
+
+    assert result == expected
+
+"""Local Bindings"""
+
+def test_let_expression():
+    result = parse_expression(
+        "let { x = 10; double y = y * 2 } in double x"
+    )
+
+    expected = LetExpr(
+        bindings=(
+            LocalBinding("x", (), IntLiteral(10)),
+            LocalBinding(
+                "double",
+                ("y",),
+                BinaryOp("*", Var("y"), IntLiteral(2)),
+            ),
+        ),
+        body=Application(Var("double"), Var("x")),
+    )
+
+    assert result == expected
+
+
+def test_mutually_recursive_let():
+    result = parse_expression(
+        "let { f x = g x; g x = f x } in f 10"
+    )
+
+    assert isinstance(result, LetExpr)
+    assert len(result.bindings) == 2
+    assert result.bindings[0].name == "f"
+    assert result.bindings[1].name == "g"
+
+"""Syntax errors"""
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        "[1, 2",
+        "[1,]",
+        r"\ -> 10",
+        r"\x 10",
+        "if True then 1",
+        "if True 1 else 2",
+        "let {} in 1",
+        "let { x = 1; } in x",
+        "let { x = 1 } x",
+    ],
+)
+def test_invalid_complex_expressions(source):
+    with pytest.raises(ParserError):
+        parse_expression(source)
+
+"""Parser does not semantic validation"""
+
+def test_parser_does_not_reject_recursive_binding():
+    result = parse_expression("let { x = x } in x")
+
+    assert isinstance(result, LetExpr)
+
+"""Complex expressions"""
+
+def test_complex_expression_combination():
+    source = (
+        r"let { double = \x -> x * 2 } "
+        "in if True then double [1, 2] else []"
+    )
+
+    result = parse_expression(source)
+
+    assert isinstance(result, LetExpr)
+    assert isinstance(result.body, IfExpr)
+    assert isinstance(result.body.then_branch, Application)
+
+    """Integration with AST validation"""
+
+def test_parsed_expression_passes_ast_validation():
+    result = parse_expression(
+        "let { double x = x * 2 } in double 10"
+    )
+
+    validate_expression(result)

@@ -13,11 +13,22 @@ from lazy_lab.ast.nodes import (
     IfExpr,
     LetExpr,
     LocalBinding,
-    ListLiteral
+    ListLiteral,
+    Program,
+    ValueDefinition,
+    FunctionEquation,
+    VarPattern,
+    NilPattern,
+    ConsPattern,
 )
 from lazy_lab.frontend.parser import parse_expression
+from lazy_lab.frontend.parser import parse_program
 from lazy_lab.frontend.errors import ParserError
-from lazy_lab.ast.validation import validate_expression
+from lazy_lab.ast.validation import (
+    validate_expression,
+    validate_program,
+    ASTValidationError,
+)
 
 
 @pytest.mark.parametrize(
@@ -380,3 +391,181 @@ def test_parsed_expression_passes_ast_validation():
     )
 
     validate_expression(result)
+
+"""Simple definitions"""
+
+def test_value_definition():
+    program = parse_program("answer = 42")
+
+    assert program == Program((
+        ValueDefinition(
+            name="answer",
+            rhs=IntLiteral(42),
+        ),
+    ))
+
+
+def test_function_definition():
+    program = parse_program("double x = x * 2")
+
+    assert program == Program((
+        FunctionEquation(
+            name="double",
+            parameters=(VarPattern("x"),),
+            rhs=BinaryOp("*", Var("x"), IntLiteral(2)),
+        ),
+    ))
+
+def test_multiple_function_equations():
+    source = (
+        "length [] = 0\n"
+        "length (x:xs) = 1 + length xs\n"
+    )
+
+    program = parse_program(source)
+
+    assert len(program.definitions) == 2
+
+    first, second = program.definitions
+
+    assert isinstance(first, FunctionEquation)
+    assert isinstance(second, FunctionEquation)
+
+    assert first.name == second.name == "length"
+
+    assert first.parameters == (NilPattern(),)
+
+    assert second.parameters == (
+        ConsPattern(
+            VarPattern("x"),
+            VarPattern("xs"),
+        ),
+    )
+
+def test_complete_program():
+    source = (
+        "double x = x * 2\n"
+        "main = double [1, 2, 3]\n"
+    )
+
+    program = parse_program(source)
+
+    assert len(program.definitions) == 2
+
+    assert isinstance(
+        program.definitions[0],
+        FunctionEquation,
+    )
+
+    assert isinstance(
+        program.definitions[1],
+        ValueDefinition,
+    )
+
+def test_blank_lines_and_comments():
+    source = (
+        "\n"
+        "length [] = 0\n"
+        "\n"
+        "-- Non-empty lists\n"
+        "length (x:xs) = 1 + length xs\n"
+        "\n"
+        "main = length [1, 2, 3]\n"
+    )
+
+    program = parse_program(source)
+
+    assert len(program.definitions) == 3
+
+    assert [
+        definition.name
+        for definition in program.definitions
+    ] == ["length", "length", "main"]
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        "",
+        "\n",
+        "\n\n",
+        "-- Only a comment",
+        "-- Comment\n\n",
+    ],
+)
+def test_empty_program(source):
+    assert parse_program(source) == Program(())
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        "42",
+        "map double [1, 2, 3]",
+        "main =",
+        "main = 1 +",
+        "f (x) = x",
+        "f (x:y:xs) = x",
+        "f [x] = x",
+        "main = 1\n42",
+    ],
+)
+def test_invalid_program_syntax(source):
+    with pytest.raises(ParserError):
+        parse_program(source)
+
+def test_parsed_program_passes_validation():
+    source = (
+        "length [] = 0\n"
+        "length (x:xs) = 1 + length xs\n"
+        "main = length [1, 2, 3]\n"
+    )
+
+    program = parse_program(source)
+
+    validate_program(program)
+
+def test_parser_preserves_structurally_invalid_equations():
+    source = "f x x = x"
+
+    program = parse_program(source)
+
+    assert isinstance(
+        program.definitions[0],
+        FunctionEquation,
+    )
+
+    with pytest.raises(
+        ASTValidationError,
+        match="Duplicate parameter",
+    ):
+        validate_program(program)
+
+def test_definition_source_spans():
+    source = (
+        "x = 10\n"
+        "main = x + 2"
+    )
+
+    program = parse_program(source)
+
+    assert program.definitions[0].span == SourceSpan(
+        1, 1, 1, 7
+    )
+
+    assert program.definitions[1].span == SourceSpan(
+        2, 1, 2, 13
+    )
+
+    assert program.span == SourceSpan(
+        1, 1, 2, 13
+    )
+
+
+def test_cons_pattern_source_spans():
+    program = parse_program("f (x:xs) = x")
+
+    equation = program.definitions[0]
+    pattern = equation.parameters[0]
+
+    assert pattern.span == SourceSpan(1, 3, 1, 9)
+    assert pattern.head.span == SourceSpan(1, 4, 1, 5)
+    assert pattern.tail.span == SourceSpan(1, 6, 1, 8)

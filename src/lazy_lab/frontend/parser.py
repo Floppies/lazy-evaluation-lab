@@ -17,6 +17,13 @@ from ..ast.nodes import (
     LocalBinding,
     LetExpr,
     ListLiteral,
+    Program,
+    Pattern,
+    VarPattern,
+    NilPattern,
+    ConsPattern,
+    ValueDefinition,
+    FunctionEquation,
 )
 _COMPARISON_KINDS = (
     TokenKind.EQEQ,
@@ -329,7 +336,83 @@ class _Parser:
             body=body,
             span=self._span_from(start),
         )
-    
+
+    def _parse_pattern(self) -> Pattern:
+        token = self._peek()
+
+        if token.kind == TokenKind.IDENT:
+            self._advance()
+
+            return VarPattern(
+                name=token.lexeme,
+                span=token.span,
+            )
+
+        if token.kind == TokenKind.LBRACKET:
+            start = self._advance()
+            self._expect(TokenKind.RBRACKET)
+
+            return NilPattern(
+                span=self._span_from(start),
+            )
+
+        if token.kind == TokenKind.LPAREN:
+            start = self._advance()
+
+            head = self._expect(TokenKind.IDENT)
+            self._expect(TokenKind.COLON)
+            tail = self._expect(TokenKind.IDENT)
+
+            self._expect(TokenKind.RPAREN)
+
+            return ConsPattern(
+                head=VarPattern(
+                    name=head.lexeme,
+                    span=head.span,
+                ),
+                tail=VarPattern(
+                    name=tail.lexeme,
+                    span=tail.span,
+                ),
+                span=self._span_from(start),
+            )
+
+        raise ParserError(
+            f"Expected a pattern, found {token.kind.name}",
+            token,
+        )
+
+    def _parse_definition(self) -> ValueDefinition | FunctionEquation:
+        start = self._expect(TokenKind.IDENT)
+        name = start.lexeme
+
+        parameters: list[Pattern] = []
+
+        while self._peek().kind in {
+            TokenKind.IDENT,
+            TokenKind.LBRACKET,
+            TokenKind.LPAREN,
+        }:
+            parameters.append(self._parse_pattern())
+
+        self._expect(TokenKind.EQUAL)
+
+        rhs = self._parse_expression()
+
+        if not parameters:
+            return ValueDefinition(
+                name=name,
+                rhs=rhs,
+                span=self._span_from(start),
+            )
+
+        return FunctionEquation(
+            name=name,
+            parameters=tuple(parameters),
+            rhs=rhs,
+            span=self._span_from(start),
+        )
+
     def _parse_expression(self) -> Expr:
         kind = self._peek().kind
 
@@ -349,8 +432,48 @@ class _Parser:
         self._expect(TokenKind.EOF)
         return expression
 
+    def parse_program(self) -> Program:
+        # Ignore leading blank lines.
+        while self._match(TokenKind.NEWLINE):
+            pass
+
+        start = self._peek()
+        definitions = []
+
+        while self._peek().kind != TokenKind.EOF:
+            definitions.append(self._parse_definition())
+
+            if self._peek().kind != TokenKind.EOF:
+                self._expect(TokenKind.NEWLINE)
+
+                # Ignore blank lines between definitions.
+                while self._match(TokenKind.NEWLINE):
+                    pass
+
+        self._expect(TokenKind.EOF)
+
+        if not definitions:
+            return Program(definitions=())
+
+        last_span = definitions[-1].span
+
+        return Program(
+            definitions=tuple(definitions),
+            span=SourceSpan(
+                start_line=start.span.start_line,
+                start_column=start.span.start_column,
+                end_line=last_span.end_line,
+                end_column=last_span.end_column,
+            ),
+        )
+
 def parse_expression(source: str) -> Expr:
     """Tokenize source and parse one complete expression."""
     tokens = tokenize(source)
     parser = _Parser(tokens)
     return parser.parse_expression()
+
+def parse_program(source: str) -> Program:
+    tokens = tokenize(source)
+    parser = _Parser(tokens)
+    return parser.parse_program()

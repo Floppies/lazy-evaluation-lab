@@ -264,7 +264,7 @@ class _Parser:
     def _parse_lambda(self) -> LambdaExpr:
         start = self._expect(TokenKind.BACKSLASH)
         with self._nested(start):
-            parameters = []
+            parameters: list[str] = []
 
             first = self._expect(TokenKind.IDENT)
             parameters.append(first.lexeme)
@@ -328,7 +328,7 @@ class _Parser:
         start = self._expect(TokenKind.IDENT)
         name = start.lexeme
 
-        parameters = []
+        parameters: list[str] = []
 
         while self._peek().kind == TokenKind.IDENT:
             parameters.append(self._advance().lexeme)
@@ -349,7 +349,7 @@ class _Parser:
         with self._nested(start):
             self._expect(TokenKind.LBRACE)
 
-            bindings = [self._parse_local_binding()]
+            bindings: list[LocalBinding] = [self._parse_local_binding()]
 
             while self._match(TokenKind.SEMICOLON):
                 bindings.append(self._parse_local_binding())
@@ -466,7 +466,7 @@ class _Parser:
             pass
 
         start = self._peek()
-        definitions = []
+        definitions: list[ValueDefinition | FunctionEquation] = []
 
         while self._peek().kind != TokenKind.EOF:
             definitions.append(self._parse_definition())
@@ -496,6 +496,12 @@ class _Parser:
         )
 
 def _decimal_to_int(lexeme: str) -> int:
+    """Convert validated ASCII digits in blocks, preserving arbitrary precision.
+
+    Each int() call handles at most 256 digits, below Python's minimum
+    configurable decimal-conversion limit of 640. Arithmetic combines the
+    blocks without changing the process-wide conversion settings.
+    """
     value = 0
     block_size = 256
 

@@ -84,8 +84,9 @@ def test_empty_expression():
 
 
 def test_incomplete_expression():
-    with pytest.raises(ParserError):
+    with pytest.raises(ParserError, match="Expected an expression, found EOF") as error:
         parse_expression("42 +")
+    assert error.value.token.kind == TokenKind.EOF
 
 """Precedence and associativity"""
 
@@ -131,6 +132,46 @@ def test_incomplete_expression():
                 Application(Var("double"), IntLiteral(3)),
                 IntLiteral(2),
             ),
+        ),
+        pytest.param(
+            "1 + 2 : xs",
+            BinaryOp(":", BinaryOp("+", IntLiteral(1), IntLiteral(2)), Var("xs")),
+            id="addition-before-cons",
+        ),
+        pytest.param(
+            "x : xs == ys",
+            BinaryOp("==", BinaryOp(":", Var("x"), Var("xs")), Var("ys")),
+            id="cons-before-comparison",
+        ),
+        pytest.param(
+            "-x * y", BinaryOp("*", UnaryOp("-", Var("x")), Var("y")),
+            id="negation-before-multiplication",
+        ),
+        pytest.param(
+            "a * b * c", BinaryOp("*", BinaryOp("*", Var("a"), Var("b")), Var("c")),
+            id="left-associative-multiplication",
+        ),
+        pytest.param(
+            "10 - 3 + 2",
+            BinaryOp("+", BinaryOp("-", IntLiteral(10), IntLiteral(3)), IntLiteral(2)),
+            id="mixed-addition-and-subtraction",
+        ),
+        pytest.param(
+            "1 - -2", BinaryOp("-", IntLiteral(1), UnaryOp("-", IntLiteral(2))),
+            id="subtraction-of-negation",
+        ),
+        pytest.param(
+            "(1 < 2) == True",
+            BinaryOp("==", BinaryOp("<", IntLiteral(1), IntLiteral(2)), BoolLiteral(True)),
+            id="explicitly-grouped-comparison",
+        ),
+        pytest.param(
+            "1 : 2 + 3 : []",
+            BinaryOp(
+                ":", IntLiteral(1),
+                BinaryOp(":", BinaryOp("+", IntLiteral(2), IntLiteral(3)), ListLiteral(())),
+            ),
+            id="cons-right-associativity-with-addition",
         ),
     ],
 )
@@ -338,37 +379,55 @@ def test_mutually_recursive_let():
         "let { f x = g x; g x = f x } in f 10"
     )
 
-    assert isinstance(result, LetExpr)
-    assert len(result.bindings) == 2
-    assert result.bindings[0].name == "f"
-    assert result.bindings[1].name == "g"
+    assert result == LetExpr(
+        (
+            LocalBinding("f", ("x",), Application(Var("g"), Var("x"))),
+            LocalBinding("g", ("x",), Application(Var("f"), Var("x"))),
+        ),
+        Application(Var("f"), IntLiteral(10)),
+    )
 
 """Syntax errors"""
 
 @pytest.mark.parametrize(
-    "source",
+    "source,message,kind",
     [
-        "[1, 2",
-        "[1,]",
-        r"\ -> 10",
-        r"\x 10",
-        "if True then 1",
-        "if True 1 else 2",
-        "let {} in 1",
-        "let { x = 1; } in x",
-        "let { x = 1 } x",
+        ("[1, 2", "Expected RBRACKET, found EOF", TokenKind.EOF),
+        ("[1,]", "Expected an expression, found RBRACKET", TokenKind.RBRACKET),
+        (r"\ -> 10", "Expected IDENT, found ARROW", TokenKind.ARROW),
+        (r"\x 10", "Expected ARROW, found INT", TokenKind.INT),
+        ("if True then 1", "Expected ELSE, found EOF", TokenKind.EOF),
+        ("if True 1 else 2", "Expected THEN, found ELSE", TokenKind.ELSE),
+        ("let {} in 1", "Expected IDENT, found RBRACE", TokenKind.RBRACE),
+        ("let { x = 1; } in x", "Expected IDENT, found RBRACE", TokenKind.RBRACE),
+        ("let { x = 1 } x", "Expected IN, found IDENT", TokenKind.IDENT),
+        ("()", "Expected an expression, found RPAREN", TokenKind.RPAREN),
+        ("[,1]", "Expected an expression, found COMMA", TokenKind.COMMA),
+        ("[1,,2]", "Expected an expression, found COMMA", TokenKind.COMMA),
+        ("[1;2]", "Expected RBRACKET, found SEMICOLON", TokenKind.SEMICOLON),
+        ("[1)", "Expected RBRACKET, found RPAREN", TokenKind.RPAREN),
+        (r"\x ->", "Expected an expression, found EOF", TokenKind.EOF),
+        ("if True then else 2", "Expected an expression, found ELSE", TokenKind.ELSE),
+        ("if then 1 else 2", "Expected an expression, found THEN", TokenKind.THEN),
+        ("if True then 1 else", "Expected an expression, found EOF", TokenKind.EOF),
+        ("let {x=1 y=2} in x", "Expected RBRACE, found EQUAL", TokenKind.EQUAL),
+        ("let x=1 in x", "Expected LBRACE, found IDENT", TokenKind.IDENT),
+        ("let {x=1} in", "Expected an expression, found EOF", TokenKind.EOF),
+        ("1 :", "Expected an expression, found EOF", TokenKind.EOF),
+        ("-", "Expected an expression, found EOF", TokenKind.EOF),
     ],
 )
-def test_invalid_complex_expressions(source):
-    with pytest.raises(ParserError):
+def test_invalid_complex_expressions(source, message, kind):
+    with pytest.raises(ParserError, match=message) as error:
         parse_expression(source)
+    assert error.value.token.kind == kind
 
 """Parser does not semantic validation"""
 
 def test_parser_does_not_reject_recursive_binding():
     result = parse_expression("let { x = x } in x")
 
-    assert isinstance(result, LetExpr)
+    assert result == LetExpr((LocalBinding("x", (), Var("x")),), Var("x"))
 
 """Complex expressions"""
 
@@ -380,9 +439,14 @@ def test_complex_expression_combination():
 
     result = parse_expression(source)
 
-    assert isinstance(result, LetExpr)
-    assert isinstance(result.body, IfExpr)
-    assert isinstance(result.body.then_branch, Application)
+    assert result == LetExpr(
+        (LocalBinding("double", (), LambdaExpr(("x",), BinaryOp("*", Var("x"), IntLiteral(2)))),),
+        IfExpr(
+            BoolLiteral(True),
+            Application(Var("double"), ListLiteral((IntLiteral(1), IntLiteral(2)))),
+            ListLiteral(()),
+        ),
+    )
 
     """Integration with AST validation"""
 
@@ -451,16 +515,18 @@ def test_complete_program():
 
     program = parse_program(source)
 
-    assert len(program.definitions) == 2
-
-    assert isinstance(
-        program.definitions[0],
-        FunctionEquation,
-    )
-
-    assert isinstance(
-        program.definitions[1],
-        ValueDefinition,
+    assert program == Program(
+        (
+            FunctionEquation(
+                "double", (VarPattern("x"),), BinaryOp("*", Var("x"), IntLiteral(2))
+            ),
+            ValueDefinition(
+                "main",
+                Application(
+                    Var("double"), ListLiteral((IntLiteral(1), IntLiteral(2), IntLiteral(3)))
+                ),
+            ),
+        )
     )
 
 def test_blank_lines_and_comments():
@@ -497,21 +563,30 @@ def test_empty_program(source):
     assert parse_program(source) == Program(())
 
 @pytest.mark.parametrize(
-    "source",
+    "source,message,kind",
     [
-        "42",
-        "map double [1, 2, 3]",
-        "main =",
-        "main = 1 +",
-        "f (x) = x",
-        "f (x:y:xs) = x",
-        "f [x] = x",
-        "main = 1\n42",
+        ("42", "Expected IDENT, found INT", TokenKind.INT),
+        ("map double [1, 2, 3]", "Expected RBRACKET, found INT", TokenKind.INT),
+        ("main =", "Expected an expression, found EOF", TokenKind.EOF),
+        ("main = 1 +", "Expected an expression, found EOF", TokenKind.EOF),
+        ("f (x) = x", "Expected COLON, found RPAREN", TokenKind.RPAREN),
+        ("f (x:y:xs) = x", "Expected RPAREN, found COLON", TokenKind.COLON),
+        ("f [x] = x", "Expected RBRACKET, found IDENT", TokenKind.IDENT),
+        ("main = 1\n42", "Expected IDENT, found INT", TokenKind.INT),
+        ("f x:xs = x", "Expected EQUAL, found COLON", TokenKind.COLON),
+        ("f 0 = 0", "Expected EQUAL, found INT", TokenKind.INT),
+        ("f True = 0", "Expected EQUAL, found TRUE", TokenKind.TRUE),
+        ("f (x:(y:ys)) = x", "Expected IDENT, found LPAREN", TokenKind.LPAREN),
+        ("f ((x:xs):ys) = x", "Expected IDENT, found LPAREN", TokenKind.LPAREN),
+        ("main = 1; y = 2", "Expected NEWLINE, found SEMICOLON", TokenKind.SEMICOLON),
+        ("main = 1 y = 2", "Expected NEWLINE, found EQUAL", TokenKind.EQUAL),
+        ("if = 1", "Expected IDENT, found IF", TokenKind.IF),
     ],
 )
-def test_invalid_program_syntax(source):
-    with pytest.raises(ParserError):
+def test_invalid_program_syntax(source, message, kind):
+    with pytest.raises(ParserError, match=message) as error:
         parse_program(source)
+    assert error.value.token.kind == kind
 
 def test_parsed_program_passes_validation():
     source = (
@@ -592,18 +667,20 @@ def test_parser_error_location(source, line, column, kind):
     assert str(error.value).startswith(f"{line}:{column}:")
 
 @pytest.mark.parametrize(
-    "source",
+    "source,message,kind",
     [
-        "main = 1 +\n2",
-        "main = [1,\n2]",
-        "main = let { x = 1;\n y = 2 } in y",
-        "main = 1\n+ 2",
-        "main = 1\n42",
+        ("main = 1 +\n2", "Expected an expression, found NEWLINE", TokenKind.NEWLINE),
+        ("main = [1,\n2]", "Expected an expression, found NEWLINE", TokenKind.NEWLINE),
+        ("main = let { x = 1;\n y = 2 } in y", "Expected IDENT, found NEWLINE", TokenKind.NEWLINE),
+        ("main = 1\n+ 2", "Expected IDENT, found PLUS", TokenKind.PLUS),
+        ("main = 1\n42", "Expected IDENT, found INT", TokenKind.INT),
+        ("main = (1 +\n2)", "Expected an expression, found NEWLINE", TokenKind.NEWLINE),
     ],
 )
-def test_multiline_definitions_are_rejected(source):
-    with pytest.raises(ParserError):
+def test_multiline_definitions_are_rejected(source, message, kind):
+    with pytest.raises(ParserError, match=message) as error:
         parse_program(source)
+    assert error.value.token.kind == kind
 
 def test_error_on_second_line():
     source = "x = 10\nmain = 1 +"
@@ -616,17 +693,18 @@ def test_error_on_second_line():
     assert error.value.token.kind == TokenKind.EOF
 
 @pytest.mark.parametrize(
-    "source",
+    "source,kind",
     [
-        "42)",
-        "x ]",
-        "1 + 2, garbage",
-        "True False )",
+        ("42)", TokenKind.RPAREN),
+        ("x ]", TokenKind.RBRACKET),
+        ("1 + 2, garbage", TokenKind.COMMA),
+        ("True False )", TokenKind.RPAREN),
     ],
 )
-def test_expression_cannot_leave_unconsumed_tokens(source):
-    with pytest.raises(ParserError):
+def test_expression_cannot_leave_unconsumed_tokens(source, kind):
+    with pytest.raises(ParserError, match=f"Expected EOF, found {kind.name}") as error:
         parse_expression(source)
+    assert error.value.token.kind == kind
 
 def test_application_on_right_side_of_addition():
     assert parse_expression("1 + 2 garbage") == BinaryOp(
@@ -692,7 +770,9 @@ def test_duplicate_parameter_is_ast_validation_error():
 def test_main_must_be_value_definition():
     program = parse_program("main x = x")
 
-    with pytest.raises(ASTValidationError):
+    with pytest.raises(
+        ASTValidationError, match="main must be a top-level value definition without parameters"
+    ):
         validate_program(program)
 
 def test_comments_do_not_break_equation_groups():
@@ -717,9 +797,8 @@ def test_arbitrary_precision_integer():
     result = parse_expression(source)
 
     assert isinstance(result, IntLiteral)
-    assert result.value.bit_length() > 16000
-    assert result.value % (10 ** 100) == 10 ** 100 - 1
-    assert result.span.end_column == 5001
+    assert result.value == 10**5000 - 1
+    assert result.span == SourceSpan(1, 1, 1, 5001)
 
 
 _NESTING_CASES = [
@@ -845,3 +924,182 @@ def test_syntax_errors_within_nesting_limit_keep_their_diagnostic():
 
     assert error.value.token.kind == TokenKind.EOF
     assert error.value.column == 5
+
+
+@pytest.mark.parametrize(
+    "source,expected",
+    [
+        pytest.param(
+            "f(2)(3)", Application(Application(Var("f"), IntLiteral(2)), IntLiteral(3)),
+            id="adjacent-parenthesized-arguments",
+        ),
+        pytest.param(
+            "f[1]", Application(Var("f"), ListLiteral((IntLiteral(1),))),
+            id="adjacent-list-argument",
+        ),
+        pytest.param(
+            "f -3", BinaryOp("-", Var("f"), IntLiteral(3)),
+            id="adjacent-negative-is-subtraction",
+        ),
+        pytest.param(
+            "[1 2]", ListLiteral((Application(IntLiteral(1), IntLiteral(2)),)),
+            id="application-inside-list-element",
+        ),
+        pytest.param(
+            "- -1", UnaryOp("-", UnaryOp("-", IntLiteral(1))),
+            id="repeated-negation-without-comment",
+        ),
+    ],
+)
+def test_application_and_negation_boundaries(source, expected):
+    assert parse_expression(source) == expected
+
+
+@pytest.mark.parametrize(
+    "source,expected",
+    [
+        pytest.param(
+            "f (if True then 1 else 2)",
+            Application(Var("f"), IfExpr(BoolLiteral(True), IntLiteral(1), IntLiteral(2))),
+            id="conditional-argument",
+        ),
+        pytest.param(
+            "1 + (if True then 2 else 3)",
+            BinaryOp("+", IntLiteral(1), IfExpr(BoolLiteral(True), IntLiteral(2), IntLiteral(3))),
+            id="conditional-arithmetic-operand",
+        ),
+        pytest.param(
+            "f (let {x=1} in x)",
+            Application(Var("f"), LetExpr((LocalBinding("x", (), IntLiteral(1)),), Var("x"))),
+            id="let-function-argument",
+        ),
+        pytest.param(
+            "1 + (let {x=2} in x)",
+            BinaryOp(
+                "+", IntLiteral(1),
+                LetExpr((LocalBinding("x", (), IntLiteral(2)),), Var("x")),
+            ),
+            id="let-arithmetic-operand",
+        ),
+        pytest.param(
+            r"(\x -> x) 1", Application(LambdaExpr(("x",), Var("x")), IntLiteral(1)),
+            id="lambda-in-function-position",
+        ),
+        pytest.param(
+            r"\x -> \y -> x + y",
+            LambdaExpr(("x",), LambdaExpr(("y",), BinaryOp("+", Var("x"), Var("y")))),
+            id="nested-lambda-bodies",
+        ),
+        pytest.param(
+            "if if True then False else True then 1 else 2",
+            IfExpr(
+                IfExpr(BoolLiteral(True), BoolLiteral(False), BoolLiteral(True)),
+                IntLiteral(1), IntLiteral(2),
+            ),
+            id="conditional-in-condition",
+        ),
+        pytest.param(
+            "if a then 1 else if b then 2 else 3",
+            IfExpr(
+                Var("a"), IntLiteral(1),
+                IfExpr(Var("b"), IntLiteral(2), IntLiteral(3)),
+            ),
+            id="conditional-in-else-branch",
+        ),
+        pytest.param(
+            "let {x = let {y=1} in y; z=2} in x",
+            LetExpr(
+                (
+                    LocalBinding(
+                        "x", (),
+                        LetExpr((LocalBinding("y", (), IntLiteral(1)),), Var("y")),
+                    ),
+                    LocalBinding("z", (), IntLiteral(2)),
+                ),
+                Var("x"),
+            ),
+            id="nested-let-rhs-stops-at-semicolon",
+        ),
+        pytest.param(
+            r"[if True then 1 else 2, let {x=3} in x, \y -> y, [1,2], []]",
+            ListLiteral(
+                (
+                    IfExpr(BoolLiteral(True), IntLiteral(1), IntLiteral(2)),
+                    LetExpr((LocalBinding("x", (), IntLiteral(3)),), Var("x")),
+                    LambdaExpr(("y",), Var("y")),
+                    ListLiteral((IntLiteral(1), IntLiteral(2))),
+                    ListLiteral(()),
+                )
+            ),
+            id="full-expressions-stop-at-list-delimiters",
+        ),
+    ],
+)
+def test_grouped_and_nested_compound_expressions(source, expected):
+    assert parse_expression(source) == expected
+
+
+@pytest.mark.parametrize(
+    "source,message,kind",
+    [
+        ("f if True then 1 else 2", "Expected EOF, found IF", TokenKind.IF),
+        ("1 + if True then 1 else 2", "Expected an expression, found IF", TokenKind.IF),
+        ("f let {x=1} in x", "Expected EOF, found LET", TokenKind.LET),
+        ("1 + let {x=1} in x", "Expected an expression, found LET", TokenKind.LET),
+        (r"f \x -> x", "Expected EOF, found BACKSLASH", TokenKind.BACKSLASH),
+        (r"1 + \x -> x", "Expected an expression, found BACKSLASH", TokenKind.BACKSLASH),
+    ],
+)
+def test_compound_operands_require_parentheses(source, message, kind):
+    with pytest.raises(ParserError, match=message) as error:
+        parse_expression(source)
+    assert error.value.token.kind == kind
+
+
+@pytest.mark.parametrize(
+    "source,message,kind",
+    [
+        (r"\(x:xs) -> x", "Expected IDENT, found LPAREN", TokenKind.LPAREN),
+        (r"\[] -> 0", "Expected IDENT, found LBRACKET", TokenKind.LBRACKET),
+        ("let {f []=0} in f", "Expected EQUAL, found LBRACKET", TokenKind.LBRACKET),
+        ("let {f (x:xs)=x} in f", "Expected EQUAL, found LPAREN", TokenKind.LPAREN),
+    ],
+)
+def test_patterns_are_not_supported_in_lambda_or_local_parameters(source, message, kind):
+    with pytest.raises(ParserError, match=message) as error:
+        parse_expression(source)
+    assert error.value.token.kind == kind
+
+
+@pytest.mark.parametrize("length", [255, 256, 257, 511, 512, 513])
+@pytest.mark.parametrize("pattern", ["0", "9", "0123456789"], ids=["zeroes", "nines", "varied"])
+def test_decimal_conversion_is_exact_at_block_boundaries(length, pattern):
+    source = (pattern * length)[:length]
+
+    result = parse_expression(source)
+
+    assert isinstance(result, IntLiteral)
+    # These lengths are below Python's minimum configurable conversion limit,
+    # so converting the whole lexeme provides an independent expected value.
+    assert result.value == int(source)
+    assert result.span == SourceSpan(1, 1, 1, length + 1)
+
+
+def test_arbitrary_precision_conversion_preserves_varied_digits():
+    source = "1234567890" * 500
+    expected = 1234567890 * (10**5000 - 1) // (10**10 - 1)
+
+    result = parse_expression(source)
+
+    assert isinstance(result, IntLiteral)
+    assert result.value == expected
+    assert result.span == SourceSpan(1, 1, 1, 5001)
+
+
+def test_arbitrary_precision_conversion_preserves_leading_zeroes():
+    source = "0" * 5000 + "123"
+
+    result = parse_expression(source)
+
+    assert result == IntLiteral(123)
+    assert result.span == SourceSpan(1, 1, 1, 5004)

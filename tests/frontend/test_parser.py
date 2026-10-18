@@ -21,6 +21,7 @@ from lazy_lab.ast.nodes import (
     NilPattern,
     ConsPattern,
 )
+from lazy_lab.frontend.tokens import TokenKind
 from lazy_lab.frontend.parser import parse_expression
 from lazy_lab.frontend.parser import parse_program
 from lazy_lab.frontend.errors import ParserError
@@ -569,3 +570,143 @@ def test_cons_pattern_source_spans():
     assert pattern.span == SourceSpan(1, 3, 1, 9)
     assert pattern.head.span == SourceSpan(1, 4, 1, 5)
     assert pattern.tail.span == SourceSpan(1, 6, 1, 8)
+
+
+@pytest.mark.parametrize(
+    "source, line, column, kind",
+    [
+        ("(1 + )", 1, 6, TokenKind.RPAREN),
+        ("if True then 1", 1, 15, TokenKind.EOF),
+        ("let { x = 1 } x", 1, 15, TokenKind.IDENT),
+        ("[1,]", 1, 4, TokenKind.RBRACKET),
+        ("1 < 2 < 3", 1, 7, TokenKind.LT),
+    ],
+)
+def test_parser_error_location(source, line, column, kind):
+    with pytest.raises(ParserError) as error:
+        parse_expression(source)
+
+    assert error.value.line == line
+    assert error.value.column == column
+    assert error.value.token.kind == kind
+    assert str(error.value).startswith(f"{line}:{column}:")
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        "main = 1 +\n2",
+        "main = [1,\n2]",
+        "main = let { x = 1;\n y = 2 } in y",
+        "main = 1\n+ 2",
+        "main = 1\n42",
+    ],
+)
+def test_multiline_definitions_are_rejected(source):
+    with pytest.raises(ParserError):
+        parse_program(source)
+
+def test_error_on_second_line():
+    source = "x = 10\nmain = 1 +"
+
+    with pytest.raises(ParserError) as error:
+        parse_program(source)
+
+    assert error.value.line == 2
+    assert error.value.column == 11
+    assert error.value.token.kind == TokenKind.EOF
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        "42)",
+        "x ]",
+        "1 + 2, garbage",
+        "True False )",
+    ],
+)
+def test_expression_cannot_leave_unconsumed_tokens(source):
+    with pytest.raises(ParserError):
+        parse_expression(source)
+
+def test_application_on_right_side_of_addition():
+    assert parse_expression("1 + 2 garbage") == BinaryOp(
+        "+",
+        IntLiteral(1),
+        Application(
+            IntLiteral(2),
+            Var("garbage"),
+        ),
+    )
+
+def test_application_does_not_require_function_type():
+    result = parse_expression("42 43")
+
+    assert result == Application(
+        IntLiteral(42),
+        IntLiteral(43),
+    )
+
+def test_nested_expression_spans():
+    source = "f (1 + 2)"
+    result = parse_expression(source)
+
+    assert isinstance(result, Application)
+    assert result.span == SourceSpan(1, 1, 1, 10)
+
+    assert result.function.span == SourceSpan(1, 1, 1, 2)
+
+    argument = result.argument
+    assert isinstance(argument, BinaryOp)
+    assert argument.span == SourceSpan(1, 4, 1, 9)
+
+    assert argument.left.span == SourceSpan(1, 4, 1, 5)
+    assert argument.right.span == SourceSpan(1, 8, 1, 9)
+
+def test_let_and_binding_spans():
+    source = "let { x = 1 } in x"
+    result = parse_expression(source)
+
+    assert isinstance(result, LetExpr)
+    assert result.span == SourceSpan(
+        1, 1, 1, len(source) + 1
+    )
+
+    binding = result.bindings[0]
+
+    assert binding.span == SourceSpan(1, 7, 1, 12)
+    assert binding.rhs.span == SourceSpan(1, 11, 1, 12)
+
+def test_duplicate_parameter_is_ast_validation_error():
+    program = parse_program("f x x = x")
+
+    assert isinstance(
+        program.definitions[0],
+        FunctionEquation,
+    )
+
+    with pytest.raises(ASTValidationError) as error:
+        validate_program(program)
+
+    assert "Duplicate parameter binder" in str(error.value)
+
+def test_main_must_be_value_definition():
+    program = parse_program("main x = x")
+
+    with pytest.raises(ASTValidationError):
+        validate_program(program)
+
+def test_comments_do_not_break_equation_groups():
+    source = (
+        "length [] = 0\n"
+        "\n"
+        "-- Non-empty list\n"
+        "length (x:xs) = 1 + length xs\n"
+    )
+
+    program = parse_program(source)
+
+    assert len(program.definitions) == 2
+
+    # Consecutive in the AST, even though
+    # they were separated in the source.
+    validate_program(program)

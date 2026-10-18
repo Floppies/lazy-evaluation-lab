@@ -1103,3 +1103,10 @@ def test_arbitrary_precision_conversion_preserves_leading_zeroes():
 
     assert result == IntLiteral(123)
     assert result.span == SourceSpan(1, 1, 1, 5004)
+
+def test_long_addition_chain():
+    source = " + ".join(["1"] * 1000)
+
+    expression = parse_expression(source)
+
+    assert expression is not None

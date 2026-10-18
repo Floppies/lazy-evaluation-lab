@@ -710,3 +710,13 @@ def test_comments_do_not_break_equation_groups():
     # Consecutive in the AST, even though
     # they were separated in the source.
     validate_program(program)
+
+def test_arbitrary_precision_integer():
+    source = "9" * 5000
+
+    result = parse_expression(source)
+
+    assert isinstance(result, IntLiteral)
+    assert result.value.bit_length() > 16000
+    assert result.value % (10 ** 100) == 10 ** 100 - 1
+    assert result.span.end_column == 5001

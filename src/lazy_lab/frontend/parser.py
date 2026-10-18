@@ -95,7 +95,7 @@ class _Parser:
             self._advance()
 
             return IntLiteral(
-                value=int(token.lexeme),
+                value=_decimal_to_int(token.lexeme),
                 span=token.span,
             )
 
@@ -466,6 +466,20 @@ class _Parser:
                 end_column=last_span.end_column,
             ),
         )
+
+def _decimal_to_int(lexeme: str) -> int:
+    value = 0
+    block_size = 256
+
+    for i in range(0, len(lexeme), block_size):
+        block = lexeme[i:i + block_size]
+
+        value = (
+            value * (10 ** len(block))
+            + int(block)
+        )
+
+    return value
 
 def parse_expression(source: str) -> Expr:
     """Tokenize source and parse one complete expression."""

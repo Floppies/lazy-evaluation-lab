@@ -22,7 +22,7 @@ from lazy_lab.ast.nodes import (
     ConsPattern,
 )
 from lazy_lab.frontend.tokens import TokenKind
-from lazy_lab.frontend.parser import parse_expression
+from lazy_lab.frontend.parser import MAX_PARSER_NESTING, parse_expression
 from lazy_lab.frontend.parser import parse_program
 from lazy_lab.frontend.errors import ParserError
 from lazy_lab.ast.validation import (
@@ -720,3 +720,128 @@ def test_arbitrary_precision_integer():
     assert result.value.bit_length() > 16000
     assert result.value % (10 ** 100) == 10 ** 100 - 1
     assert result.span.end_column == 5001
+
+
+_NESTING_CASES = [
+    pytest.param("(", ")", TokenKind.LPAREN, IntLiteral, id="parentheses"),
+    pytest.param("- ", "", TokenKind.MINUS, UnaryOp, id="unary-negation"),
+    pytest.param("1 : ", "", TokenKind.COLON, BinaryOp, id="cons-chain"),
+    pytest.param("[", "]", TokenKind.LBRACKET, ListLiteral, id="lists"),
+    pytest.param("\\x -> ", "", TokenKind.BACKSLASH, LambdaExpr, id="lambda-bodies"),
+    pytest.param("if ", " then 0 else 0", TokenKind.IF, IfExpr, id="if-conditions"),
+    pytest.param("if True then ", " else 0", TokenKind.IF, IfExpr, id="then-branches"),
+    pytest.param("if True then 0 else ", "", TokenKind.IF, IfExpr, id="else-branches"),
+    pytest.param("let {x=0} in ", "", TokenKind.LET, LetExpr, id="let-bodies"),
+    pytest.param("let {x=", "} in x", TokenKind.LET, LetExpr, id="binding-rhs"),
+]
+
+
+@pytest.mark.parametrize("prefix,suffix,kind,node_type", _NESTING_CASES)
+@pytest.mark.parametrize("depth", [MAX_PARSER_NESTING - 1, MAX_PARSER_NESTING])
+def test_recursive_constructs_are_accepted_up_to_nesting_limit(
+    prefix, suffix, kind, node_type, depth
+):
+    source = prefix * depth + "0" + suffix * depth
+
+    result = parse_expression(source)
+
+    assert isinstance(result, node_type)
+
+
+@pytest.mark.parametrize("prefix,suffix,kind,node_type", _NESTING_CASES)
+@pytest.mark.parametrize("depth", [MAX_PARSER_NESTING + 1, 1200])
+def test_excessive_nesting_is_a_located_parser_error(
+    prefix, suffix, kind, node_type, depth
+):
+    source = prefix * depth + "0" + suffix * depth
+    token_offset = 3 if kind == TokenKind.COLON else 1
+    column = len(prefix) * MAX_PARSER_NESTING + token_offset
+
+    with pytest.raises(
+        ParserError, match=f"Maximum parser nesting depth of {MAX_PARSER_NESTING} exceeded"
+    ) as error:
+        parse_expression(source)
+
+    assert error.value.token.kind == kind
+    assert (error.value.line, error.value.column) == (1, column)
+    assert str(error.value).startswith(f"1:{column}: ")
+
+
+def test_different_constructs_share_one_nesting_budget():
+    parentheses = MAX_PARSER_NESTING // 2
+    negations = MAX_PARSER_NESTING - parentheses
+    source = "(" * parentheses + "- " * negations + "0" + ")" * parentheses
+
+    result = parse_expression(source)
+
+    for _ in range(negations):
+        assert isinstance(result, UnaryOp)
+        result = result.operand
+    assert result == IntLiteral(0)
+
+    excessive = "(" * parentheses + "- " * (negations + 1) + "0" + ")" * parentheses
+    with pytest.raises(ParserError, match="Maximum parser nesting depth") as error:
+        parse_expression(excessive)
+
+    assert error.value.token.kind == TokenKind.MINUS
+    assert error.value.column == parentheses + 2 * negations + 1
+
+
+def test_empty_list_also_uses_one_nesting_level():
+    source = "(" * (MAX_PARSER_NESTING - 1) + "[]" + ")" * (MAX_PARSER_NESTING - 1)
+    assert parse_expression(source) == ListLiteral(())
+
+    excessive = "(" * MAX_PARSER_NESTING + "[]" + ")" * MAX_PARSER_NESTING
+    with pytest.raises(ParserError, match="Maximum parser nesting depth") as error:
+        parse_expression(excessive)
+
+    assert error.value.token.kind == TokenKind.LBRACKET
+    assert error.value.column == MAX_PARSER_NESTING + 1
+
+
+@pytest.mark.parametrize(
+    "source,node_type",
+    [
+        pytest.param(" + ".join(["1"] * 1500), BinaryOp, id="addition"),
+        pytest.param(" * ".join(["1"] * 1500), BinaryOp, id="multiplication"),
+        pytest.param("f" + " x" * 1500, Application, id="application"),
+        pytest.param("[" + ",".join(["0"] * 1500) + "]", ListLiteral, id="list-elements"),
+        pytest.param(
+            "let {" + ";".join(f"x{i}=0" for i in range(1500)) + "} in x0",
+            LetExpr,
+            id="local-bindings",
+        ),
+        pytest.param(
+            "\\" + " ".join(f"x{i}" for i in range(1500)) + " -> 0",
+            LambdaExpr,
+            id="lambda-parameters",
+        ),
+    ],
+)
+def test_long_flat_expressions_do_not_exhaust_nesting_budget(source, node_type):
+    assert isinstance(parse_expression(source), node_type)
+
+
+def test_nesting_budget_is_reused_between_application_arguments():
+    argument = "(" * MAX_PARSER_NESTING + "x" + ")" * MAX_PARSER_NESTING
+    result = parse_expression("f " + " ".join([argument] * 3))
+
+    assert result == Application(
+        Application(Application(Var("f"), Var("x")), Var("x")), Var("x")
+    )
+
+
+def test_nesting_budget_is_reused_between_list_elements():
+    element = "(" * (MAX_PARSER_NESTING - 1) + "0" + ")" * (MAX_PARSER_NESTING - 1)
+
+    assert parse_expression("[" + ",".join([element] * 3) + "]") == ListLiteral(
+        (IntLiteral(0), IntLiteral(0), IntLiteral(0))
+    )
+
+
+def test_syntax_errors_within_nesting_limit_keep_their_diagnostic():
+    with pytest.raises(ParserError, match="Expected RPAREN, found EOF") as error:
+        parse_expression("((0)")
+
+    assert error.value.token.kind == TokenKind.EOF
+    assert error.value.column == 5

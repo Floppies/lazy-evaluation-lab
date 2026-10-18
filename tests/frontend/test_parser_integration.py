@@ -1,4 +1,8 @@
+import pytest
+
+from lazy_lab.frontend.errors import ParserError
 from lazy_lab.frontend.parser import (
+    MAX_PARSER_NESTING,
     parse_expression,
     parse_program,
 )
@@ -14,10 +18,12 @@ from lazy_lab.ast.nodes import (
     LetExpr,
     ListLiteral,
     NilPattern,
+    UnaryOp,
     ValueDefinition,
     Var,
     VarPattern,
 )
+from lazy_lab.frontend.tokens import TokenKind
 from lazy_lab.ast.validation import (
     validate_expression,
     validate_program,
@@ -107,4 +113,51 @@ def test_line_endings_produce_equivalent_ast():
     source_crlf = source_lf.replace("\n", "\r\n")
 
     assert parse_program(source_lf) == parse_program(source_crlf)
+
+
+def test_nesting_budget_is_reused_between_program_definitions():
+    expression = "(" * MAX_PARSER_NESTING + "0" + ")" * MAX_PARSER_NESTING
+    source = "first = " + expression + "\nsecond = " + expression
+
+    program = parse_program(source)
+    validate_program(program)
+
+    assert [definition.name for definition in program.definitions] == ["first", "second"]
+    assert all(definition.rhs == IntLiteral(0) for definition in program.definitions)
+
+
+@pytest.mark.parametrize(
+    "source,node_type",
+    [
+        pytest.param("- " * MAX_PARSER_NESTING + "0", UnaryOp, id="unary-negation"),
+        pytest.param(
+            "1 : " * (MAX_PARSER_NESTING - 1) + "[]", BinaryOp, id="cons-and-empty-list"
+        ),
+        pytest.param(
+            "[" * MAX_PARSER_NESTING + "0" + "]" * MAX_PARSER_NESTING,
+            ListLiteral,
+            id="nested-lists",
+        ),
+    ],
+)
+def test_parsed_expression_at_nesting_limit_passes_validation(source, node_type):
+    expression = parse_expression(source)
+
+    validate_expression(expression)
+    assert isinstance(expression, node_type)
+
+
+@pytest.mark.parametrize("ending", ["\n", "\r\n"], ids=["lf", "crlf"])
+def test_program_nesting_error_preserves_location_after_newline_and_tab(ending):
+    prefix = "main = \t"
+    expression = "(" * (MAX_PARSER_NESTING + 1) + "0" + ")" * (MAX_PARSER_NESTING + 1)
+    source = "first = 0" + ending + prefix + expression
+
+    with pytest.raises(ParserError, match="Maximum parser nesting depth") as error:
+        parse_program(source)
+
+    column = len(prefix) + MAX_PARSER_NESTING + 1
+    assert (error.value.line, error.value.column) == (2, column)
+    assert error.value.token.kind == TokenKind.LPAREN
+    assert str(error.value).startswith(f"2:{column}: ")
 

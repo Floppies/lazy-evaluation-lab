@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+from collections.abc import Iterator
+from contextlib import contextmanager
+
 from .tokens import Token, TokenKind
 from .lexer import tokenize
 from .errors import ParserError
@@ -25,6 +28,10 @@ from ..ast.nodes import (
     ValueDefinition,
     FunctionEquation,
 )
+
+# Leave room for the precedence methods on Python's default recursion stack.
+MAX_PARSER_NESTING = 64
+
 _COMPARISON_KINDS = (
     TokenKind.EQEQ,
     TokenKind.NEQ,
@@ -47,6 +54,21 @@ class _Parser:
     def __init__(self, tokens: tuple[Token, ...]):
         self.tokens = tokens
         self.index = 0
+        self._nesting_depth = 0
+
+    @contextmanager
+    def _nested(self, token: Token) -> Iterator[None]:
+        """Count active recursive constructs, independently of precedence calls."""
+        if self._nesting_depth >= MAX_PARSER_NESTING:
+            raise ParserError(
+                f"Maximum parser nesting depth of {MAX_PARSER_NESTING} exceeded",
+                token,
+            )
+        self._nesting_depth += 1
+        try:
+            yield
+        finally:
+            self._nesting_depth -= 1
 
     def _peek(self) -> Token:
         return self.tokens[self.index]
@@ -123,10 +145,12 @@ class _Parser:
                 span=token.span,
             )
 
-        if self._match(TokenKind.LPAREN):
-            expression = self._parse_expression()
-            self._expect(TokenKind.RPAREN)
-            return expression
+        opening = self._match(TokenKind.LPAREN)
+        if opening is not None:
+            with self._nested(opening):
+                expression = self._parse_expression()
+                self._expect(TokenKind.RPAREN)
+                return expression
 
         if token.kind == TokenKind.LBRACKET:
             return self._parse_list()
@@ -155,13 +179,14 @@ class _Parser:
         operator = self._match(TokenKind.MINUS)
 
         if operator is not None:
-            operand = self._parse_unary()
+            with self._nested(operator):
+                operand = self._parse_unary()
 
-            return UnaryOp(
-                operator="-",
-                operand=operand,
-                span=self._span_from(operator),
-            )
+                return UnaryOp(
+                    operator="-",
+                    operand=operand,
+                    span=self._span_from(operator),
+                )
 
         return self._parse_application()
 
@@ -204,73 +229,76 @@ class _Parser:
         start = self._peek()
         left = self._parse_additive()
 
-        if self._match(TokenKind.COLON):
-            right = self._parse_cons()
+        operator = self._match(TokenKind.COLON)
+        if operator is not None:
+            with self._nested(operator):
+                right = self._parse_cons()
 
-            return BinaryOp(
-                operator=":",
-                left=left,
-                right=right,
-                span=self._span_from(start),
-            )
+                return BinaryOp(
+                    operator=":",
+                    left=left,
+                    right=right,
+                    span=self._span_from(start),
+                )
 
         return left
 
     def _parse_list(self) -> ListLiteral:
         start = self._expect(TokenKind.LBRACKET)
-        elements: list[Expr] = []
+        with self._nested(start):
+            elements: list[Expr] = []
 
-        if self._peek().kind != TokenKind.RBRACKET:
-            elements.append(self._parse_expression())
-
-            while self._match(TokenKind.COMMA):
+            if self._peek().kind != TokenKind.RBRACKET:
                 elements.append(self._parse_expression())
 
-        self._expect(TokenKind.RBRACKET)
+                while self._match(TokenKind.COMMA):
+                    elements.append(self._parse_expression())
 
-        return ListLiteral(
-            elements=tuple(elements),
-            span=self._span_from(start),
-        )
+            self._expect(TokenKind.RBRACKET)
+
+            return ListLiteral(
+                elements=tuple(elements),
+                span=self._span_from(start),
+            )
 
     def _parse_lambda(self) -> LambdaExpr:
         start = self._expect(TokenKind.BACKSLASH)
+        with self._nested(start):
+            parameters = []
 
-        parameters = []
+            first = self._expect(TokenKind.IDENT)
+            parameters.append(first.lexeme)
 
-        first = self._expect(TokenKind.IDENT)
-        parameters.append(first.lexeme)
+            while self._peek().kind == TokenKind.IDENT:
+                parameters.append(self._advance().lexeme)
 
-        while self._peek().kind == TokenKind.IDENT:
-            parameters.append(self._advance().lexeme)
+            self._expect(TokenKind.ARROW)
 
-        self._expect(TokenKind.ARROW)
+            body = self._parse_expression()
 
-        body = self._parse_expression()
-
-        return LambdaExpr(
-            parameters=tuple(parameters),
-            body=body,
-            span=self._span_from(start),
-        )
+            return LambdaExpr(
+                parameters=tuple(parameters),
+                body=body,
+                span=self._span_from(start),
+            )
 
     def _parse_if(self) -> IfExpr:
         start = self._expect(TokenKind.IF)
+        with self._nested(start):
+            condition = self._parse_expression()
 
-        condition = self._parse_expression()
+            self._expect(TokenKind.THEN)
+            then_branch = self._parse_expression()
 
-        self._expect(TokenKind.THEN)
-        then_branch = self._parse_expression()
+            self._expect(TokenKind.ELSE)
+            else_branch = self._parse_expression()
 
-        self._expect(TokenKind.ELSE)
-        else_branch = self._parse_expression()
-
-        return IfExpr(
-            condition=condition,
-            then_branch=then_branch,
-            else_branch=else_branch,
-            span=self._span_from(start),
-        )
+            return IfExpr(
+                condition=condition,
+                then_branch=then_branch,
+                else_branch=else_branch,
+                span=self._span_from(start),
+            )
 
     def _parse_comparison(self) -> Expr:
         start = self._peek()
@@ -318,24 +346,24 @@ class _Parser:
 
     def _parse_let(self) -> LetExpr:
         start = self._expect(TokenKind.LET)
+        with self._nested(start):
+            self._expect(TokenKind.LBRACE)
 
-        self._expect(TokenKind.LBRACE)
+            bindings = [self._parse_local_binding()]
 
-        bindings = [self._parse_local_binding()]
+            while self._match(TokenKind.SEMICOLON):
+                bindings.append(self._parse_local_binding())
 
-        while self._match(TokenKind.SEMICOLON):
-            bindings.append(self._parse_local_binding())
+            self._expect(TokenKind.RBRACE)
+            self._expect(TokenKind.IN)
 
-        self._expect(TokenKind.RBRACE)
-        self._expect(TokenKind.IN)
+            body = self._parse_expression()
 
-        body = self._parse_expression()
-
-        return LetExpr(
-            bindings=tuple(bindings),
-            body=body,
-            span=self._span_from(start),
-        )
+            return LetExpr(
+                bindings=tuple(bindings),
+                body=body,
+                span=self._span_from(start),
+            )
 
     def _parse_pattern(self) -> Pattern:
         token = self._peek()

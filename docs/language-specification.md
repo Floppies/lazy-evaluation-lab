@@ -534,6 +534,9 @@ The illustrative lines above demonstrate expression parsing; a complete source p
 - Variable-pattern equations do not require a match-time evaluation of the inspected argument; constructor-pattern equations may require evaluation to WHNF.
 - The initial grammar does not include division, logical operators, string literals or floating-point literals.
 - Function application is defined by juxtaposition rather than mandatory whitespace. Lexically distinct adjacent expressions may form an application (e.g., `f(2)`), while whitespace is required when adjacent characters would otherwise form a single token (e.g., `f x`). The parser determines application from the token sequence without inspecting whitespace between tokens.
+- Parser nesting limit (v0.1): The initial recursive-descent parser imposes an implementation-defined maximum nesting depth for recursive expression constructs, including parenthesized expressions, unary negation, cons chains, and nested compound expressions. Inputs exceeding the documented limit produce a located ParserError rather than an uncaught Python RecursionError. This is an implementation resource limit, not a restriction of the abstract language grammar. Long expressions that do not increase recursive nesting depth are not subject to this particular limit.
+
+The v0.1 implementation sets `MAX_PARSER_NESTING = 64`. A literal or variable by itself uses depth zero. Each active parenthesized expression, unary negation, list literal (including `[]`), lambda, conditional, or `let` expression uses one level; each cons operator uses one level while its right-hand side is parsed. Different constructs share this budget. Precedence-method calls do not count as levels. Completed constructs release their level, so sibling arguments, elements, branches, bindings, and separate definitions do not accumulate depth. The error identifies the opening token or operator that would enter level 65.
 
 ### 8.4 Comments
 

@@ -242,3 +242,148 @@ def test_large_list_literal_lowering():
 
     assert isinstance(result, core.CoreCon)
     assert result.constructor == "Cons"
+
+def test_local_value_lowering():
+    expression = parse_expression(
+        "let { x = 10 } in x"
+    )
+
+    result = lower_expression(expression)
+    validate_core_expression(result)
+
+    expected = core.CoreLetRec(
+        bindings=(
+            core.CoreBinding(
+                "x",
+                core.CoreInt(10),
+            ),
+        ),
+        body=core.CoreVar("x"),
+    )
+
+    assert result == expected
+
+def test_local_function_currying():
+    expression = parse_expression(
+        "let { add x y = x + y } in add 2 3"
+    )
+
+    result = lower_expression(expression)
+    validate_core_expression(result)
+
+    expected = core.CoreLetRec(
+        bindings=(
+            core.CoreBinding(
+                "add",
+                core.CoreLam(
+                    "x",
+                    core.CoreLam(
+                        "y",
+                        core.CorePrimOp(
+                            "+",
+                            (
+                                core.CoreVar("x"),
+                                core.CoreVar("y"),
+                            ),
+                        ),
+                    ),
+                ),
+            ),
+        ),
+        body=core.CoreApp(
+            core.CoreApp(
+                core.CoreVar("add"),
+                core.CoreInt(2),
+            ),
+            core.CoreInt(3),
+        ),
+    )
+
+    assert result == expected
+
+def test_mutually_recursive_local_bindings():
+    expression = parse_expression(
+        "let { x = y; y = 10 } in x"
+    )
+
+    result = lower_expression(expression)
+    validate_core_expression(result)
+
+    assert result == core.CoreLetRec(
+        bindings=(
+            core.CoreBinding("x", core.CoreVar("y")),
+            core.CoreBinding("y", core.CoreInt(10)),
+        ),
+        body=core.CoreVar("x"),
+    )
+
+def test_recursive_local_function():
+    source = (
+        "let { factorial n = "
+        "if n == 0 then 1 else n * factorial (n - 1) } "
+        "in factorial 5"
+    )
+
+    expression = parse_expression(source)
+    result = lower_expression(expression)
+
+    validate_core_expression(result)
+
+    assert isinstance(result, core.CoreLetRec)
+
+    binding = result.bindings[0]
+
+    assert binding.name == "factorial"
+    assert isinstance(binding.rhs, core.CoreLam)
+    assert isinstance(binding.rhs.body, core.CoreIf)
+
+def test_nested_let_shadowing():
+    expression = parse_expression(
+        "let { x = 10 } in let { x = 20 } in x"
+    )
+
+    result = lower_expression(expression)
+    validate_core_expression(result)
+
+    assert isinstance(result, core.CoreLetRec)
+    assert isinstance(result.body, core.CoreLetRec)
+
+    assert result.bindings[0].name == "x"
+    assert result.body.bindings[0].name == "x"
+
+def test_local_binding_rhs_is_not_evaluated():
+    expression = parse_expression(
+        "let { x = 1 + 2 } in 0"
+    )
+
+    result = lower_expression(expression)
+    validate_core_expression(result)
+
+    assert isinstance(
+        result.bindings[0].rhs,
+        core.CorePrimOp,
+    )
+
+    assert result.bindings[0].rhs.operator == "+"
+    assert result.body == core.CoreInt(0)
+
+def test_local_binding_preserves_source_spans():
+    expression = parse_expression(
+        "let { double x = x * 2 } in double 10"
+    )
+
+    result = lower_expression(expression)
+
+    surface_binding = expression.bindings[0]
+    core_binding = result.bindings[0]
+
+    assert result.span == expression.span
+    assert core_binding.span == surface_binding.span
+    assert core_binding.rhs.span == surface_binding.span
+
+    assert (
+        core_binding.rhs.body.span
+        == surface_binding.rhs.span
+    )
+
+    assert result.body.span == expression.body.span

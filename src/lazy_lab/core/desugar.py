@@ -20,6 +20,23 @@ class DesugaringError(ValueError):
 
         super().__init__(message)
 
+def _curry(
+        parameters: tuple[str, ...],
+        body: core.CoreExpr,
+        span: SourceSpan | None,
+    ) -> core.CoreExpr:
+        """Wrap an expression in nested unary Core lambdas."""
+        result = body
+
+        for parameter in reversed(parameters):
+            result = core.CoreLam(
+                parameter=parameter,
+                body=result,
+                span=span,
+            )
+
+        return result
+
 def _lower_expr(expr: surface.Expr) -> core.CoreExpr:
     if isinstance(expr, surface.IntLiteral):
         return core.CoreInt(
@@ -74,16 +91,11 @@ def _lower_expr(expr: surface.Expr) -> core.CoreExpr:
         )
 
     if isinstance(expr, surface.LambdaExpr):
-        body = _lower_expr(expr.body)
-
-        for parameter in reversed(expr.parameters):
-            body = core.CoreLam(
-                parameter=parameter,
-                body=body,
-                span=expr.span,
-            )
-
-        return body
+        return _curry(
+            parameters=expr.parameters,
+            body=_lower_expr(expr.body),
+            span=expr.span,
+        )
 
     if isinstance(expr, surface.IfExpr):
         return core.CoreIf(
@@ -111,6 +123,32 @@ def _lower_expr(expr: surface.Expr) -> core.CoreExpr:
             )
 
         return result
+
+    if isinstance(expr, surface.LetExpr):
+        bindings: list[core.CoreBinding] = []
+
+        for binding in expr.bindings:
+            rhs = _lower_expr(binding.rhs)
+
+            curried_rhs = _curry(
+                parameters=binding.parameters,
+                body=rhs,
+                span=binding.span,
+            )
+
+            bindings.append(
+                core.CoreBinding(
+                    name=binding.name,
+                    rhs=curried_rhs,
+                    span=binding.span,
+                )
+            )
+
+        return core.CoreLetRec(
+            bindings=tuple(bindings),
+            body=_lower_expr(expr.body),
+            span=expr.span,
+        )
 
     raise DesugaringError(
         f"Unsupported Surface expression: {type(expr).__name__}",

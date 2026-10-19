@@ -137,6 +137,8 @@ CoreLetRec(
 
 The runtime is responsible for constructing the recursive environment. `CoreLetRec` does not allocate thunks automatically; each evaluator determines how bindings are materialized and how demand cycles are handled.
 
+Global bindings: All bindings contained in CoreProgram belong to a single mutually recursive global scope. Their order is preserved for source correspondence and deterministic representation, but does not restrict name visibility. Runtime environment construction and name resolution must support forward references and mutual recursion between global functions.
+
 ### Constructor inspection
 
 To distinguish constructors, `CoreCase` requires its scrutinee to reach weak head normal form (WHNF), exposing the outer constructor. This inspection does not itself force the constructor's fields. Under lazy evaluation, a `Cons` can therefore be inspected without evaluating its head or tail.

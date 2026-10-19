@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from itertools import groupby
+
 from lazy_lab.ast import nodes as surface
 from lazy_lab.core import nodes as core
 from lazy_lab.source import SourceSpan
@@ -155,6 +157,54 @@ def _lower_expr(expr: surface.Expr) -> core.CoreExpr:
         expr.span,
     )
 
+def _lower_global_group(
+    definitions: tuple[surface.Definition, ...],
+) -> core.CoreBinding:
+    first = definitions[0]
+
+    if len(definitions) != 1:
+        raise DesugaringError(
+            "Multiple function equations are not supported yet",
+            first.span,
+        )
+
+    if isinstance(first, surface.ValueDefinition):
+        rhs = _lower_expr(first.rhs)
+
+    elif isinstance(first, surface.FunctionEquation):
+        if not all(
+            isinstance(pattern, surface.VarPattern)
+            for pattern in first.parameters
+        ):
+            raise DesugaringError(
+                "Constructor patterns are not supported yet",
+                first.span,
+            )
+
+        parameters = tuple(
+            pattern.name
+            for pattern in first.parameters
+        )
+
+        rhs = _curry(
+            parameters=parameters,
+            body=_lower_expr(first.rhs),
+            span=first.span,
+        )
+
+    else:
+        raise DesugaringError(
+            f"Unsupported global definition: {type(first).__name__}",
+            first.span,
+        )
+
+    return core.CoreBinding(
+        name=first.name,
+        rhs=rhs,
+        span=first.span,
+    )
+    
+
 def lower_expression(
     expression: surface.Expr,
 ) -> core.CoreExpr:
@@ -163,3 +213,29 @@ def lower_expression(
         raise TypeError("Expected a Surface Expr")
 
     return _lower_expr(expression)
+
+def lower_program(
+    program: surface.Program,
+) -> core.CoreProgram:
+    """Lower a validated Surface program into Core IR."""
+    if not isinstance(program, surface.Program):
+        raise TypeError("Expected a Surface Program")
+
+    bindings: list[core.CoreBinding] = []
+
+    groups = groupby(
+        program.definitions,
+        key=lambda definition: definition.name,
+    )
+
+    for _, definitions in groups:
+        group = tuple(definitions)
+
+        bindings.append(
+            _lower_global_group(group)
+        )
+
+    return core.CoreProgram(
+        bindings=tuple(bindings),
+        span=program.span,
+    )

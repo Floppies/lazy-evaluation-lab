@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+from collections.abc import Iterator
 from typing import NoReturn
 
 from .nodes import (
@@ -110,6 +111,15 @@ def _check_parameters(
         seen.add(name)
 
 
+def _check_var_pattern(
+    pattern: VarPattern, parent_span: SourceSpan | None
+) -> dict[str, SourceSpan | None]:
+    span = _diagnostic_span(pattern, parent_span)
+    _check_span(pattern, span)
+    _check_identifier(pattern.name, span)
+    return {pattern.name: span}
+
+
 def _check_pattern(
     pattern: Pattern, parent_span: SourceSpan | None = None
 ) -> dict[str, SourceSpan | None]:
@@ -129,8 +139,8 @@ def _check_pattern(
                 "ConsPattern requires two VarPattern children",
                 _diagnostic_span(child, span),
             )
-        head_binders = _check_pattern(pattern.head, span)
-        tail_binders = _check_pattern(pattern.tail, span)
+        head_binders = _check_var_pattern(pattern.head, span)
+        tail_binders = _check_var_pattern(pattern.tail, span)
         for name, binder_span in tail_binders.items():
             _require(
                 name not in head_binders,
@@ -142,6 +152,25 @@ def _check_pattern(
 
 
 def _check_expr(expr: Expr, parent_span: SourceSpan | None = None) -> None:
+    """Drive depth-first validation without using the Python call stack."""
+    stack = [_expr_children(expr, parent_span)]
+    while stack:
+        try:
+            child, span = next(stack[-1])
+        except StopIteration:
+            stack.pop()
+        else:
+            stack.append(_expr_children(child, span))
+
+
+def _expr_children(
+    expr: Expr, parent_span: SourceSpan | None
+) -> Iterator[tuple[Expr, SourceSpan | None]]:
+    """Check local structure, yielding children at their original check points.
+
+    Suspending at each child preserves diagnostic order, including checking a
+    local binding's RHS before inspecting the next binding in the same group.
+    """
     span = _diagnostic_span(expr, parent_span)
     _require(isinstance(expr, Expr), "Expected an Expr", span)
     _check_span(expr, span)
@@ -159,25 +188,25 @@ def _check_expr(expr: Expr, parent_span: SourceSpan | None = None) -> None:
             "Unsupported unary operator",
             span,
         )
-        _check_expr(expr.operand, span)
+        yield expr.operand, span
     elif isinstance(expr, BinaryOp):
         _require(
             isinstance(expr.operator, str) and expr.operator in _BINARY_OPERATORS,
             f"Unsupported binary operator: {expr.operator!r}",
             span,
         )
-        _check_expr(expr.left, span)
-        _check_expr(expr.right, span)
+        yield expr.left, span
+        yield expr.right, span
     elif isinstance(expr, Application):
-        _check_expr(expr.function, span)
-        _check_expr(expr.argument, span)
+        yield expr.function, span
+        yield expr.argument, span
     elif isinstance(expr, LambdaExpr):
         _check_parameters(expr.parameters, span, require_one=True)
-        _check_expr(expr.body, span)
+        yield expr.body, span
     elif isinstance(expr, IfExpr):
-        _check_expr(expr.condition, span)
-        _check_expr(expr.then_branch, span)
-        _check_expr(expr.else_branch, span)
+        yield expr.condition, span
+        yield expr.then_branch, span
+        yield expr.else_branch, span
     elif isinstance(expr, LetExpr):
         _require(isinstance(expr.bindings, tuple), "Let bindings must be a tuple", span)
         _require(len(expr.bindings) >= 1, "LetExpr requires at least one binding", span)
@@ -198,12 +227,12 @@ def _check_expr(expr: Expr, parent_span: SourceSpan | None = None) -> None:
             )
             seen.add(binding.name)
             _check_parameters(binding.parameters, binding_span, require_one=False)
-            _check_expr(binding.rhs, binding_span)
-        _check_expr(expr.body, span)
+            yield binding.rhs, binding_span
+        yield expr.body, span
     elif isinstance(expr, ListLiteral):
         _require(isinstance(expr.elements, tuple), "List elements must be a tuple", span)
         for element in expr.elements:
-            _check_expr(element, span)
+            yield element, span
     else:
         _fail(f"Unsupported Expr node: {type(expr).__name__}", span)
 

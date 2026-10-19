@@ -34,6 +34,8 @@ from lazy_lab.ast.validation import (
     validate_program,
 )
 
+from lazy_lab.frontend.parser import parse_expression
+
 
 def _validate(tree):
     """Exercise only public validators, selecting the appropriate entry point."""
@@ -869,3 +871,75 @@ def test_main_as_value_definition_is_valid():
         ValueDefinition("main", IntLiteral(42)),
     ))
     validate_program(program)
+
+def test_deep_left_associative_ast_validation():
+    source = " + ".join(["1"] * 2000)
+
+    expression = parse_expression(source)
+
+    validate_expression(expression)
+
+_DEEP_WRAPPERS = [
+    pytest.param(lambda child: Application(child, IntLiteral(1)), id="application"),
+    pytest.param(lambda child: BinaryOp("+", child, IntLiteral(1)), id="binary"),
+    pytest.param(lambda child: UnaryOp("-", child), id="unary"),
+    pytest.param(lambda child: LambdaExpr(("x",), child), id="lambda"),
+    pytest.param(lambda child: IfExpr(BoolLiteral(True), child, IntLiteral(0)), id="if"),
+    pytest.param(lambda child: ListLiteral((child,)), id="list"),
+    pytest.param(
+        lambda child: LetExpr((LocalBinding("x", (), child),), Var("x")),
+        id="let-rhs",
+    ),
+    pytest.param(
+        lambda child: LetExpr((LocalBinding("x", (), IntLiteral(0)),), child),
+        id="let-body",
+    ),
+]
+
+
+def _nest(build, leaf):
+    for _ in range(2000):
+        leaf = build(leaf)
+    return leaf
+
+
+@pytest.mark.parametrize("build", _DEEP_WRAPPERS)
+def test_deep_constructed_expression_and_program(build):
+    expression = _nest(build, IntLiteral(1))
+    validate_expression(expression)
+    validate_program(Program((
+        ValueDefinition("main", expression),
+        FunctionEquation("f", (VarPattern("x"),), expression),
+    )))
+
+
+@pytest.mark.parametrize("build", _DEEP_WRAPPERS)
+@pytest.mark.parametrize("located_leaf", [False, True])
+def test_deep_invalid_descendant_location(build, located_leaf):
+    leaf = Var("if", span=_CHILD_SPAN if located_leaf else None)
+    expression = _nest(build, leaf)
+    # An inner located ancestor must take precedence over the program span.
+    expression = replace(expression, span=_CHILD_SPAN)
+    program = Program((ValueDefinition("main", expression),), span=_PARENT_SPAN)
+    for tree in (expression, program):
+        with pytest.raises(ASTValidationError, match="^3:10: Invalid identifier: 'if'$"):
+            _validate(tree)
+
+
+def test_local_rhs_error_precedes_later_binding_checks():
+    expression = LetExpr((
+        LocalBinding("x", (), Var("if", span=_CHILD_SPAN)),
+        LocalBinding("x", (), IntLiteral(0)),
+    ), Var("x"))
+    with pytest.raises(ASTValidationError, match="^3:10: Invalid identifier"):
+        validate_expression(expression)
+
+
+def test_first_child_error_precedes_later_child_errors():
+    expression = IfExpr(
+        Var("if", span=_CHILD_SPAN),
+        Var("then", span=_PARENT_SPAN),
+        None,
+    )
+    with pytest.raises(ASTValidationError, match="^3:10: Invalid identifier: 'if'$"):
+        validate_expression(expression)

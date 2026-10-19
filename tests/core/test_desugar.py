@@ -690,4 +690,37 @@ def test_complete_program_lowering_is_deterministic():
 
     assert first == second
 
-    
+def test_complete_lowering_pipeline():
+    source = (
+        "map f [] = []\n"
+        "map f (x:xs) = f x : map f xs\n"
+        "main = let { double x = x * 2 } "
+        "in map double [1, 2, 3]"
+    )
+
+    surface_program = parse_program(source)
+    validate_program(surface_program)
+
+    core_program = lower_program(surface_program)
+    validate_core_program(core_program)
+
+    assert isinstance(core_program, core.CoreProgram)
+    assert len(core_program.bindings) == 2
+
+
+@pytest.mark.parametrize("validate_surface", [False, True], ids=["lower-only", "pipeline"])
+def test_deep_addition_lowering_pipeline(validate_surface):
+    source = " + ".join(["1"] * 2000)
+    expression = parse_expression(source)
+    if validate_surface:
+        validate_expression(expression)
+    result = lower_expression(expression)
+    validate_core_expression(result)
+    terms = 1
+    while isinstance(result, core.CorePrimOp):
+        assert result.operator == "+"
+        assert result.arguments[1] == core.CoreInt(1)
+        result = result.arguments[0]
+        terms += 1
+    assert result == core.CoreInt(1)
+    assert terms == 2000

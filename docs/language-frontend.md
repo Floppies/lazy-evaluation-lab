@@ -47,6 +47,8 @@ Parses one standalone expression. This entry point supports the laboratory's use
 
 Validation is explicit and separate from parsing. It checks AST structure, supported operators, identifiers, binding restrictions, and function equation groups.
 
+Both validators traverse expressions with an explicit depth-first stack. Already constructed ASTs, including long left-associative chains and deeply nested local bindings, are validated without depending on Python recursion depth or imposing an AST-depth limit. The parser's 64-context nesting limit applies to recursive syntax parsing only; long left-associative addition chains do not consume those nesting contexts.
+
 ## Error Handling
 
 - `LexerError`: invalid lexical input.

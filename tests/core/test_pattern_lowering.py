@@ -170,3 +170,205 @@ def test_pattern_lowering_is_deterministic():
     second = lower_source(source)
 
     assert first == second
+
+def test_redundant_equations_preserve_first_match():
+    result = lower_source(
+        "f [] = 1\n"
+        "f [] = 2\n"
+        "f (x:xs) = 3\n"
+        "f ys = 4\n"
+        "f [] = 5"
+    )
+
+    function = result.bindings[0].rhs
+    assert isinstance(function, core.CoreLam)
+
+    case = function.body
+    assert isinstance(case, core.CoreCase)
+
+    assert len(case.alternatives) == 3
+
+    nil_alt, cons_alt, default_alt = case.alternatives
+
+    assert isinstance(nil_alt, core.CoreConAlt)
+    assert nil_alt.constructor == "Nil"
+    assert nil_alt.body == core.CoreInt(1)
+
+    assert isinstance(cons_alt, core.CoreConAlt)
+    assert cons_alt.constructor == "Cons"
+    assert cons_alt.body == core.CoreInt(3)
+
+    assert isinstance(default_alt, core.CoreDefaultAlt)
+    assert isinstance(default_alt.body, core.CoreLetRec)
+    assert default_alt.body.body == core.CoreInt(4)
+
+def test_first_catchall_avoids_case_and_generated_bindings():
+    result = lower_source(
+        "f a b = a\n"
+        "f x [] = 99\n"
+        "f y (h:t) = 100"
+    )
+
+    assert result.bindings[0].rhs == core.CoreLam(
+        "a",
+        core.CoreLam(
+            "b",
+            core.CoreVar("a"),
+        ),
+    )
+
+def test_each_equation_binds_its_own_parameter_names():
+    result = lower_source(
+        "f first [] = first\n"
+        "f second (head:tail) = second"
+    )
+
+    function = result.bindings[0].rhs
+    assert isinstance(function, core.CoreLam)
+
+    first_argument = function.parameter
+
+    second_lambda = function.body
+    assert isinstance(second_lambda, core.CoreLam)
+
+    case = second_lambda.body
+    assert isinstance(case, core.CoreCase)
+
+    # Only the final argument is inspected.
+    assert case.scrutinee == core.CoreVar(
+        second_lambda.parameter
+    )
+
+    nil_alt, cons_alt = case.alternatives
+
+    assert isinstance(nil_alt.body, core.CoreLetRec)
+    assert nil_alt.body.bindings == (
+        core.CoreBinding(
+            "first",
+            core.CoreVar(first_argument),
+        ),
+    )
+    assert nil_alt.body.body == core.CoreVar("first")
+
+    assert isinstance(cons_alt.body, core.CoreLetRec)
+    assert cons_alt.body.bindings == (
+        core.CoreBinding(
+            "second",
+            core.CoreVar(first_argument),
+        ),
+    )
+    assert cons_alt.body.body == core.CoreVar("second")
+
+def test_constructor_pattern_does_not_inspect_fields():
+    result = lower_source(
+        "f (head:tail) = 10"
+    )
+
+    function = result.bindings[0].rhs
+    assert isinstance(function, core.CoreLam)
+
+    case = function.body
+    assert isinstance(case, core.CoreCase)
+
+    assert len(case.alternatives) == 1
+
+    alternative = case.alternatives[0]
+
+    assert isinstance(alternative, core.CoreConAlt)
+    assert alternative.constructor == "Cons"
+    assert alternative.binders == ("head", "tail")
+    assert alternative.body == core.CoreInt(10)
+
+def test_non_exhaustive_matching_is_preserved():
+    result = lower_source("f [] = 0")
+
+    function = result.bindings[0].rhs
+    assert isinstance(function, core.CoreLam)
+
+    case = function.body
+    assert isinstance(case, core.CoreCase)
+
+    assert len(case.alternatives) == 1
+    assert isinstance(
+        case.alternatives[0],
+        core.CoreConAlt,
+    )
+    assert case.alternatives[0].constructor == "Nil"
+
+def test_equations_after_fallback_are_unreachable():
+    result = lower_source(
+        "f [] = 0\n"
+        "f x = x\n"
+        "f (h:t) = 99"
+    )
+
+    function = result.bindings[0].rhs
+    assert isinstance(function, core.CoreLam)
+
+    case = function.body
+    assert isinstance(case, core.CoreCase)
+
+    assert len(case.alternatives) == 2
+    assert isinstance(case.alternatives[0], core.CoreConAlt)
+    assert isinstance(case.alternatives[1], core.CoreDefaultAlt)
+
+def test_pattern_matching_full_program_integration():
+    source = (
+        "length [] = 0\n"
+        "length (x:xs) = 1 + length xs\n"
+        "main = let { values = [1, 2, 3] } in length values"
+    )
+
+    result = lower_source(source)
+
+    assert len(result.bindings) == 2
+    assert [binding.name for binding in result.bindings] == [
+        "length",
+        "main",
+    ]
+
+    length_function = result.bindings[0].rhs
+    assert isinstance(length_function, core.CoreLam)
+    assert isinstance(length_function.body, core.CoreCase)
+
+    main_expression = result.bindings[1].rhs
+    assert isinstance(main_expression, core.CoreLetRec)
+
+    values_binding = main_expression.bindings[0]
+    assert values_binding.name == "values"
+    assert isinstance(values_binding.rhs, core.CoreCon)
+    assert values_binding.rhs.constructor == "Cons"
+
+    assert isinstance(main_expression.body, core.CoreApp)
+
+def test_pattern_alternatives_preserve_source_spans():
+    source = (
+        "f [] = 0\n"
+        "f (head:tail) = head"
+    )
+
+    surface_program = parse_program(source)
+    validate_program(surface_program)
+
+    result = lower_program(surface_program)
+
+    function = result.bindings[0].rhs
+    assert isinstance(function, core.CoreLam)
+
+    case = function.body
+    assert isinstance(case, core.CoreCase)
+
+    first_equation, second_equation = surface_program.definitions
+
+    assert function.span == first_equation.span
+
+    assert (
+        case.alternatives[0].span
+        == first_equation.parameters[-1].span
+    )
+
+    assert (
+        case.alternatives[1].span
+        == second_equation.parameters[-1].span
+    )
+

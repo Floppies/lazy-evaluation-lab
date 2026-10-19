@@ -496,7 +496,6 @@ def test_empty_program_lowering():
 
     assert result == core.CoreProgram(())
 
-#TODO Later check when implementation done
 @pytest.mark.parametrize(
     "source",
     [
@@ -505,17 +504,11 @@ def test_empty_program_lowering():
         "map f (x:xs) = f x",
     ],
 )
-def test_constructor_patterns_are_not_yet_supported(source):
+def test_constructor_patterns(source):
     program = parse_program(source)
     validate_program(program)
+    lower_program(program)
 
-    with pytest.raises(
-        DesugaringError,
-        match="Constructor patterns are not supported yet",
-    ):
-        lower_program(program)
-
-#TODO Later check when implementation done
 def test_multiple_equations_are_not_silently_discarded():
     source = (
         "f x = 1\n"
@@ -524,12 +517,7 @@ def test_multiple_equations_are_not_silently_discarded():
 
     program = parse_program(source)
     validate_program(program)
-
-    with pytest.raises(
-        DesugaringError,
-        match="Multiple function equations are not supported yet",
-    ):
-        lower_program(program)
+    lower_program(program)
 
 def test_global_source_spans_are_preserved():
     source = "double x = x * 2\nmain = double 10"

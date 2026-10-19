@@ -179,6 +179,14 @@ Core, a future STG-like representation, and runtime objects remain separate repr
 
 There is no `CoreThunk` node. A thunk is an object an evaluator may create to defer evaluation, rather than a syntactic property of a Core expression. For an application such as `f (1 + 2)`, CBV may evaluate the argument before application, CBN may retain the expression without memoizing it, and CBNeed may allocate a thunk and memoize its result. The Core tree is the same.
 
+## Desugaring Implementation
+
+Surface-to-Core desugaring uses an explicit postorder traversal for expression trees. This avoids Python recursion-depth failures when lowering deeply nested Surface AST structures, including long left-associative operator chains.
+
+The transformation preserves source-level expression structure, introduces unary lambdas, normalizes list constructors, and compiles ordered function equations to Core case expressions when constructor inspection is required.
+
+Desugaring does not evaluate expressions, perform name resolution, eliminate unused bindings, or select an evaluation strategy.
+
 ## Current Limitations
 
 - Validation does not resolve names or check scopes; `CoreVar("unknown")` is structurally valid.

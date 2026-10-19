@@ -1,6 +1,7 @@
 import pytest
 
-from lazy_lab.ast.validation import validate_expression
+from lazy_lab.ast.validation import validate_expression, validate_program
+from lazy_lab.ast import nodes as surface
 from lazy_lab.frontend.parser import parse_expression
 
 from lazy_lab.core import nodes as core
@@ -8,7 +9,6 @@ from lazy_lab.core.desugar import lower_expression
 from lazy_lab.core.validation import validate_core_expression
 
 from lazy_lab.frontend.parser import parse_program
-from lazy_lab.ast.validation import validate_program
 from lazy_lab.core.desugar import (
     DesugaringError,
     lower_program,
@@ -541,3 +541,153 @@ def test_global_source_spans_are_preserved():
         result.bindings[1].span
         == program.definitions[1].span
     )
+
+def test_deep_left_associative_expression_lowering():
+    count = 2000
+    source = " + ".join(["1"] * count)
+
+    expression = parse_expression(source)
+    result = lower_expression(expression)
+
+    validate_core_expression(result)
+
+    # Walk the left-associated Core tree iteratively.
+    current = result
+    operators = 0
+
+    while isinstance(current, core.CorePrimOp):
+        assert current.operator == "+"
+        assert current.arguments[1] == core.CoreInt(1)
+
+        current = current.arguments[0]
+        operators += 1
+
+    assert operators == count - 1
+    assert current == core.CoreInt(1)
+
+def test_deep_nested_let_lowering():
+    expression: surface.Expr = surface.IntLiteral(0)
+
+    for _ in range(1500):
+        expression = surface.LetExpr(
+            bindings=(
+                surface.LocalBinding(
+                    "x",
+                    (),
+                    surface.IntLiteral(1),
+                ),
+            ),
+            body=expression,
+        )
+
+    result = lower_expression(expression)
+    validate_core_expression(result)
+
+    depth = 0
+    current = result
+
+    while isinstance(current, core.CoreLetRec):
+        depth += 1
+        current = current.body
+
+    assert depth == 1500
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        "1 + 2 * 3",
+        r"\x y -> x + y",
+        "if True then 1 else 2",
+        "let { x = 10 } in x + 2",
+        "[1, 2, 3]",
+        "1 : 2 : []",
+    ],
+)
+def test_standalone_and_program_rhs_lowering_are_equal(source):
+    standalone = parse_expression(source)
+    validate_expression(standalone)
+
+    program = parse_program(f"main = {source}")
+    validate_program(program)
+
+    standalone_core = lower_expression(standalone)
+    program_core = lower_program(program).bindings[0].rhs
+
+    assert standalone_core == program_core
+
+def test_foldr_program_lowering():
+    source = (
+        "foldr f z [] = z\n"
+        "foldr f z (x:xs) = f x (foldr f z xs)\n"
+        "main = foldr (\\x acc -> x + acc) 0 [1, 2, 3]"
+    )
+
+    program = parse_program(source)
+    validate_program(program)
+
+    result = lower_program(program)
+    validate_core_program(result)
+
+    assert [binding.name for binding in result.bindings] == [
+        "foldr",
+        "main",
+    ]
+
+    function = result.bindings[0].rhs
+
+    assert isinstance(function, core.CoreLam)
+    assert isinstance(function.body, core.CoreLam)
+    assert isinstance(function.body.body, core.CoreLam)
+
+    case = function.body.body.body
+
+    assert isinstance(case, core.CoreCase)
+
+    assert [
+        alternative.constructor
+        for alternative in case.alternatives
+    ] == ["Nil", "Cons"]
+
+def test_lowering_preserves_unused_recursive_binding():
+    source = (
+        "let { x = x } "
+        "in if False then x else 10"
+    )
+
+    expression = parse_expression(source)
+    validate_expression(expression)
+
+    result = lower_expression(expression)
+    validate_core_expression(result)
+
+    assert isinstance(result, core.CoreLetRec)
+
+    assert result.bindings == (
+        core.CoreBinding("x", core.CoreVar("x")),
+    )
+
+    assert isinstance(result.body, core.CoreIf)
+
+    assert result.body.condition == core.CoreBool(False)
+    assert result.body.then_branch == core.CoreVar("x")
+    assert result.body.else_branch == core.CoreInt(10)
+
+def test_complete_program_lowering_is_deterministic():
+    source = (
+        "map f [] = []\n"
+        "map f (x:xs) = f x : map f xs\n"
+        "main = map (\\x -> x * 2) [1, 2, 3]"
+    )
+
+    program = parse_program(source)
+    validate_program(program)
+
+    first = lower_program(program)
+    second = lower_program(program)
+
+    validate_core_program(first)
+    validate_core_program(second)
+
+    assert first == second
+
+    

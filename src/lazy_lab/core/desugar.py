@@ -40,123 +40,181 @@ def _curry(
 
         return result
 
-def _lower_expr(expr: surface.Expr) -> core.CoreExpr:
-    if isinstance(expr, surface.IntLiteral):
-        return core.CoreInt(
-            value=expr.value,
-            span=expr.span,
-        )
-
-    if isinstance(expr, surface.BoolLiteral):
-        return core.CoreBool(
-            value=expr.value,
-            span=expr.span,
-        )
-
-    if isinstance(expr, surface.Var):
-        return core.CoreVar(
-            name=expr.name,
-            span=expr.span,
-        )
+def _children(
+    expr: surface.Expr,
+) -> tuple[surface.Expr, ...]:
+    """Return direct children in source evaluation-tree order."""
+    if isinstance(
+        expr,
+        (surface.IntLiteral, surface.BoolLiteral, surface.Var),
+    ):
+        return ()
 
     if isinstance(expr, surface.UnaryOp):
-        return core.CorePrimOp(
-            operator="negate",
-            arguments=(_lower_expr(expr.operand),),
-            span=expr.span,
-        )
+        return (expr.operand,)
 
     if isinstance(expr, surface.BinaryOp):
-        if expr.operator == ":":
-            return core.CoreCon(
-                constructor="Cons",
-                fields=(
-                    _lower_expr(expr.left),
-                    _lower_expr(expr.right),
-                ),
-                span=expr.span,
-            )
-
-        return core.CorePrimOp(
-            operator=expr.operator,
-            arguments=(
-                _lower_expr(expr.left),
-                _lower_expr(expr.right),
-            ),
-            span=expr.span,
-        )
+        return (expr.left, expr.right)
 
     if isinstance(expr, surface.Application):
-        return core.CoreApp(
-            function=_lower_expr(expr.function),
-            argument=_lower_expr(expr.argument),
-            span=expr.span,
-        )
+        return (expr.function, expr.argument)
 
     if isinstance(expr, surface.LambdaExpr):
-        return _curry(
-            parameters=expr.parameters,
-            body=_lower_expr(expr.body),
-            span=expr.span,
-        )
+        return (expr.body,)
 
     if isinstance(expr, surface.IfExpr):
-        return core.CoreIf(
-            condition=_lower_expr(expr.condition),
-            then_branch=_lower_expr(expr.then_branch),
-            else_branch=_lower_expr(expr.else_branch),
-            span=expr.span,
+        return (
+            expr.condition,
+            expr.then_branch,
+            expr.else_branch,
+        )
+
+    if isinstance(expr, surface.LetExpr):
+        return (
+            *(binding.rhs for binding in expr.bindings),
+            expr.body,
         )
 
     if isinstance(expr, surface.ListLiteral):
-        result: core.CoreExpr = core.CoreCon(
-            constructor="Nil",
-            fields=(),
-            span=expr.span,
-        )
-
-        for element in reversed(expr.elements):
-            result = core.CoreCon(
-                constructor="Cons",
-                fields=(
-                    _lower_expr(element),
-                    result,
-                ),
-                span=expr.span,
-            )
-
-        return result
-
-    if isinstance(expr, surface.LetExpr):
-        bindings: list[core.CoreBinding] = []
-
-        for binding in expr.bindings:
-            rhs = _lower_expr(binding.rhs)
-
-            curried_rhs = _curry(
-                parameters=binding.parameters,
-                body=rhs,
-                span=binding.span,
-            )
-
-            bindings.append(
-                core.CoreBinding(
-                    name=binding.name,
-                    rhs=curried_rhs,
-                    span=binding.span,
-                )
-            )
-
-        return core.CoreLetRec(
-            bindings=tuple(bindings),
-            body=_lower_expr(expr.body),
-            span=expr.span,
-        )
+        return expr.elements
 
     raise DesugaringError(
         f"Unsupported Surface expression: {type(expr).__name__}",
         expr.span,
     )
+
+def _take_results(
+    results: list[core.CoreExpr],
+    count: int,
+) -> tuple[core.CoreExpr, ...]:
+    """Remove the last count results, preserving their order."""
+    if count == 0:
+        return ()
+
+    values = tuple(results[-count:])
+    del results[-count:]
+
+    return values
+
+def _lower_expr(expr: surface.Expr) -> core.CoreExpr:
+    pending: list[tuple[surface.Expr, bool]] = [(expr, False)]
+    results: list[core.CoreExpr] = []
+
+    while pending:
+        node, expanded = pending.pop()
+
+        children = _children(node)
+
+        if not expanded:
+            pending.append((node, True))
+
+            for child in reversed(children):
+                pending.append((child, False))
+
+            continue
+
+        values = _take_results(results, len(children))
+
+        if isinstance(node, surface.IntLiteral):
+            lowered = core.CoreInt(node.value, span=node.span)
+
+        elif isinstance(node, surface.BoolLiteral):
+            lowered = core.CoreBool(node.value, span=node.span)
+
+        elif isinstance(node, surface.Var):
+            lowered = core.CoreVar(node.name, span=node.span)
+
+        elif isinstance(node, surface.UnaryOp):
+            lowered = core.CorePrimOp(
+                "negate",
+                values,
+                span=node.span,
+            )
+
+        elif isinstance(node, surface.BinaryOp):
+            if node.operator == ":":
+                lowered = core.CoreCon(
+                    "Cons",
+                    values,
+                    span=node.span,
+                )
+            else:
+                lowered = core.CorePrimOp(
+                    node.operator,
+                    values,
+                    span=node.span,
+                )
+
+        elif isinstance(node, surface.Application):
+            lowered = core.CoreApp(
+                values[0],
+                values[1],
+                span=node.span,
+            )
+
+        elif isinstance(node, surface.LambdaExpr):
+            lowered = _curry(
+                node.parameters,
+                values[0],
+                node.span,
+            )
+
+        elif isinstance(node, surface.IfExpr):
+            lowered = core.CoreIf(
+                values[0],
+                values[1],
+                values[2],
+                span=node.span,
+            )
+
+        elif isinstance(node, surface.LetExpr):
+            bindings = tuple(
+                core.CoreBinding(
+                    name=binding.name,
+                    rhs=_curry(
+                        binding.parameters,
+                        rhs,
+                        binding.span,
+                    ),
+                    span=binding.span,
+                )
+                for binding, rhs in zip(
+                    node.bindings,
+                    values[:-1],
+                    strict=True,
+                )
+            )
+
+            lowered = core.CoreLetRec(
+                bindings,
+                values[-1],
+                span=node.span,
+            )
+
+        elif isinstance(node, surface.ListLiteral):
+            lowered = core.CoreCon(
+                "Nil",
+                (),
+                span=node.span,
+            )
+
+            for element in reversed(values):
+                lowered = core.CoreCon(
+                    "Cons",
+                    (element, lowered),
+                    span=node.span,
+                )
+
+        else:
+            raise DesugaringError(
+                f"Unsupported Surface expression: "
+                f"{type(node).__name__}",
+                node.span,
+            )
+
+        results.append(lowered)
+
+    return results[0]
 
 def _lower_global_group(
     definitions: tuple[surface.Definition, ...],

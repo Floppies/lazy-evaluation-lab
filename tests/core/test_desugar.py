@@ -7,6 +7,14 @@ from lazy_lab.core import nodes as core
 from lazy_lab.core.desugar import lower_expression
 from lazy_lab.core.validation import validate_core_expression
 
+from lazy_lab.frontend.parser import parse_program
+from lazy_lab.ast.validation import validate_program
+from lazy_lab.core.desugar import (
+    DesugaringError,
+    lower_program,
+)
+from lazy_lab.core.validation import validate_core_program
+
 
 @pytest.mark.parametrize(
     "source, expected",
@@ -387,3 +395,161 @@ def test_local_binding_preserves_source_spans():
     )
 
     assert result.body.span == expression.body.span
+
+def test_global_value_lowering():
+    program = parse_program("main = 42")
+    validate_program(program)
+
+    result = lower_program(program)
+    validate_core_program(result)
+
+    assert result == core.CoreProgram(
+        (
+            core.CoreBinding(
+                "main",
+                core.CoreInt(42),
+            ),
+        ),
+    )
+
+def test_global_function_currying():
+    program = parse_program("add x y = x + y")
+    validate_program(program)
+
+    result = lower_program(program)
+    validate_core_program(result)
+
+    expected = core.CoreProgram(
+        (
+            core.CoreBinding(
+                "add",
+                core.CoreLam(
+                    "x",
+                    core.CoreLam(
+                        "y",
+                        core.CorePrimOp(
+                            "+",
+                            (
+                                core.CoreVar("x"),
+                                core.CoreVar("y"),
+                            ),
+                        ),
+                    ),
+                ),
+            ),
+        ),
+    )
+
+    assert result == expected
+
+def test_multiple_global_definitions():
+    source = (
+        "add x y = x + y\n"
+        "double x = x * 2\n"
+        "main = double (add 2 3)"
+    )
+
+    program = parse_program(source)
+    validate_program(program)
+
+    result = lower_program(program)
+    validate_core_program(result)
+
+    assert len(result.bindings) == 3
+
+    assert [binding.name for binding in result.bindings] == [
+        "add",
+        "double",
+        "main",
+    ]
+
+    assert isinstance(result.bindings[0].rhs, core.CoreLam)
+    assert isinstance(result.bindings[1].rhs, core.CoreLam)
+    assert isinstance(result.bindings[2].rhs, core.CoreApp)
+
+def test_mutually_recursive_global_functions():
+    source = (
+        "isEven n = if n == 0 then True else isOdd (n - 1)\n"
+        "isOdd n = if n == 0 then False else isEven (n - 1)"
+    )
+
+    program = parse_program(source)
+    validate_program(program)
+
+    result = lower_program(program)
+    validate_core_program(result)
+
+    assert len(result.bindings) == 2
+
+    assert result.bindings[0].name == "isEven"
+    assert result.bindings[1].name == "isOdd"
+
+    assert isinstance(result.bindings[0].rhs, core.CoreLam)
+    assert isinstance(result.bindings[1].rhs, core.CoreLam)
+
+def test_empty_program_lowering():
+    program = parse_program("")
+    validate_program(program)
+
+    result = lower_program(program)
+    validate_core_program(result)
+
+    assert result == core.CoreProgram(())
+
+#TODO Later check when implementation done
+@pytest.mark.parametrize(
+    "source",
+    [
+        "length [] = 0",
+        "head (x:xs) = x",
+        "map f (x:xs) = f x",
+    ],
+)
+def test_constructor_patterns_are_not_yet_supported(source):
+    program = parse_program(source)
+    validate_program(program)
+
+    with pytest.raises(
+        DesugaringError,
+        match="Constructor patterns are not supported yet",
+    ):
+        lower_program(program)
+
+#TODO Later check when implementation done
+def test_multiple_equations_are_not_silently_discarded():
+    source = (
+        "f x = 1\n"
+        "f y = 2"
+    )
+
+    program = parse_program(source)
+    validate_program(program)
+
+    with pytest.raises(
+        DesugaringError,
+        match="Multiple function equations are not supported yet",
+    ):
+        lower_program(program)
+
+def test_global_source_spans_are_preserved():
+    source = "double x = x * 2\nmain = double 10"
+
+    program = parse_program(source)
+    result = lower_program(program)
+
+    assert result.span == program.span
+
+    assert (
+        result.bindings[0].span
+        == program.definitions[0].span
+    )
+
+    assert (
+        result.bindings[0].rhs.span
+        == program.definitions[0].span
+    )
+
+    assert (
+        result.bindings[1].span
+        == program.definitions[1].span
+    )

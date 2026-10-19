@@ -194,3 +194,45 @@ Desugaring does not evaluate expressions, perform name resolution, eliminate unu
 - Validation does not check pattern-match exhaustiveness or reachability.
 - Constructors are restricted to `Nil` and `Cons`.
 - Surface-to-Core desugaring, fresh-name generation, name resolution, and runtime evaluation are outside the current Core implementation.
+
+## Surface-to-Core Desugaring
+
+The desugaring stage transforms a structurally valid Surface AST into Core IR without evaluating expressions or selecting an evaluation strategy.
+
+### Transformations
+
+- Multi-parameter functions and lambdas become nested unary `CoreLam` nodes.
+- Applications preserve their left-associative structure.
+- Primitive operations become `CorePrimOp`.
+- List literals and cons expressions become `CoreCon` trees using `Nil` and `Cons`.
+- Local bindings become mutually recursive `CoreLetRec` groups.
+- Global definitions become `CoreProgram` bindings.
+- Ordered function equations are compiled into constructor alternatives using `CoreCase` when constructor inspection is necessary.
+
+### Pattern Matching
+
+Function equations preserve first-match semantics. Redundant and unreachable equations may be omitted from generated Core.
+
+A leading variable-only equation does not introduce a `CoreCase`, avoiding unnecessary constructor inspection.
+
+Only the final function parameter may contain a constructor pattern in language v0.1.
+
+### Implementation
+
+Expression lowering uses an iterative postorder traversal to support deeply nested Surface AST structures without depending on Python's recursion depth.
+
+Compiler-generated identifiers use `FreshNameSupply` and the reserved `$` namespace.
+
+### Guarantees and Boundaries
+
+The desugaring stage:
+
+- Preserves the expression structure required for evaluation.
+- Preserves source locations where available.
+- Does not evaluate expressions.
+- Does not perform name resolution or type checking.
+- Does not allocate runtime closures or thunks.
+- Does not implement CBV, CBN, or CBNeed.
+
+Operational equivalence across evaluation strategies will be tested once the runtime is implemented.
+

@@ -48,9 +48,13 @@ def _lower_expr(expr: surface.Expr) -> core.CoreExpr:
 
     if isinstance(expr, surface.BinaryOp):
         if expr.operator == ":":
-            raise DesugaringError(
-                "Cons operator lowering is not implemented yet",
-                expr.span,
+            return core.CoreCon(
+                constructor="Cons",
+                fields=(
+                    _lower_expr(expr.left),
+                    _lower_expr(expr.right),
+                ),
+                span=expr.span,
             )
 
         return core.CorePrimOp(
@@ -88,6 +92,25 @@ def _lower_expr(expr: surface.Expr) -> core.CoreExpr:
             else_branch=_lower_expr(expr.else_branch),
             span=expr.span,
         )
+
+    if isinstance(expr, surface.ListLiteral):
+        result: core.CoreExpr = core.CoreCon(
+            constructor="Nil",
+            fields=(),
+            span=expr.span,
+        )
+
+        for element in reversed(expr.elements):
+            result = core.CoreCon(
+                constructor="Cons",
+                fields=(
+                    _lower_expr(element),
+                    result,
+                ),
+                span=expr.span,
+            )
+
+        return result
 
     raise DesugaringError(
         f"Unsupported Surface expression: {type(expr).__name__}",

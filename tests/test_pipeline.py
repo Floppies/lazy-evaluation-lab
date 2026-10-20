@@ -68,3 +68,40 @@ def test_undefined_name_reports_correct_location():
     assert str(error.value).startswith(
         "1:8: Undefined identifier: missing"
     )
+
+def test_pipeline_checks_unreachable_duplicate_constructor():
+    source = (
+        "f [] = 0\n"
+        "f [] = missing"
+    )
+
+    with pytest.raises(
+        NameResolutionError,
+        match="missing",
+    ):
+        compile_source(source)
+
+def test_compile_source_handles_deep_left_association():
+    count = 2000
+
+    source = (
+        "x = 1\n"
+        "main = " + " + ".join(["x"] * count)
+    )
+
+    result = compile_source(source)
+
+    assert len(result.bindings) == 2
+
+    expression = result.bindings[1].rhs
+    additions = 0
+
+    while isinstance(expression, core.CorePrimOp):
+        assert expression.operator == "+"
+        assert expression.arguments[1] == core.CoreVar("x")
+
+        expression = expression.arguments[0]
+        additions += 1
+
+    assert additions == count - 1
+    assert expression == core.CoreVar("x")

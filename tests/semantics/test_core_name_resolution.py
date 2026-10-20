@@ -152,3 +152,45 @@ def test_undefined_reference_in_deep_core_tree():
         match="missing",
     ):
         check_core_expression(expression)
+
+def test_core_letrec_binding_does_not_escape():
+    expression = core.CoreApp(
+        function=core.CoreLetRec(
+            bindings=(
+                core.CoreBinding(
+                    "local",
+                    core.CoreInt(10),
+                ),
+            ),
+            body=core.CoreVar("local"),
+        ),
+        argument=core.CoreVar("local"),
+    )
+
+    with pytest.raises(
+        NameResolutionError,
+        match="local",
+    ):
+        check_core_expression(expression)
+
+def test_default_binder_does_not_escape_its_alternative():
+    expression = core.CoreCase(
+        scrutinee=core.CoreCon("Nil", ()),
+        alternatives=(
+            core.CoreConAlt(
+                "Nil",
+                (),
+                core.CoreVar("captured"),
+            ),
+            core.CoreDefaultAlt(
+                "captured",
+                core.CoreInt(1),
+            ),
+        ),
+    )
+
+    with pytest.raises(
+        NameResolutionError,
+        match="captured",
+    ):
+        check_core_expression(expression)

@@ -20,6 +20,7 @@ def check_source(source: str) -> None:
         "main = double 10\ndouble x = x * 2",
         "x = 10\nmain = let { x = 20 } in x",
         "main = (\\x -> x + 1) 10",
+        "main = (\\x -> (\\x -> x) x) 1",
         "main = let { x = y; y = 10 } in x",
         "main = let { x = x } in 10",
         (
@@ -44,6 +45,7 @@ def test_valid_lexical_references(source):
         "main = let { x = missing } in 10",
         "f x = x\nmain = x",
         "f (head:tail) = missing",
+        "f x [] = x\nf y (h:t) = x",
     ],
 )
 def test_undefined_references_are_rejected(source):

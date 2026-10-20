@@ -1,87 +1,77 @@
-
 # Name Resolution
 
-## Purpose
+## Purpose and Public API
 
-Name resolution checks that identifier references correspond to
-lexically visible bindings.
+Name checking verifies that every identifier reference has a lexically visible binding. It does not evaluate expressions or rewrite the AST.
 
-It does not evaluate expressions, perform type checking, or
-construct runtime environments.
+- `check_surface_names(program: surface.Program) -> None`
+- `check_core_names(program: core.CoreProgram) -> None`
 
-## Diagnostic policy
+Both functions require structurally validated inputs. Successful checking returns `None`; an undefined reference raises `NameResolutionError`, with a `SourceSpan` when location information is available.
 
-Every Surface identifier reference must resolve to a visible
-binding, including references in unreachable function equations
-and conditional branches.
+These passes check **visibility**, not the identity of the binding selected by a reference. Lexical lookup will also be required in the runtime.
 
-Unknown identifiers are static errors.
+## Shared Lexical Scope Rules
 
-## Lexical scopes
+- **Global definitions:** All top-level bindings share one mutually recursive scope. Forward references and mutual recursion are allowed regardless of declaration order.
+- **Lambdas:** Parameters are visible only inside their bodies.
+- **Recursive local bindings:** Names in a `let` / `CoreLetRec` group are visible in every binding RHS and in the group body. Local function parameters are visible only in their own RHS.
+- **Shadowing:** Inner bindings may shadow outer ones; the innermost visible binding takes precedence. Duplicate names within a single binding group are handled by structural validation.
+- **Recursion:** Self-reference is legal at the name-checking stage. Termination and cyclic evaluation are runtime concerns.
 
-- Top-level definitions belong to one mutually recursive scope.
-- Lambda parameters are visible inside their bodies.
-- Local `let` bindings are mutually recursive.
-- Function equations have independent parameter scopes.
-- Constructor-pattern binders are visible in their equation RHS.
-- Inner bindings shadow outer bindings.
-- Recursive references are permitted and are not evaluated
-  during name resolution.
+## Surface AST Name Checking
 
-## Pipeline
+`check_surface_names()` checks the complete, validated Surface program **before desugaring**.
 
-1. Parse source code.
-2. Validate the Surface AST.
-3. Check names in the complete Surface AST.
-4. Lower Surface to Core.
-5. Validate the Core IR.
-6. Check Core names, including compiler-generated binders.
+Each `FunctionEquation` has an independent parameter scope. `VarPattern` binds one name, `ConsPattern` binds its head and tail names, and `NilPattern` binds none. The equation's binders are visible only in its RHS.
 
-## Out of scope
+All references are checked, including those in unselected conditional branches, unused local definitions, and unreachable function equations. For example:
 
-- Type checking.
-- Runtime error detection.
-- Blackhole detection.
-- Free-variable capture and closure allocation.
-- Optimization.
-- Evaluation strategy selection.
+```haskell
+f x = 10
+f [] = unknown
+```
 
-## Core Name Checking
+This program raises `NameResolutionError` for `unknown`, even though the second equation would be removed by pattern compilation. This policy addresses audit finding **F02**.
 
-`check_core_names(program)` validates lexical references in a
-structurally valid CoreProgram.
+## Core IR Name Checking
 
-The checker supports:
+`check_core_names()` checks the validated `CoreProgram` produced by desugaring, including compiler-generated identifiers such as `$arg0` and `$match0`.
 
-- Mutually recursive global bindings.
-- Unary lambda parameters.
-- Simultaneous recursive CoreLetRec bindings.
-- CoreConAlt constructor-field binders.
-- CoreDefaultAlt binders.
-- Compiler-generated internal identifiers.
+Core-specific binders are introduced by:
 
-Every alternative of a CoreCase introduces an independent scope.
-Alternative binders are not visible in the case scrutinee.
+- `CoreLam`: its parameter.
+- `CoreLetRec`: all bindings in its mutually recursive group.
+- `CoreConAlt`: its constructor-field binders.
+- `CoreDefaultAlt`: its default binder.
 
-Traversal is iterative and does not depend on Python recursion depth.
+Each `CoreCase` alternative has an independent scope. Alternative binders are **not** visible in the scrutinee or in other alternatives.
 
-## Important Pipeline Requirement
+The Core pass verifies references retained or introduced by lowering; it cannot inspect Surface equations that lowering discarded.
 
-Surface name checking must run before desugaring.
+## Pipeline and Diagnostics
 
-The desugaring stage may remove unreachable function equations.
-Consequently, Core name checking alone cannot diagnose undefined
-references that existed only in discarded Surface equations.
+The recommended entry point for source programs is `compile_source(source: str) -> core.CoreProgram`, which runs:
 
-Both checking passes are required for the v0.1 diagnostic policy.
+1. Parse source code into Surface AST.
+2. Validate Surface structure.
+3. Check all Surface names.
+4. Lower Surface AST to Core IR.
+5. Validate Core structure.
+6. Check Core names.
 
-## Current Limitations
+**Surface name checking must precede desugaring.** Both passes are required for the v0.1 policy on undefined identifiers.
 
-The current implementation checks lexical visibility but does not
-rewrite variable references or assign unique binding identifiers.
+Name errors are static, regardless of whether an expression would execute. Diagnostics use the offending reference's source location when available, falling back to an enclosing location where supported.
 
-It does not construct runtime environments, perform type checking,
-or determine closure captures.
+## Implementation
 
-The runtime must implement lexical lookup and shadowing according
-to the same scope rules.
+Both checkers use an iterative depth-first traversal with explicit scope-entry and scope-exit tasks. Active-name counts support shadowing without copying the environment for each nested scope. Global bindings are registered before visiting their RHSs; recursive local groups are registered before visiting any member RHS.
+
+The traversal does not depend on Python's recursion depth and does not construct runtime environments.
+
+## Limitations
+
+Name checking does **not** assign binding IDs, produce reference-to-binding maps, perform type checking or exhaustiveness analysis, detect blackholes or nontermination, determine closure captures, or select an evaluation strategy.
+
+The runtime must implement lexical environments and shadowing consistently with these rules. Operational behavior under CBV, CBN, and CBNeed remains a separate concern.

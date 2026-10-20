@@ -4,7 +4,7 @@
 
 Core is the intermediate representation intended to sit between the surface Abstract Syntax Tree (AST) and evaluation. It makes functions, applications, recursive bindings, and constructor inspection explicit.
 
-The current implementation provides immutable nodes, explicit structural validation, and Surface-to-Core desugaring. Name resolution and evaluation remain future work.
+The current implementation provides immutable nodes, explicit structural validation, and Surface-to-Core desugaring. Separate Surface and Core name checkers verify lexical visibility; see [Name resolution](name-resolution.md). Runtime evaluation remains future work.
 
 Core does not select an evaluation strategy. The same expression can be used by call-by-value (CBV), call-by-name (CBN), and call-by-need (CBNeed) evaluators.
 
@@ -193,7 +193,7 @@ Desugaring does not evaluate expressions, perform name resolution, eliminate unu
 - Validation does not perform type checking; `CoreApp(CoreInt(1), CoreInt(2))` is structurally valid.
 - Validation does not check pattern-match exhaustiveness or reachability.
 - Constructors are restricted to `Nil` and `Cons`.
-- Name resolution and runtime evaluation are outside the current Core implementation.
+- Name checking is implemented separately in `lazy_lab.semantics`; runtime evaluation remains unimplemented.
 - Structural tests verify generated Core shapes; operational equivalence and the instrumentation cost of generated aliases still require evaluator tests.
 
 ## Surface-to-Core Desugaring
@@ -211,7 +211,7 @@ from lazy_lab.core.desugar import DesugaringError, lower_expression, lower_progr
 
 Call the corresponding Surface structural validator before lowering. Inputs must be finite, acyclic AST trees. Lowering does not repeat structural validation or resolve names. The public entry points reject a wrong root category with `TypeError`; `DesugaringError` carries an optional `span` for explicitly detected unsupported nodes or invalid groups. These defensive checks do not guarantee a particular exception for every malformed, unvalidated AST. Validate generated Core separately with the corresponding Core validator.
 
-Parser-produced identifiers and operators are ordinary Python strings. There is a known manual-construction edge case: Surface validation accepts string subclasses, while Core validation requires exact strings. See the [B02.8 audit](audits/b02.8-audit.md) for this boundary discrepancy and the open name-resolution policy.
+Parser-produced identifiers and operators are ordinary Python strings. There is a known manual-construction edge case: Surface validation accepts string subclasses, while Core validation requires exact strings. See the [B02.8 audit](audits/b02.8-audit.md) for this boundary discrepancy. [ADR-004](decisions/ADR-004-source-name-checking-before-desugaring.md) records the subsequently accepted name-checking policy.
 
 ### Transformations
 
@@ -233,7 +233,7 @@ Only the final function parameter may contain a constructor pattern in language 
 
 A fallback after constructor alternatives uses a fresh `CoreDefaultAlt` binder; its body aliases the source variable to the original internal argument, rather than the case result. This preserves the representation needed for CBN to avoid accidental memoization. Runtime tests must still establish actual demand and sharing behavior.
 
-Omitting unreachable equations can remove unresolved references before a Core-only name-resolution pass sees them. The specification requires unknown-name diagnostics but does not explicitly settle this interaction. B02.9 must choose where and over which source equations name resolution runs; lowering currently makes no name-resolution policy decision.
+Omitting unreachable equations can remove unresolved references before a Core-only name checker sees them. As specified by [ADR-004](decisions/ADR-004-source-name-checking-before-desugaring.md), `compile_source()` checks all Surface references before desugaring, including unreachable equations, then validates and checks the generated Core. Lowering remains independently usable and does not perform name checking itself.
 
 ### Implementation
 

@@ -764,19 +764,18 @@ Lexical analysis does not validate expression structure, variable scope or funct
 ### 9.1 Intended Pipeline
 
 ```text
-Program source ──lexer/parser──> AST ──grouping + validation──> AST
-                                            │
-                                            ▼
-                                      desugaring
-                                            │
-                                            ▼
-                                          Core
+Program source ──lexer/parser──> Surface AST
+                  ──structural validation + Surface name checking──> Surface AST
+                  ──desugaring──> Core
+                  ──Core structural validation + Core name checking──> Core
 
 Selected expression ──expression parser──> Expression AST
                   ──resolve against program bindings──> Core expression
 ```
 
-The exact implementation order of grouping, name resolution and lowering will be settled in B02.3–B02.9; the pipeline must preserve source positions for diagnostics where feasible. The selected-expression parser reuses the same expression grammar, but is invoked separately from the parser for top-level definitions.
+The public `compile_source()` entry point enforces this program pipeline, as specified by [ADR-004](decisions/ADR-004-source-name-checking-before-desugaring.md). Surface structural validation checks equation groups before name checking. Every source reference must have a lexically visible binding, including references in unreachable equations, unused local definitions, and unselected conditional branches. Surface name checking precedes desugaring so pruning cannot hide undefined identifiers; Core name checking also verifies retained and compiler-generated references. Both checkers require structurally validated inputs and preserve source locations for diagnostics where available. See [Name resolution](name-resolution.md) for the APIs and scope rules.
+
+The selected-expression path remains intended behavior; `compile_source()` handles program source only. The selected-expression parser reuses the same expression grammar, but is invoked separately from the parser for top-level definitions.
 
 ### 9.2 Preliminary Semantic Validation
 

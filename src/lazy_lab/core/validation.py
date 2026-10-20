@@ -171,7 +171,7 @@ def _check_bindings(
         if binding.name in seen:
             _fail(
                 f"Duplicate Core binding: {binding.name}",
-                binding.span or span,
+                _location(binding, span),
             )
 
         seen.add(binding.name)

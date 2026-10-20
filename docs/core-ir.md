@@ -4,7 +4,7 @@
 
 Core is the intermediate representation intended to sit between the surface Abstract Syntax Tree (AST) and evaluation. It makes functions, applications, recursive bindings, and constructor inspection explicit.
 
-The current implementation provides immutable nodes and explicit structural validation. Desugaring from the surface AST is future work.
+The current implementation provides immutable nodes, explicit structural validation, and Surface-to-Core desugaring. Name resolution and evaluation remain future work.
 
 Core does not select an evaluation strategy. The same expression can be used by call-by-value (CBV), call-by-name (CBN), and call-by-need (CBNeed) evaluators.
 
@@ -155,7 +155,7 @@ CoreCase(
 
 The `Cons` alternative names the two fields without requiring their evaluation. A `CoreDefaultAlt` provides a catch-all alternative and binds the scrutinee as a whole.
 
-Future desugaring should introduce `CoreCase` when selection requires constructor inspection. A variable-only equation does not by itself require a case expression.
+Desugaring introduces `CoreCase` when selection requires constructor inspection. A variable-only equation does not by itself require a case expression.
 
 ## Error Handling
 
@@ -193,11 +193,25 @@ Desugaring does not evaluate expressions, perform name resolution, eliminate unu
 - Validation does not perform type checking; `CoreApp(CoreInt(1), CoreInt(2))` is structurally valid.
 - Validation does not check pattern-match exhaustiveness or reachability.
 - Constructors are restricted to `Nil` and `Cons`.
-- Surface-to-Core desugaring, fresh-name generation, name resolution, and runtime evaluation are outside the current Core implementation.
+- Name resolution and runtime evaluation are outside the current Core implementation.
+- Structural tests verify generated Core shapes; operational equivalence and the instrumentation cost of generated aliases still require evaluator tests.
 
 ## Surface-to-Core Desugaring
 
 The desugaring stage transforms a structurally valid Surface AST into Core IR without evaluating expressions or selecting an evaluation strategy.
+
+### Public API and input contract
+
+```python
+from lazy_lab.core.desugar import DesugaringError, lower_expression, lower_program
+```
+
+- `lower_expression(expression: surface.Expr) -> core.CoreExpr`
+- `lower_program(program: surface.Program) -> core.CoreProgram`
+
+Call the corresponding Surface structural validator before lowering. Inputs must be finite, acyclic AST trees. Lowering does not repeat structural validation or resolve names. The public entry points reject a wrong root category with `TypeError`; `DesugaringError` carries an optional `span` for explicitly detected unsupported nodes or invalid groups. These defensive checks do not guarantee a particular exception for every malformed, unvalidated AST. Validate generated Core separately with the corresponding Core validator.
+
+Parser-produced identifiers and operators are ordinary Python strings. There is a known manual-construction edge case: Surface validation accepts string subclasses, while Core validation requires exact strings. See the [B02.8 audit](audits/b02.8-audit.md) for this boundary discrepancy and the open name-resolution policy.
 
 ### Transformations
 
@@ -215,13 +229,19 @@ Function equations preserve first-match semantics. Redundant and unreachable equ
 
 A leading variable-only equation does not introduce a `CoreCase`, avoiding unnecessary constructor inspection.
 
-Only the final function parameter may contain a constructor pattern in language v0.1.
+Only the final function parameter may contain a constructor pattern in language v0.1. Earlier variable parameters are aliased to fresh internal parameters inside the selected branch using `CoreLetRec`. `Cons` fields are bound directly by `CoreConAlt`. No artificial default is added to a non-exhaustive group.
+
+A fallback after constructor alternatives uses a fresh `CoreDefaultAlt` binder; its body aliases the source variable to the original internal argument, rather than the case result. This preserves the representation needed for CBN to avoid accidental memoization. Runtime tests must still establish actual demand and sharing behavior.
+
+Omitting unreachable equations can remove unresolved references before a Core-only name-resolution pass sees them. The specification requires unknown-name diagnostics but does not explicitly settle this interaction. B02.9 must choose where and over which source equations name resolution runs; lowering currently makes no name-resolution policy decision.
 
 ### Implementation
 
 Expression lowering uses an iterative postorder traversal to support deeply nested Surface AST structures without depending on Python's recursion depth.
 
-Compiler-generated identifiers use `FreshNameSupply` and the reserved `$` namespace.
+Compiler-generated identifiers use `FreshNameSupply` and the reserved `$` namespace. Each `lower_program` call creates one supply shared across all global groups. Separate calls restart deterministically; later transformations combining independently lowered Core must reserve existing names or rename internal binders to avoid collisions.
+
+Source expression nodes retain their spans. Generated lambda chains use the enclosing lambda, local binding, or first equation span; aliases use their variable-pattern spans; case and scrutinee use the first final-pattern span; alternatives use their own final-pattern spans. List-spine constructors share the list-literal span while element expressions retain individual spans. Names inside `CoreConAlt.binders` are strings, so individual head/tail binder spans are not stored separately. Spans provide source correspondence, not a unique tag distinguishing compiler-generated work from source operations.
 
 ### Guarantees and Boundaries
 

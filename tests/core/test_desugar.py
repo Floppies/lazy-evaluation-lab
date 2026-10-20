@@ -507,9 +507,10 @@ def test_empty_program_lowering():
 def test_constructor_patterns(source):
     program = parse_program(source)
     validate_program(program)
-    lower_program(program)
+    result = lower_program(program)
+    validate_core_program(result)
 
-def test_multiple_equations_are_not_silently_discarded():
+def test_redundant_variable_equations_keep_first_body():
     source = (
         "f x = 1\n"
         "f y = 2"
@@ -517,7 +518,11 @@ def test_multiple_equations_are_not_silently_discarded():
 
     program = parse_program(source)
     validate_program(program)
-    lower_program(program)
+    result = lower_program(program)
+    validate_core_program(result)
+    assert result == core.CoreProgram((
+        core.CoreBinding("f", core.CoreLam("x", core.CoreInt(1))),
+    ))
 
 def test_global_source_spans_are_preserved():
     source = "double x = x * 2\nmain = double 10"

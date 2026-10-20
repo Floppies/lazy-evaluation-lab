@@ -76,3 +76,49 @@ def test_function_parameter_does_not_escape_scope():
         match="x",
     ):
         check_source(source)
+
+def test_shadowing_in_local_functions():
+    source = (
+        "main = let { "
+        "x = 10; "
+        "f x = x; "
+        "g = x "
+        "} in f g"
+    )
+
+    check_source(source)
+
+def test_lambda_parameter_does_not_escape():
+    source = (
+        "main = let { "
+        "f = \\x -> x; "
+        "g = x "
+        "} in g"
+    )
+
+    with pytest.raises(
+        NameResolutionError,
+        match="x",
+    ):
+        check_source(source)
+
+def test_unreachable_constructor_equation_is_checked():
+    source = (
+        "f [] = 1\n"
+        "f [] = missing\n"
+        "f (x:xs) = 2"
+    )
+
+    with pytest.raises(
+        NameResolutionError,
+        match="missing",
+    ):
+        check_source(source)
+
+def test_deep_expression_name_checking():
+    source = (
+        "x = 1\n"
+        "main = " + " + ".join(["x"] * 2000)
+    )
+
+    check_source(source)

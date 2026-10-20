@@ -43,3 +43,29 @@ that will be mutated without first preserving the required version.
 
 Garbage collection, forcing, thunk updates, and runtime metrics
 are implemented in later milestones.
+
+## Closures and Stack
+
+### Closures
+
+A `Closure` is a runtime heap object that represents a function by combining a `CoreLam` expression with its captured lexical bindings.
+
+Closures capture only the references to free local variables required by the function, rather than the entire definition environment. Global bindings are accessed separately through the global environment.
+
+The `capture_closure()` helper constructs a closure from a precomputed collection of free local names. Computing and validating the actual free-variable set is a responsibility of the future evaluator.
+
+The `call_environment()` method prepares the lexical environment for a function application by extending the captured bindings with the function parameter. It does not execute or evaluate the function body.
+
+Each closure requires one header slot plus one slot per captured local reference.
+
+### Stack
+
+The runtime uses an explicit abstract stack to represent pending evaluation contexts independently of Python's native call stack.
+
+Each `StackFrame` stores only the information required to resume a suspended computation, such as expressions, environments or runtime references.
+
+The initial implementation provides `ApplyFunctionFrame`, `ApplyArgumentFrame` and `IfFrame`. Additional frame types will be introduced alongside their evaluation rules.
+
+The stack follows LIFO ordering and supports `push()`, `pop()`, `peek()` and `clone()`. Cloning preserves an independent sequence of frames for future execution snapshots.
+
+Both closures and stack frames are structural at this stage. Function application, argument evaluation, forcing and other operational transitions belong to later milestones.

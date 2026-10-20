@@ -15,10 +15,19 @@ class HeapObject:
 
     __slots__ = ()
 
+    @property
+    def required_slots(self) -> int:
+        raise NotImplementedError(
+            "Heap objects must declare required_slots"
+        )
+
 
 @dataclass(frozen=True, slots=True)
 class Reserved(HeapObject):
     """An allocated cell awaiting initialization."""
+    @property
+    def required_slots(self) -> int:
+        return 1
 
 
 @dataclass(frozen=True, slots=True)
@@ -26,6 +35,10 @@ class Indirection(HeapObject):
     """A cell referring to another runtime reference."""
 
     target: RuntimeRef
+
+    @property
+    def required_slots(self) -> int:
+        return 1
 
 
 @dataclass(frozen=True, slots=True)
@@ -68,6 +81,11 @@ class Heap:
         """Allocate a new cell and return its stable reference."""
         self._validate_object(value)
 
+        if value.required_slots > allocated_slots:
+            raise ValueError(
+                "Heap object exceeds reserved allocation size"
+            )
+
         if type(allocated_slots) is not int or allocated_slots < 1:
             raise ValueError(
                 "allocated_slots must be a positive integer"
@@ -107,6 +125,11 @@ class Heap:
         self._validate_object(value)
 
         previous = self.get(reference)
+
+        if value.required_slots > previous.allocated_slots:
+            raise ValueError(
+                "Replacement exceeds reserved allocation size"
+            )
 
         self._cells[reference.object_id] = HeapCell(
             object_id=previous.object_id,

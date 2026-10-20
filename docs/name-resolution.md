@@ -46,7 +46,42 @@ Unknown identifiers are static errors.
 - Optimization.
 - Evaluation strategy selection.
 
-## Status
+## Core Name Checking
 
-Surface name checking is pending implementation in B02.9.2.
-Core name checking is planned for B02.9.3.
+`check_core_names(program)` validates lexical references in a
+structurally valid CoreProgram.
+
+The checker supports:
+
+- Mutually recursive global bindings.
+- Unary lambda parameters.
+- Simultaneous recursive CoreLetRec bindings.
+- CoreConAlt constructor-field binders.
+- CoreDefaultAlt binders.
+- Compiler-generated internal identifiers.
+
+Every alternative of a CoreCase introduces an independent scope.
+Alternative binders are not visible in the case scrutinee.
+
+Traversal is iterative and does not depend on Python recursion depth.
+
+## Important Pipeline Requirement
+
+Surface name checking must run before desugaring.
+
+The desugaring stage may remove unreachable function equations.
+Consequently, Core name checking alone cannot diagnose undefined
+references that existed only in discarded Surface equations.
+
+Both checking passes are required for the v0.1 diagnostic policy.
+
+## Current Limitations
+
+The current implementation checks lexical visibility but does not
+rewrite variable references or assign unique binding identifiers.
+
+It does not construct runtime environments, perform type checking,
+or determine closure captures.
+
+The runtime must implement lexical lookup and shadowing according
+to the same scope rules.

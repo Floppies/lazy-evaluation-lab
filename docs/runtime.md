@@ -1,143 +1,107 @@
-@TODO: Make a clenear version
+# Runtime Infrastructure — B03
 
-## Lexical Environments
+**Status:** B03 infrastructure only; not a complete evaluator.
 
-Runtime environments associate variable names with RuntimeRef values.
+## 1. Runtime References and Lexical Environments
 
-Each environment contains local bindings and an optional parent
-environment. Lookup searches from the innermost scope outward and
-returns the stored reference without forcing or dereferencing it.
+`RuntimeRef` represents immediate integers, booleans, or heap references.
 
-Extending an environment creates a new scope without modifying
-existing scopes.
+`Environment` maps names to runtime references, with local bindings and an optional lexical parent. Lookup searches from the innermost scope outward and returns a reference without forcing or dereferencing it.
 
-Recursive groups are constructed after their heap addresses have
-been reserved. The environment does not allocate or initialize
-heap objects.
+`extend()` creates a new scope without modifying existing scopes. Environments handle visibility and shadowing, not evaluation.
 
-Closure capture is handled separately and retains only the
-required free local references.
+Global bindings and local `CoreLetRec` groups are mutually recursive (ADR-001). Addresses must exist before their right-hand sides are demanded. The evaluator, not the environment, handles allocation and initialization.
 
-Environment lookup is shared by CBV, CBN, and CBNeed. Strategy-
-specific forcing and initialization belong to the evaluator.
+Name-based lookup is shared by CBV, CBN, and CBNeed (ADR-005). Initialization, forcing, and sharing are strategy-specific. Compiler-generated names follow the same lexical lookup rules as user-defined names.
 
-## Heap Storage
+## 2. Heap Storage and Allocation
 
-The runtime uses an explicit simulated heap with monotonically
-increasing ObjectIds.
+The simulated heap assigns monotonically increasing `ObjectId` values. Each `HeapCell` stores an object and its fixed allocation size in abstract slots.
 
-Each HeapCell stores a runtime object and its fixed allocation size,
-measured in abstract slots.
+`Heap.allocate()` reserves slots at a new address. `Heap.replace()` preserves identity and allocation size; the replacement must fit. Updating a cell does not reclaim unused slots.
 
-Allocation creates a new ObjectId. Replacing a cell preserves its
-identity and allocated size. Existing ObjectIds are never reassigned.
+Each `HeapObject` declares `required_slots`: one for `Reserved` or `Indirection`, and one plus the captured-local count for `Closure`. Required size and allocated capacity may differ.
 
-Immediate integers and booleans are not stored in the heap.
+Immediate values are not heap objects. `Heap.get()` neither follows indirections nor forces computations. A `Reserved` object marks an allocated but not yet initialized cell; an `Indirection` stores another runtime reference.
 
-Heap.get() is a passive operation: it does not force objects or
-follow indirections.
+`Heap.clone()` copies the cell mapping and counters, reusing immutable payloads. GC, thunk updates, and full metrics belong to later milestones.
 
-Heap.clone() creates an independent copy of the heap state.
-Historical execution states must not retain references to a heap
-that will be mutated without first preserving the required version.
+## 3. Function Closures
 
-Garbage collection, forcing, thunk updates, and runtime metrics
-are implemented in later milestones.
+A `Closure` stores a `CoreLam` and references to necessary free *local* bindings, not the entire definition environment. Globals are resolved separately.
 
-## Closures and Stack
+`capture_closure()` looks up preidentified free local names at the definition site and creates a standalone environment with `parent=None`. It keeps the original `RuntimeRef` objects, including references to reserved recursive cells. Computing and validating free variables remains future evaluator work.
 
-### Closures
+`call_environment()` layers the parameter over captured locals and globals, never over the caller's local scope. It does not evaluate the body.
 
-A `Closure` is a runtime heap object that represents a function by combining a `CoreLam` expression with its captured lexical bindings.
+The lambda parameter cannot be captured. Closure construction does not choose argument evaluation policy.
 
-Closures capture only the references to free local variables required by the function, rather than the entire definition environment. Global bindings are accessed separately through the global environment.
+## 4. Explicit Continuation Stack
 
-The `capture_closure()` helper constructs a closure from a precomputed collection of free local names. Computing and validating the actual free-variable set is a responsibility of the future evaluator.
+The abstract `Stack` is separate from Python's call stack. Immutable `StackFrame` objects hold pending evaluation contexts.
 
-The `call_environment()` method prepares the lexical environment for a function application by extending the captured bindings with the function parameter. It does not execute or evaluate the function body.
+Initial frames: `ApplyFunctionFrame` remembers a pending argument and its environment; `ApplyArgumentFrame` stores a function reference; `IfFrame` retains the branches and their environment. More frames follow their evaluation rules.
 
-Each closure requires one header slot plus one slot per captured local reference.
+The stack uses LIFO order: `push()` adds, `peek()` inspects, and `pop()` removes. `clone()` copies the sequence, sharing immutable frames and environments.
 
-### Stack
+Frames and closures are structural in B03; application and forcing are deferred.
 
-The runtime uses an explicit abstract stack to represent pending evaluation contexts independently of Python's native call stack.
+## 5. Execution Configuration and State
 
-Each `StackFrame` stores only the information required to resume a suspended computation, such as expressions, environments or runtime references.
+`ExecutionConfig` fixes machine kind, strategy, result policy, trace mode, and execution/result limits. Core permits CBV, CBN, and CBNeed; STG-like CBNeed is configured but not executable.
 
-The initial implementation provides `ApplyFunctionFrame`, `ApplyArgumentFrame` and `IfFrame`. Additional frame types will be introduced alongside their evaluation rules.
+`ExecutionState` carries IDs and transition index, separating `MachineState` from `InstrumentationState`.
 
-The stack follows LIFO ordering and supports `push()`, `pop()`, `peek()` and `clone()`. Cloning preserves an independent sequence of frames for future execution snapshots.
+`MachineState` holds kind, strategy, status, phase, control, environments, heap, stack, and `ResultState`. `next_object_id` comes from the heap. An operational evaluator counter tracks its execution budget separately from metrics and `transition_index`.
 
-Both closures and stack frames are structural at this stage. Function application, argument evaluation, forcing and other operational transitions belong to later milestones.
+`InstrumentationState` reserves space for metrics and history without affecting semantics. `ResultState` prepares for canonical observation, which is not yet implemented.
 
+### Controls, Phases, and Statuses
 
-## Execution State
+Core controls are `EvaluateCore`, `Return`, `Force`, and `InitializeCoreBindings`. Not all have operational rules yet.
 
-The abstract machine state is represented by `ExecutionState`,
-which separates semantic execution data from instrumentation.
-
-`MachineState` contains the machine kind, evaluation strategy,
-execution status, phase, current control, lexical environments,
-heap, stack, and result state.
-
-`InstrumentationState` is reserved for metrics, object history,
-and passive analysis. It must not influence semantic transitions.
-
-`ExecutionConfig` defines immutable execution parameters,
-including strategy, result policy, trace mode, and execution limits.
-
-Core controls represent pending operations without executing them.
-The initial control variants are EvaluateCore, Return, Force,
-and InitializeCoreBindings.
+Phase, status, and control describe separate dimensions. For example, phase `EVALUATION` can coexist with status `RUNNING`; a `Return` control need not imply a completed program. Successful termination uses `COMPLETED`, not `HALTED`.
 
 ### Snapshots
 
-`ExecutionState.snapshot()` creates independent copies of the
-mutable heap and stack while preserving logical state identity.
+`ExecutionState.snapshot()` retains logical identity but copies the mutable heap and stack. Immutable environments, frames, and heap payloads may be shared.
 
-Environments, frames, and current heap object payloads are
-immutable and may be shared between snapshots.
+Snapshots do not advance execution or increment IDs. A semantic step creates a new logical state with an updated ID and transition index. Mutable payloads would require revisiting snapshot isolation.
 
-Snapshots must remain stable after subsequent execution steps.
-Creating a new logical state is separate from copying an existing
-one.
+## 6. Core Transitions and Bounded Execution
 
-Transition rules, tracing, and evaluation are implemented in
-later milestones.
+The Core machine exposes a deterministic small-step entry point:
 
-## Basic Transitions and Tracing
+```python
+step(state, config) -> TransitionResult
+```
 
-The Core machine uses a deterministic small-step interface:
+A successful `step()` selects and applies one rule, creates an independent successor, and reports the `rule_id`, transition kind, previous state ID, phases, and recorded semantic or heap/stack effects in `TransitionResult`. Unsupported constructs raise an explicit error rather than being silently evaluated.
 
-`step(state, config) -> TransitionResult`
+B03 only evaluates `CoreInt` and `CoreBool` into immediate references without allocation. Private rule helpers are coordinated by `step()`.
 
-Each successful transition applies exactly one operational rule and
-produces a new logical execution state.
-
-TransitionResult records the applied rule, transition kind, execution
-phases, semantic events, and heap/stack effects.
-
-The initial implementation supports only Core integer and boolean
-literals. Both return immediate references without heap allocation.
+A root `Return` with empty stack stops provisionally at `WHNF_PENDING` while the machine remains `RUNNING`; canonical completion comes later.
 
 ### Execution Limits
 
-MachineState maintains an operational evaluator transition counter,
-independent of instrumentation metrics and the global transition index.
+`run_batch(..., max_steps=...)` performs at most that many transitions, stopping earlier for pending observation, exhausted evaluator budget, or terminal status. `max_steps` is per call.
 
-The initial batch controller enforces execution budgets and returns
-a stop reason. Full public limit-status handling is deferred to B04.
+The evaluator counter differs from `transition_index`; consumer and GC transitions have separate accounting. Public limit-status handling is deferred.
 
 ### Basic Tracing
 
-run_batch() executes a bounded number of transitions and collects
-lightweight TraceEntry records, except in METRICS_ONLY mode.
+`TraceEntry` stores lightweight metadata, including source and destination state IDs, rule identifier, transition kind, and phases; it does not retain full states. `run_batch()` collects these records for `FULL` and `EVENTS`, but not `METRICS_ONLY`.
 
-Full state retention, event deltas, periodic checkpoints, and replay
-are implemented in later milestones.
+Full snapshots, event deltas, checkpoints, replay, comparable metrics, and object history are deferred.
 
-A root Return with an empty stack is treated as a provisional
-observation boundary, not as COMPLETED.
+## 7. B02 Integration and Current Boundaries
 
-Function application, forcing, recursive initialization, result
-materialization, and STG execution are not implemented here.
+B02 produces a validated, name-checked `CoreProgram`. B03 integration tests extract a literal Core expression and pass it to `step()`.
+
+Extracting the `main` RHS in tests is not global initialization. Real execution must initialize recursive bindings and select an entry point.
+
+B03 provides infrastructure, **not** a complete evaluator.
+
+Remaining work: recursive initialization, variables, applications, free-variable analysis, strategy-specific demand/sharing, forcing, result observation, constructors/case, STG-like execution, GC, and metrics.
+
+Core and STG-like machines will share infrastructure but use different operational rules. B04 begins Core evaluation; later milestones add richer semantics, metrics, and STG support.

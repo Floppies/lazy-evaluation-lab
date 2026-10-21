@@ -130,6 +130,16 @@ class MachineState:
         default_factory=ResultState
     )
     gc_state: None = None
+    evaluator_transition_count: int = 0
+
+    def __post_init__(self) -> None:
+        if (
+            type(self.evaluator_transition_count) is not int
+            or self.evaluator_transition_count < 0
+        ):
+            raise ValueError(
+                "evaluator_transition_count must be non-negative"
+            )
 
     @property
     def next_object_id(self) -> int:

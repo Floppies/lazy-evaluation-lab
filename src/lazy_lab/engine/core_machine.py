@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import replace
 
-from lazy_lab.core.nodes import CoreBool, CoreInt
+from lazy_lab.core.nodes import CoreBool, CoreInt, CoreExpr
 
 from lazy_lab.runtime.control import EvaluateCore, Return
 from lazy_lab.runtime.references import (
@@ -58,12 +58,47 @@ def _validate_configuration(
             "STG execution is not implemented yet"
         )
 
+def _evaluate_integer(
+    expression: CoreInt,
+) -> tuple[Return, str]:
+    """Apply the Core integer literal rule."""
+    return (
+        Return(ImmediateInteger(expression.value)),
+        "CORE_EVAL_INTEGER",
+    )
+
+
+def _evaluate_boolean(
+    expression: CoreBool,
+) -> tuple[Return, str]:
+    """Apply the Core boolean literal rule."""
+    return (
+        Return(ImmediateBoolean(expression.value)),
+        "CORE_EVAL_BOOLEAN",
+    )
+
+
+def _dispatch_core_evaluation(
+    expression: CoreExpr,
+) -> tuple[Return, str]:
+    """Select one of the currently supported Core rules."""
+    if isinstance(expression, CoreInt):
+        return _evaluate_integer(expression)
+
+    if isinstance(expression, CoreBool):
+        return _evaluate_boolean(expression)
+
+    raise UnsupportedTransitionError(
+        f"Unsupported Core expression: "
+        f"{type(expression).__name__}"
+    )
+
 
 def step(
     state: ExecutionState,
     config: ExecutionConfig,
 ) -> TransitionResult:
-    """Apply one supported Core evaluation rule."""
+    """Apply one supported Core evaluation transition."""
     _validate_configuration(state, config)
 
     machine = state.machine_state
@@ -80,21 +115,6 @@ def step(
             f"Unsupported control: {type(control).__name__}"
         )
 
-    expression = control.expression
-
-    if isinstance(expression, CoreInt):
-        next_control = Return(ImmediateInteger(expression.value))
-        rule_id = "CORE_EVAL_INTEGER"
-
-    elif isinstance(expression, CoreBool):
-        next_control = Return(ImmediateBoolean(expression.value))
-        rule_id = "CORE_EVAL_BOOLEAN"
-
-    else:
-        raise UnsupportedTransitionError(
-            f"Unsupported Core expression: {type(expression).__name__}"
-        )
-
     if (
         machine.evaluator_transition_count
         >= config.execution_step_limit
@@ -103,7 +123,12 @@ def step(
             "Evaluator step limit reached"
         )
 
-    # Preserve the previous logical state before changing storage.
+    # Rule selection and application.
+    next_control, rule_id = _dispatch_core_evaluation(
+        control.expression
+    )
+
+    # Construct an independent successor state.
     snapshot = state.snapshot()
 
     next_machine = replace(

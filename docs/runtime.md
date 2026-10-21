@@ -69,3 +69,38 @@ The initial implementation provides `ApplyFunctionFrame`, `ApplyArgumentFrame` a
 The stack follows LIFO ordering and supports `push()`, `pop()`, `peek()` and `clone()`. Cloning preserves an independent sequence of frames for future execution snapshots.
 
 Both closures and stack frames are structural at this stage. Function application, argument evaluation, forcing and other operational transitions belong to later milestones.
+
+
+## Execution State
+
+The abstract machine state is represented by `ExecutionState`,
+which separates semantic execution data from instrumentation.
+
+`MachineState` contains the machine kind, evaluation strategy,
+execution status, phase, current control, lexical environments,
+heap, stack, and result state.
+
+`InstrumentationState` is reserved for metrics, object history,
+and passive analysis. It must not influence semantic transitions.
+
+`ExecutionConfig` defines immutable execution parameters,
+including strategy, result policy, trace mode, and execution limits.
+
+Core controls represent pending operations without executing them.
+The initial control variants are EvaluateCore, Return, Force,
+and InitializeCoreBindings.
+
+### Snapshots
+
+`ExecutionState.snapshot()` creates independent copies of the
+mutable heap and stack while preserving logical state identity.
+
+Environments, frames, and current heap object payloads are
+immutable and may be shared between snapshots.
+
+Snapshots must remain stable after subsequent execution steps.
+Creating a new logical state is separate from copying an existing
+one.
+
+Transition rules, tracing, and evaluation are implemented in
+later milestones.

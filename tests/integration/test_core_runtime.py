@@ -187,3 +187,35 @@ def test_trace_mode_does_not_change_semantic_result():
 
     assert len(full.trace) == 1
     assert metrics_only.trace == ()
+
+def test_mismatched_strategy_is_rejected():
+    state = make_demo_state(
+        "main = 42",
+        strategy=Strategy.CBNEED,
+    )
+
+    config = make_config(strategy=Strategy.CBV)
+
+    with pytest.raises(ValueError):
+        step(state, config)
+#TODO This test should be removed or changed when stg is implemented
+def test_stg_execution_is_not_yet_implemented():
+    state = make_demo_state("main = 42")
+
+    stg_machine = replace(
+        state.machine_state,
+        machine_kind=MachineKind.STG,
+    )
+
+    stg_state = replace(
+        state,
+        machine_state=stg_machine,
+    )
+
+    stg_config = replace(
+        make_config(),
+        machine_kind=MachineKind.STG,
+    )
+
+    with pytest.raises(UnsupportedTransitionError):
+        step(stg_state, stg_config)

@@ -267,3 +267,13 @@ For B04 and later acceptance, without requiring their implementation in B03:
 - Replace B03-specific nonimplementation assertions as B04-B06, B10 and subsequent rules become available. Tests expecting unsupported execution are milestone guards, not permanent language requirements.
 
 **Final assessment:** B03 is substantially implemented and verified for its supported infrastructure and literal-transition subset, but the requested final acceptance remains **blocked pending F01 repair and a clean rerun**. Documentation conflicts need an explicit resolution before affected B04 semantics are introduced. This audit establishes neither full evaluator correctness nor strategy equivalence nor valid experimental cost measurements.
+
+## Follow ups:
+
+### Post-audit follow up (21/10/26):
+F01 has been corrected by inverting the order of checks of allocated_slots.
+All test created in this audit now succed.
+Regarding F02 and F03, the decision is not to implemented verifications everywhere. We keep the following contract: internal runtime objects are constructed by reliable code that respects type and invariants. When another boundary of input gets introduced, like a HTTP API that can create sessions, it will be their responsability to validate data.
+F05 for now should be left open because all of the unimplemented logic are not in the scope of B03.
+
+Therefore B03 is considered complete — verified, with documented downstream limitations.

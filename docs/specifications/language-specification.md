@@ -32,6 +32,7 @@ The program may optionally define `main` as an ordinary top-level binding. When 
 - Identifiers must match `[a-z][a-zA-Z0-9_]*`.
 - Identifiers are case-sensitive.
 - Reserved words cannot be used as identifiers.
+- There are identifiers for predefined functions. See section 4.6.
 
 ### 2.3 Reserved Words
 `if`, `then`, `else`, `let`, `in`, `True`, `False`.
@@ -144,6 +145,22 @@ allowed.
 
 Duplicate parameters within the same function
 parameter list are not permitted.
+
+### 4.6 Predefined Functions
+
+The mini-language provides `seq` as a predefined first-class function of arity two.
+
+`seq` is an ordinary identifier, not a reserved keyword or a special syntactic form. It supports ordinary curried application, partial application, and higher-order use.
+
+When the result of a saturated application `seq a b` is demanded, the primitive requires `a` to reach weak head normal form (WHNF) before continuing with `b`. This requirement does not recursively evaluate constructor fields.
+
+Argument evaluation otherwise follows the selected evaluation strategy. Under CBV, ordinary strict argument evaluation still applies. Under CBN and CBNeed, partial application does not itself force the first argument.
+
+Predefined identifiers belong to an outer lexical scope. User-defined global and local bindings may shadow them according to the existing lexical scoping rules.
+
+The Surface AST represents `seq` through ordinary variable references and applications. Core lowering preserves these as `CoreVar` and `CoreApp`. The compiler does not introduce a dedicated `CoreSeq` node.
+
+Frontend compilation validates name visibility and preserves structure but does not evaluate the primitive. Runtime behavior is implemented separately.
 
 ## 5. Conditional Expressions
 

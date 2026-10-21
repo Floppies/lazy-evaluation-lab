@@ -104,3 +104,40 @@ one.
 
 Transition rules, tracing, and evaluation are implemented in
 later milestones.
+
+## Basic Transitions and Tracing
+
+The Core machine uses a deterministic small-step interface:
+
+`step(state, config) -> TransitionResult`
+
+Each successful transition applies exactly one operational rule and
+produces a new logical execution state.
+
+TransitionResult records the applied rule, transition kind, execution
+phases, semantic events, and heap/stack effects.
+
+The initial implementation supports only Core integer and boolean
+literals. Both return immediate references without heap allocation.
+
+### Execution Limits
+
+MachineState maintains an operational evaluator transition counter,
+independent of instrumentation metrics and the global transition index.
+
+The initial batch controller enforces execution budgets and returns
+a stop reason. Full public limit-status handling is deferred to B04.
+
+### Basic Tracing
+
+run_batch() executes a bounded number of transitions and collects
+lightweight TraceEntry records, except in METRICS_ONLY mode.
+
+Full state retention, event deltas, periodic checkpoints, and replay
+are implemented in later milestones.
+
+A root Return with an empty stack is treated as a provisional
+observation boundary, not as COMPLETED.
+
+Function application, forcing, recursive initialization, result
+materialization, and STG execution are not implemented here.

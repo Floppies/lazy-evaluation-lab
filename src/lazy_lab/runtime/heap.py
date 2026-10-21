@@ -81,14 +81,14 @@ class Heap:
         """Allocate a new cell and return its stable reference."""
         self._validate_object(value)
 
-        if value.required_slots > allocated_slots:
-            raise ValueError(
-                "Heap object exceeds reserved allocation size"
-            )
-
         if type(allocated_slots) is not int or allocated_slots < 1:
             raise ValueError(
                 "allocated_slots must be a positive integer"
+            )
+
+        if value.required_slots > allocated_slots:
+            raise ValueError(
+                "Heap object exceeds reserved allocation size"
             )
 
         object_id = ObjectId(self._next_object_id)

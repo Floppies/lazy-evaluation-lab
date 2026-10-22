@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from lazy_lab.ast import nodes as surface
 from lazy_lab.source import SourceSpan
 from lazy_lab.core import nodes as core
+from lazy_lab.semantics.predefined import PREDEFINED_IDENTIFIERS
 
 @dataclass(frozen=True, slots=True)
 class _Visit:
@@ -120,9 +121,17 @@ def check_surface_names(
 
     # All global definitions are mutually visible.
     visible: dict[str, int] = {
-        definition.name: 1
-        for definition in program.definitions
+        name: 1
+        for name in PREDEFINED_IDENTIFIERS
     }
+
+    _enter_scope(
+        visible,
+        tuple(
+            definition.name
+            for definition in program.definitions
+        ),
+    )
 
     pending: list[_Task] = []
 
@@ -254,9 +263,17 @@ def check_core_names(
         raise TypeError("Expected a CoreProgram")
 
     visible: dict[str, int] = {
-        binding.name: 1
-        for binding in program.bindings
+        name: 1
+        for name in PREDEFINED_IDENTIFIERS
     }
+
+    _enter_scope(
+        visible,
+        tuple(
+            binding.name
+            for binding in program.bindings
+        ),
+    )
 
     pending: list[_CoreTask] = []
 

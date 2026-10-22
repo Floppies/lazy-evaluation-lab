@@ -113,6 +113,8 @@ CoreCon("Cons", (CoreInt(1), CoreCon("Nil", ())))
 
 A `CoreCase` requires at least one alternative, forbids repeated constructor alternatives, and permits at most one default alternative. Alternatives retain their order; validation does not require the default to appear last or reject unreachable alternatives.
 
+`seq` is represented by a `CoreVar` and ordinary applications.
+
 ### Fresh-name generation
 
 Compiler-generated identifiers use the reserved $ namespace. FreshNameSupply provides deterministic, collision-free names within a single lowering run, with independent counters per prefix and support for reserving existing identifiers.

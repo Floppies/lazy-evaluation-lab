@@ -18,7 +18,7 @@ These passes check **visibility**, not the identity of the binding selected by a
 - **Recursive local bindings:** Names in a `let` / `CoreLetRec` group are visible in every binding RHS and in the group body. Local function parameters are visible only in their own RHS.
 - **Shadowing:** Inner bindings may shadow outer ones; the innermost visible binding takes precedence. Duplicate names within a single binding group are handled by structural validation.
 - **Recursion:** Self-reference is legal at the name-checking stage. Termination and cyclic evaluation are runtime concerns.
-- **Predefined identifiers:** The name `seq` is available in an outer lexical scope. Global and local definitions may shadow it. Both Surface and Core name checkers recognize the same predefined identifiers without inserting synthetic bindings into `CoreProgram`. Runtime binding selection remains the evaluator's responsibility.
+- i**Predefined identifiers:** The name `seq` is available in an outer lexical scope. Global and local definitions may shadow it. Both Surface and Core name checkers recognize the same predefined identifiers without inserting synthetic bindings into `CoreProgram`. Runtime binding selection remains the evaluator's responsibility.
 
 ## Surface AST Name Checking
 

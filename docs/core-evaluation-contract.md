@@ -73,3 +73,86 @@ B06 introduces executable constructors, pattern matching, and recursive list pro
 B07 introduces comparable operational metrics.
 
 These features must not be simulated as completed before their corresponding operational rules exist.
+
+
+## 6. Controls and Continuations
+
+The Core machine uses explicit continuation frames rather than
+the Python call stack to represent pending evaluation work.
+
+### 6.1 Control Responsibilities
+
+- `EvaluateCore(expression)` evaluates an expression using the
+  current lexical environment.
+- `Return(reference)` delivers a runtime reference to the
+  pending continuation. It does not guarantee WHNF.
+- `Force(reference)` requests evaluation of a reference to WHNF.
+  The current stack retains the continuation awaiting the result.
+- `InitializeCoreBindings(bindings, next_index)` represents
+  initialization work for a recursive binding group.
+
+One successful `step()` performs one abstract-machine transition.
+A demand or function application may require multiple transitions.
+
+### 6.2 Application Continuations
+
+`ApplyFunctionFrame` retains the unevaluated argument expression
+and its call-site environment while the function is evaluated.
+
+Before applying the function, its reference must denote an
+applicable value in WHNF. If necessary, the machine requests WHNF
+through `Force` while preserving the pending continuation.
+
+Under CBV, `ApplyArgumentFrame` retains the function reference
+while the argument is evaluated strictly. The resulting value is
+then bound to the function parameter.
+
+Under CBN and CBNeed, the argument is deferred according to the
+selected strategy. The argument expression and call-site
+environment must remain available until the deferred runtime
+representation has been constructed.
+
+Function bodies use the closure's lexical environment extended
+with the parameter binding, never the caller's local environment.
+
+### 6.3 Conditional Continuations
+
+`IfFrame` retains both branches and the lexical environment in
+which they must be evaluated.
+
+The condition is demanded to WHNF. Once its boolean value is
+known, only the selected branch is evaluated.
+
+The unselected branch is neither evaluated nor forced.
+
+### 6.4 Stack and State Invariants
+
+Continuation frames are immutable. Their payloads preserve the
+references, expressions and lexical environments needed to
+resume evaluation.
+
+The continuation stack is LIFO. A nested computation may push
+additional frames without discarding its enclosing continuation.
+
+A successful transition must preserve the previous logical
+state. Mutable stack and heap storage are isolated using the
+existing snapshot mechanism.
+
+The active `Return` control is consumed according to the top
+continuation frame. A root `Return` with an empty stack belongs
+to the result-observation boundary, not automatic completion.
+
+### 6.5 Deferred Frames
+
+Additional continuation families are introduced with the
+operational rules that require them:
+
+- Primitive operands and conditionals: B04.5.
+- Recursive local initialization: B04.6.
+- Saturated `seq` applications: B04.7.
+- Result consumption: B04.8.
+- Thunk updates and sharing: B05.
+- Constructors and pattern matching: B06.
+
+No operational support for these deferred constructs is implied
+by this contract.

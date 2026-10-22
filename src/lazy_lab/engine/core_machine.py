@@ -10,16 +10,21 @@ from lazy_lab.core.nodes import (
     CoreExpr,
     CoreProgram,
     CoreVar,
+    CoreBinding,
 )
-
+from lazy_lab.semantics.predefined import PREDEFINED_IDENTIFIERS
 from lazy_lab.runtime.control import EvaluateCore, Return, InitializeCoreBindings
 from lazy_lab.runtime.references import (
     ImmediateBoolean,
     ImmediateInteger,
 )
 from lazy_lab.runtime.environment import Environment
-from lazy_lab.runtime.heap import Heap
+from lazy_lab.runtime.heap import (
+    Heap,
+    Reserved,
+)
 from lazy_lab.runtime.stack import Stack
+from lazy_lab.runtime.predefined import PredefinedFunction
 from lazy_lab.runtime.state import (
     ExecutionConfig,
     ExecutionState,
@@ -188,6 +193,58 @@ def _stop_reason(
         return BatchStopReason.EVALUATOR_BUDGET
 
     return None
+
+
+def _reserve_global_scope(
+    heap: Heap,
+    bindings: tuple[CoreBinding, ...],
+) -> Environment:
+    """Reserve predefined and global references before RHS evaluation.
+
+    Mutates the supplied heap. The caller must provide an owned heap
+    or an isolated snapshot rather than a previous execution state's
+    heap.
+    """
+    if not isinstance(heap, Heap):
+        raise TypeError("Expected a Heap")
+
+    if not isinstance(bindings, tuple):
+        raise TypeError("Expected a tuple of CoreBinding")
+
+    if any(not isinstance(binding, CoreBinding) for binding in bindings):
+        raise TypeError("Expected CoreBinding entries")
+
+    names = [binding.name for binding in bindings]
+
+    if len(names) != len(set(names)):
+        raise ValueError("Duplicate global binding")
+
+    # Install predefined function values in an outer lexical scope.
+    predefined_bindings = {}
+
+    for name in sorted(PREDEFINED_IDENTIFIERS):
+        function = PredefinedFunction(name)
+        reference = heap.allocate(
+            function,
+            allocated_slots=function.required_slots,
+        )
+        predefined_bindings[name] = reference
+
+    predefined_environment = Environment(predefined_bindings)
+
+    # Reserve every user-defined global address before installing
+    # or evaluating any global RHS.
+    global_bindings = {}
+
+    for binding in bindings:
+        reference = heap.allocate(
+            Reserved(),
+            allocated_slots=1,
+        )
+        global_bindings[binding.name] = reference
+
+    return predefined_environment.extend(global_bindings)
+
 
 def run_batch(
     state: ExecutionState,

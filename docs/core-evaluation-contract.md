@@ -466,6 +466,22 @@ fails with a diagnostic.
 The selected entry expression is retained by
 `InitializeCoreBindings` until global initialization finishes.
 
+The execution entry is a user-facing selection.
+
+If the user does not provide an explicit entry and `main` exists,
+`main` is selected by default.
+
+The user may instead provide or select another expression, even
+when `main` exists. The application layer is responsible for
+converting that selection into a validated Core expression.
+
+If neither `main` nor an explicit entry is available, execution
+initialization fails rather than selecting an arbitrary binding.
+
+User-facing diagnostics for invalid selected expressions are
+defined during application integration. It is assumed that when
+the expressions reaches this stage it has been validated.
+
 ### 9.3 Initialization Boundary
 
 Subsequent initialization transitions must establish the
@@ -477,3 +493,33 @@ evaluation strategy.
 
 Creating an initial state is not equivalent to completing
 global initialization.
+
+### 9.4 Global Scope Reservation
+
+Global initialization separates address reservation from RHS
+installation and evaluation.
+
+The predefined environment forms an outer lexical scope.
+User-defined globals form a child scope and may shadow
+predefined identifiers.
+
+Each predefined function is represented initially by an
+immutable runtime function object stored in the simulated heap.
+
+Every user-defined global receives a stable one-slot heap
+address containing `Reserved` before any RHS is installed.
+
+Source-order reservation is deterministic. No global RHS is
+evaluated during this operation.
+
+The predefined function objects introduce a fixed
+initialization cost in abstract heap slots. Experimental
+metrics must distinguish this baseline from allocations
+caused by program execution.
+
+The reservation helper mutates an owned heap. When invoked
+by the evaluator, it must operate on isolated successor-state
+storage.
+
+Pending global RHS representations and initialization
+transitions are implemented in subsequent B04.2 subtasks.

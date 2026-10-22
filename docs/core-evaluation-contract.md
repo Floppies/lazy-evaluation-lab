@@ -310,3 +310,126 @@ list-program execution.
 
 Dynamic strategy equivalence and experimental cost comparisons
 must be verified independently from these static contracts.
+
+## 8. Operational Invariants and Acceptance Criteria
+
+### 8.1 Transition Invariants
+
+Every successful Core evaluator transition must:
+
+1. Apply exactly one abstract-machine rule.
+2. Preserve the previous logical execution state.
+3. Produce an independent successor state.
+4. Advance the state ID and transition index.
+5. Increment the evaluator transition counter for an
+   evaluator transition.
+6. Preserve lexical scoping and the configured strategy.
+7. Retain pending continuations until they are consumed.
+8. Report the applied rule through a stable rule identifier.
+
+A transition may update the control, environment, heap and stack
+as required by its operational rule.
+
+Instrumentation must not determine the selected semantic rule.
+
+### 8.2 Reference Return and WHNF Demand
+
+`Return(reference)` delivers a runtime reference to the current
+continuation. It does not independently certify that the
+referenced object is in WHNF.
+
+A continuation requiring WHNF must arrange an explicit demand
+through `Force(reference)` or an equivalent documented sequence
+of machine transitions.
+
+After demand is satisfied, the continuation must resume without
+repeating the same demand indefinitely.
+
+The implementation must distinguish the stage before WHNF
+demand from the stage after successful demand.
+
+The exact continuation representation is defined before
+implementing application and forcing rules.
+
+### 8.3 Recursive Global Initialization
+
+The evaluator must not start executing the selected entry
+expression before its global lexical scope is established.
+
+All global names must be addressable before any selected global
+RHS is demanded.
+
+Global RHS expressions are activated on demand, including
+under CBV. Initializing the global scope must not evaluate
+unrelated global RHS expressions.
+
+The predefined identifier scope is outside user-defined
+global and local scopes. Ordinary lexical shadowing applies.
+
+### 8.4 Entry-Point Contract
+
+Compiling a Core program does not require executing it.
+
+The runtime is responsible for selecting an entry expression
+or named global entry point.
+
+The default entry may be `main` when that binding exists.
+Programs without `main` remain valid compilation inputs.
+
+If no valid execution entry has been selected, execution
+initialization must fail with an explicit diagnostic rather
+than silently selecting an unrelated definition.
+
+The exact initialization API and diagnostic types are defined
+during B04.2.
+
+### 8.5 Error and Unsupported-State Handling
+
+An unsupported operational construct must not be treated
+as successfully evaluated.
+
+Invalid machine states and unsupported machine kinds must
+produce explicit diagnostics.
+
+A failed transition must not leave partial mutations in the
+input execution state.
+
+Step and result limits must not be classified as proof of
+program divergence.
+
+### 8.6 B04.1 Acceptance Criteria
+
+B04.1 is complete when:
+
+- The responsibilities of `EvaluateCore`, `Return`, `Force`
+  and `InitializeCoreBindings` are documented.
+- WHNF demand and result observation are distinguished.
+- Continuation responsibilities and lexical environments
+  are documented.
+- CBV, CBN and CBNeed contracts are explicitly separated.
+- Recursive global initialization is demand-driven.
+- Local CBV `CoreLetRec` initialization is strict.
+- The invariant between successful forcing and continuation
+  resumption is recorded.
+- Milestone boundaries for B04, B05 and B06 remain intact.
+- Existing B03 regression tests pass.
+
+Completing these contracts does not establish operational
+correctness of rules that have not yet been implemented.
+
+### 8.7 B04.2 Readiness
+
+B04.2 may begin by implementing the operational initialization
+of a Core program:
+
+- Establish the predefined identifier scope.
+- Make the complete recursive global group addressable.
+- Preserve source-order and lexical binding identities.
+- Select an explicit or default execution entry.
+- Avoid evaluating unrelated global RHS expressions.
+- Produce a valid initial `ExecutionState`.
+- Keep initialization transitions observable.
+
+The concrete representation of pending global computations
+must satisfy the strategy contracts without prematurely
+implementing B05 thunk updates or sharing.

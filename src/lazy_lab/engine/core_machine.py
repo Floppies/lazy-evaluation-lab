@@ -4,19 +4,30 @@ from __future__ import annotations
 
 from dataclasses import replace
 
-from lazy_lab.core.nodes import CoreBool, CoreInt, CoreExpr
+from lazy_lab.core.nodes import (
+    CoreBool,
+    CoreInt,
+    CoreExpr,
+    CoreProgram,
+    CoreVar,
+)
 
-from lazy_lab.runtime.control import EvaluateCore, Return
+from lazy_lab.runtime.control import EvaluateCore, Return, InitializeCoreBindings
 from lazy_lab.runtime.references import (
     ImmediateBoolean,
     ImmediateInteger,
 )
+from lazy_lab.runtime.environment import Environment
+from lazy_lab.runtime.heap import Heap
+from lazy_lab.runtime.stack import Stack
 from lazy_lab.runtime.state import (
     ExecutionConfig,
     ExecutionState,
     ExecutionStatus,
+    ExecutionPhase,
     MachineKind,
     TraceMode,
+    MachineState,
 )
 from lazy_lab.runtime.transitions import (
     BatchResult,
@@ -220,3 +231,73 @@ def run_batch(
         ),
     )
 
+def create_initial_core_state(
+    program: CoreProgram,
+    config: ExecutionConfig,
+    *,
+    session_id: str,
+    entry: str | CoreExpr | None = None,
+) -> ExecutionState:
+    """Create a Core machine state before global initialization.
+
+    The program and any explicit entry expression are expected
+    to have been validated by the caller.
+    """
+    if not isinstance(program, CoreProgram):
+        raise TypeError("Expected a CoreProgram")
+
+    if not isinstance(config, ExecutionConfig):
+        raise TypeError("Expected an ExecutionConfig")
+
+    if config.machine_kind is not MachineKind.CORE:
+        raise UnsupportedTransitionError(
+            "Only Core initialization is supported"
+        )
+
+    if entry is None:
+        entry = "main"
+
+    if isinstance(entry, str):
+        global_names = {
+            binding.name for binding in program.bindings
+        }
+
+        if entry not in global_names:
+            raise ValueError(
+                f"Unknown entry binding: {entry!r}"
+            )
+
+        entry_expression = CoreVar(entry)
+
+    elif isinstance(entry, CoreExpr):
+        entry_expression = entry
+
+    else:
+        raise TypeError(
+            "Entry must be a binding name or Core expression"
+        )
+
+    environment = Environment()
+
+    machine = MachineState(
+        machine_kind=MachineKind.CORE,
+        strategy=config.strategy,
+        status=ExecutionStatus.RUNNING,
+        phase=ExecutionPhase.INITIALIZATION,
+        control=InitializeCoreBindings(
+            bindings=program.bindings,
+            next_index=0,
+            entry_expression=entry_expression,
+        ),
+        local_environment=environment,
+        global_environment=environment,
+        heap=Heap(),
+        stack=Stack(),
+    )
+
+    return ExecutionState(
+        state_id=0,
+        session_id=session_id,
+        transition_index=0,
+        machine_state=machine,
+    )

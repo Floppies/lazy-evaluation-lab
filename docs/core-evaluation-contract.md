@@ -433,3 +433,47 @@ of a Core program:
 The concrete representation of pending global computations
 must satisfy the strategy contracts without prematurely
 implementing B05 thunk updates or sharing.
+
+
+## 9. Core Program Initialization
+
+### 9.1 Initial-State Factory
+
+`create_initial_core_state(program, config, session_id, entry)`
+creates the initial state for a validated Core program.
+
+The initial machine has:
+
+- `ExecutionPhase.INITIALIZATION`
+- `ExecutionStatus.RUNNING`
+- `InitializeCoreBindings` as its control
+- Empty heap and continuation stack
+- Zero transition and evaluator counters
+
+The factory does not evaluate program expressions or install
+global bindings.
+
+### 9.2 Entry Selection
+
+The default entry is the global binding `main`.
+
+A caller may select another global binding by name or provide
+an explicitly validated Core expression.
+
+If no default or explicit entry is available, initialization
+fails with a diagnostic.
+
+The selected entry expression is retained by
+`InitializeCoreBindings` until global initialization finishes.
+
+### 9.3 Initialization Boundary
+
+Subsequent initialization transitions must establish the
+predefined scope and make all global bindings addressable
+before execution of the selected entry begins.
+
+Global RHS activation remains demand-driven under every
+evaluation strategy.
+
+Creating an initial state is not equivalent to completing
+global initialization.

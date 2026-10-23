@@ -19,7 +19,7 @@ from lazy_lab.runtime.references import (
     ImmediateBoolean,
     ImmediateInteger,
 )
-from lazy_lab.runtime.stack import Stack
+from lazy_lab.runtime.stack import Stack, ApplyFunctionFrame
 from lazy_lab.runtime.state import (
     ExecutionConfig,
     ExecutionPhase,
@@ -32,7 +32,7 @@ from lazy_lab.runtime.state import (
     TraceMode,
 )
 from lazy_lab.runtime.transitions import BatchStopReason
-from lazy_lab.core.nodes import CoreLam
+from lazy_lab.core.nodes import CoreLam, CoreInt
 from lazy_lab.runtime.closures import (
     Closure,
     allocate_closure,
@@ -412,3 +412,47 @@ def test_global_lambda_lookup_reuses_installed_closure():
     assert machine.heap.current_slots == 3
 
     assert result.trace[-1].rule_id == "CORE_EVAL_VARIABLE"
+
+
+def test_compiled_application_preserves_pending_function_frame():
+    state = make_demo_state(
+        "main = (\\x -> x) 5"
+    )
+    config = make_config()
+
+    result = run_batch(
+        state,
+        config,
+        max_steps=2,
+    )
+
+    machine = result.state.machine_state
+
+    assert [
+        entry.rule_id for entry in result.trace
+    ] == [
+        "CORE_EVAL_APPLICATION",
+        "CORE_EVAL_LAMBDA",
+    ]
+
+    assert isinstance(machine.control, Return)
+    assert machine.stack.depth == 1
+
+    frame = machine.stack.peek()
+    assert isinstance(frame, ApplyFunctionFrame)
+    assert frame.argument == CoreInt(5)
+
+    closure_reference = machine.control.reference
+    closure = machine.heap.get(closure_reference).value
+
+    assert isinstance(closure, Closure)
+    assert closure.lambda_expression.parameter == "x"
+
+    # Evaluation is suspended before continuation handling.
+    assert machine.status is ExecutionStatus.RUNNING
+    assert result.stop_reason is BatchStopReason.BATCH_LIMIT
+    assert result.state.transition_index == 2
+
+    assert state.transition_index == 0
+    assert state.machine_state.stack.depth == 0
+    assert state.machine_state.heap.current_slots == 0

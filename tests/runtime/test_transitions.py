@@ -8,6 +8,7 @@ from lazy_lab.core.nodes import (
     CoreInt,
     CoreLam,
     CoreVar,
+    CorePrimOp,
 )
 from lazy_lab.engine.core_machine import (
     EvaluatorBudgetExhaustedError,
@@ -23,7 +24,7 @@ from lazy_lab.runtime.references import (
     ImmediateBoolean,
     ImmediateInteger,
 )
-from lazy_lab.runtime.stack import Stack
+from lazy_lab.runtime.stack import Stack, ApplyFunctionFrame
 from lazy_lab.runtime.state import (
     ExecutionConfig,
     ExecutionPhase,
@@ -186,13 +187,23 @@ def test_step_budget_is_enforced():
     assert result.trace == ()
 
 
-def test_unsupported_expression_does_not_advance():
-    state = make_state(CoreApp(CoreInt(1), CoreInt(2)))
+def test_unsupported_primitive_does_not_advance():
+    state = make_state(
+        CorePrimOp(
+            "+",
+            (CoreInt(1), CoreInt(2)),
+        )
+    )
 
-    with pytest.raises(UnsupportedTransitionError):
+    with pytest.raises(
+        UnsupportedTransitionError,
+        match="CorePrimOp",
+    ):
         step(state, make_config())
 
     assert state.transition_index == 0
+    assert state.machine_state.stack.depth == 0
+    assert state.machine_state.evaluator_transition_count == 0
 
 
 def test_terminal_state_cannot_advance():
@@ -313,3 +324,120 @@ def test_variable_transition_rejects_unknown_name():
     assert original.transition_index == 0
     assert original.machine_state.evaluator_transition_count == 0
     assert original.machine_state.heap.current_slots == 0
+
+
+def test_core_application_pushes_function_continuation():
+    function = CoreLam("x", CoreVar("x"))
+    argument = CoreInt(5)
+    expression = CoreApp(function, argument)
+
+    original = make_state(expression)
+    config = make_config()
+
+    transition = step(original, config)
+    machine = transition.next_state.machine_state
+
+    assert transition.rule_id == "CORE_EVAL_APPLICATION"
+    assert machine.control == EvaluateCore(function)
+
+    assert machine.stack.depth == 1
+
+    frame = machine.stack.peek()
+
+    assert isinstance(frame, ApplyFunctionFrame)
+    assert frame.argument is argument
+    assert (
+        frame.environment
+        is original.machine_state.local_environment
+    )
+
+    # Only the function position was scheduled.
+    assert machine.heap.current_slots == 0
+
+    # The original execution state is unchanged.
+    assert original.machine_state.stack.depth == 0
+    assert original.transition_index == 0
+    assert original.machine_state.evaluator_transition_count == 0
+
+    assert transition.next_state.transition_index == 1
+    assert machine.evaluator_transition_count == 1
+
+
+def test_application_preserves_argument_call_site_environment():
+    global_env = Environment({
+        "x": ImmediateInteger(100),
+    })
+
+    local_env = global_env.extend({
+        "x": ImmediateInteger(10),
+    })
+
+    expression = CoreApp(
+        CoreLam("argument", CoreVar("argument")),
+        CoreVar("x"),
+    )
+
+    original = make_state(expression)
+    original = replace(
+        original,
+        machine_state=replace(
+            original.machine_state,
+            local_environment=local_env,
+            global_environment=global_env,
+        ),
+    )
+
+    transition = step(original, make_config())
+    frame = transition.next_state.machine_state.stack.peek()
+
+    assert isinstance(frame, ApplyFunctionFrame)
+    assert frame.argument == CoreVar("x")
+    assert frame.environment is local_env
+    assert frame.environment.lookup("x") == ImmediateInteger(10)
+    assert global_env.lookup("x") == ImmediateInteger(100)
+
+
+def test_nested_applications_preserve_continuation_order():
+    inner = CoreApp(
+        CoreVar("f"),
+        CoreInt(1),
+    )
+
+    outer = CoreApp(
+        inner,
+        CoreInt(2),
+    )
+
+    original = make_state(outer)
+    config = make_config()
+
+    first = step(original, config)
+    second = step(first.next_state, config)
+
+    machine = second.next_state.machine_state
+
+    assert machine.control == EvaluateCore(CoreVar("f"))
+    assert machine.stack.depth == 2
+
+    outer_frame, inner_frame = machine.stack.frames
+
+    assert isinstance(outer_frame, ApplyFunctionFrame)
+    assert isinstance(inner_frame, ApplyFunctionFrame)
+
+    assert outer_frame.argument == CoreInt(2)
+    assert inner_frame.argument == CoreInt(1)
+
+    # The inner application must be resumed first.
+    assert machine.stack.peek() is inner_frame
+
+    assert [
+        first.rule_id,
+        second.rule_id,
+    ] == [
+        "CORE_EVAL_APPLICATION",
+        "CORE_EVAL_APPLICATION",
+    ]
+
+    assert original.machine_state.stack.depth == 0
+    assert first.next_state.machine_state.stack.depth == 1
+    assert second.next_state.machine_state.stack.depth == 2

@@ -12,6 +12,7 @@ from lazy_lab.core.nodes import (
     CoreVar,
     CoreBinding,
     CoreLam,
+    CoreApp,
 )
 from lazy_lab.semantics.predefined import PREDEFINED_IDENTIFIERS
 from lazy_lab.runtime.control import EvaluateCore, Return, InitializeCoreBindings
@@ -25,7 +26,7 @@ from lazy_lab.runtime.heap import (
     Heap,
     Reserved,
 )
-from lazy_lab.runtime.stack import Stack
+from lazy_lab.runtime.stack import Stack, ApplyFunctionFrame
 from lazy_lab.runtime.predefined import PredefinedFunction
 from lazy_lab.runtime.state import (
     ExecutionConfig,
@@ -144,6 +145,21 @@ def _dispatch_core_evaluation(
         )
         next_control = Return(reference)
         rule_id = "CORE_EVAL_LAMBDA"
+
+    elif isinstance(expression, CoreApp):
+        # Preserve the argument and its lexical call-site
+        # environment while evaluating the function position.
+        machine.stack.push(
+            ApplyFunctionFrame(
+                argument=expression.argument,
+                environment=machine.local_environment,
+            )
+        )
+
+        # Evaluate only the function position.
+        # The argument remains unevaluated in its frame.
+        next_control = EvaluateCore(expression.function)
+        rule_id = "CORE_EVAL_APPLICATION"
 
     else:
         raise UnsupportedTransitionError(

@@ -100,8 +100,6 @@ def test_signed_core_literals_are_immediates_without_frontend_negation(value):
     "main = if True then 1 else 2",
     "main = []",
     "main = [1]",
-    "main = (\\x -> x) 1",
-    "f [] = 0\nf (h:t) = h\nmain = f []",
 ])
 def test_b03_only_rejects_compiled_constructs_awaiting_later_milestones(source):
     """Replace these milestone-specific expectations as B04-B06 grow."""

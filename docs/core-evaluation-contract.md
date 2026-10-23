@@ -830,3 +830,48 @@ interpreted as a value already in WHNF.
 
 Canonical root observation and forcing are completed by
 subsequent B04 rules.
+
+### 11.5 Application Evaluation
+
+`CORE_EVAL_APPLICATION` handles `EvaluateCore(CoreApp(f, a))`.
+
+The rule:
+
+1. Pushes `ApplyFunctionFrame(a, call_site_environment)`.
+2. Changes the control to `EvaluateCore(f)`.
+3. Leaves the argument expression unevaluated.
+4. Preserves the argument's lexical call-site environment.
+
+The transition does not apply the function, evaluate its
+argument, or force the function reference.
+
+This initial application rule is shared by CBV, CBN and
+CBNeed. Strategy-specific argument evaluation begins after
+the function value has been obtained and demanded as needed.
+
+Nested applications preserve continuation order through
+the LIFO stack.
+
+For an expression equivalent to `((f a) b)`, the machine
+first pushes the frame for `b`, then the frame for `a`.
+
+The frame for `a` must be consumed before the frame for `b`
+during continuation processing.
+
+### 11.6 Pending Application Continuations
+
+After the function position has been evaluated, the control
+may become `Return(function_reference)` while an
+`ApplyFunctionFrame` remains on the stack.
+
+This state is not a completed application.
+
+A subsequent continuation rule must demand the function
+reference to WHNF if required and then proceed according
+to the selected evaluation strategy.
+
+Continuation consumption and WHNF forcing are introduced
+in subsequent B04.4 subtasks.
+
+A root result-observation boundary must not consume or
+discard pending application continuations.

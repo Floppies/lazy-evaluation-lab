@@ -597,3 +597,42 @@ requires N + 2 machine transitions.
 The current milestone does not yet implement variable
 forcing or demand-driven evaluation of pending global
 RHS expressions.
+
+## 10. Free Variables and Closure Capture
+
+### 10.1 Iterative Free-Variable Analysis
+
+`free_variable_names(expression)` computes the set of names
+that are free relative to a Core expression.
+
+The traversal is iterative and does not rely on the Python
+call stack.
+
+Lexical binders are handled as follows:
+
+- `CoreLam` binds its parameter within its body.
+- `CoreLetRec` binds all group names in every RHS and the
+  group body.
+- `CoreCase` alternative binders are visible only within
+  their corresponding alternative bodies.
+- Nested scopes and shadowing are tracked independently.
+
+The analysis does not modify the Core expression, runtime
+environment, heap or execution state.
+
+Global and predefined names may appear in the returned set.
+They are not removed by this structural analysis.
+
+### 10.2 Capture Selection
+
+Free-variable discovery and runtime capture selection are
+separate operations.
+
+Only free names that resolve to visible local bindings
+may be included in a closure's captured-local environment.
+
+Global and predefined bindings are resolved through the
+global lexical environment instead.
+
+Selective local capture and runtime closure allocation
+are completed in subsequent B04.3 subtasks.

@@ -21,11 +21,14 @@ class StackFrame:
 class ApplyFunctionFrame(StackFrame):
     argument: CoreExpr
     environment: Environment
+    awaiting_whnf: bool = False
 
 
 @dataclass(frozen=True, slots=True)
 class ApplyArgumentFrame(StackFrame):
     function: RuntimeRef
+    return_environment: Environment | None = None
+    awaiting_whnf: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -42,6 +45,11 @@ class GlobalDemandFrame(StackFrame):
     return_environment: Environment
     pending_reference: HeapReference
     awaiting_whnf: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class RestoreEnvironmentFrame(StackFrame):
+    environment: Environment
 
 
 class EmptyStackError(LookupError):

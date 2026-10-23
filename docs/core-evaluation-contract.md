@@ -875,3 +875,79 @@ in subsequent B04.4 subtasks.
 
 A root result-observation boundary must not consume or
 discard pending application continuations.
+
+### 11.7 WHNF Demand and Global RHS Activation
+
+`Force(reference)` explicitly requests weak head normal form.
+
+Supported WHNF representations currently include immediate
+integers, immediate booleans, closures and predefined functions.
+
+`Indirection` objects are followed without automatically
+rewriting their containing heap cells.
+
+A `PendingGlobal` activates its stored Core expression in
+the global lexical environment.
+
+The original caller environment is retained in an immutable
+`GlobalDemandFrame` and restored when demand completes.
+
+A global RHS may return another reference that still requires
+forcing. The continuation distinguishes the stage before
+WHNF demand from the stage after successful forcing.
+
+Global RHS evaluation does not eagerly evaluate unrelated
+globals.
+
+No sharing, memoization or update to `PendingGlobal` is
+performed by these rules.
+
+A root `Return(reference)` is not ready for result observation
+until the reference is recognized as WHNF.
+
+Function application continuations are not yet consumed by
+these demand rules. Their integration follows in B04.4.4.
+
+Full CBNeed sharing, thunk updates and blackhole detection
+remain responsibilities of B05.
+
+### 11.8 Call-by-Value Function Application
+
+Call-by-value function application uses explicit continuation
+frames to separate function demand, argument evaluation and
+closure-body execution.
+
+An `ApplyFunctionFrame` retains the argument expression and
+its original call-site environment.
+
+When the function position returns, the machine explicitly
+demands the function reference to WHNF.
+
+After a Closure has been obtained, CBV evaluates the argument
+in its original call-site environment.
+
+The argument is also demanded to WHNF before parameter binding.
+
+`ApplyArgumentFrame` retains the function reference, the caller
+environment and the current demand stage.
+
+When the argument is ready, the machine reconstructs the
+closure's lexical call environment and enters its body.
+
+A `RestoreEnvironmentFrame` preserves the caller environment
+and restores it after the function body returns.
+
+All frames are immutable. Demand-stage flags prevent repeated
+forcing of already satisfied continuation demands.
+
+Function and argument forcing do not introduce memoization
+or sharing updates.
+
+Only ordinary Closure application under CBV is implemented
+by these rules.
+
+Predefined function application, non-strict argument passing
+and full thunk machinery are implemented in later milestones.
+
+Nested curried applications preserve lexical capture and
+LIFO continuation order.

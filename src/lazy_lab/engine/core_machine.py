@@ -35,6 +35,8 @@ from lazy_lab.runtime.heap import (
 from lazy_lab.runtime.stack import (
     Stack,
     ApplyFunctionFrame,
+    ApplyArgumentFrame,
+    RestoreEnvironmentFrame,
     GlobalDemandFrame,
 )
 from lazy_lab.runtime.predefined import PredefinedFunction
@@ -46,6 +48,7 @@ from lazy_lab.runtime.state import (
     MachineKind,
     TraceMode,
     MachineState,
+    Strategy,
 )
 from lazy_lab.runtime.transitions import (
     BatchResult,
@@ -592,53 +595,87 @@ def _advance_return(
     machine: MachineState,
     control: Return,
 ) -> tuple[MachineState, str]:
-    """Resume a supported continuation or demand a root result."""
+    """Resume a continuation or demand a root result."""
     reference = control.reference
 
     if machine.stack.depth > 0:
         frame = machine.stack.peek()
 
-        if not isinstance(frame, GlobalDemandFrame):
-            raise UnsupportedTransitionError(
-                "Return continuation is not implemented yet: "
-                f"{type(frame).__name__}"
-            )
+        # 1. Resume a pending global RHS evaluation.
+        if isinstance(frame, GlobalDemandFrame):
+            if not frame.awaiting_whnf:
+                machine.stack.pop()
+                machine.stack.push(
+                    replace(frame, awaiting_whnf=True)
+                )
 
-        if not frame.awaiting_whnf:
+                return (
+                    replace(
+                        machine,
+                        control=Force(reference),
+                    ),
+                    "CORE_GLOBAL_REQUIRE_WHNF",
+                )
+
+            if not _reference_is_whnf(machine, reference):
+                raise InvalidMachineStateError(
+                    "Global demand resumed without WHNF"
+                )
+
             machine.stack.pop()
-            machine.stack.push(
-                replace(frame, awaiting_whnf=True)
-            )
 
             return (
-                replace(machine, control=Force(reference)),
-                "CORE_GLOBAL_REQUIRE_WHNF",
+                replace(
+                    machine,
+                    local_environment=frame.return_environment,
+                    control=Return(reference),
+                ),
+                "CORE_GLOBAL_DEMAND_RETURN",
             )
 
-        if not _reference_is_whnf(machine, reference):
-            raise InvalidMachineStateError(
-                "Global demand resumed without WHNF"
-            )
-
-        machine.stack.pop()
-
-        return (
-            replace(
+        # 2. Function position has returned.
+        # Demand the function and prepare its argument.
+        if isinstance(frame, ApplyFunctionFrame):
+            return _resume_apply_function(
                 machine,
-                local_environment=frame.return_environment,
-                control=Return(reference),
-            ),
-            "CORE_GLOBAL_DEMAND_RETURN",
+                control,
+                frame,
+            )
+
+        # 3. Argument has returned.
+        # Under CBV, demand WHNF and enter the closure body.
+        if isinstance(frame, ApplyArgumentFrame):
+            return _resume_apply_argument(
+                machine,
+                control,
+                frame,
+            )
+
+        # 4. Function body has returned.
+        # Restore the caller's lexical environment.
+        if isinstance(frame, RestoreEnvironmentFrame):
+            return _resume_caller_environment(
+                machine,
+                control,
+                frame,
+            )
+
+        raise UnsupportedTransitionError(
+            "Unsupported return continuation: "
+            f"{type(frame).__name__}"
         )
 
-    # Root returns containing pending objects still require
-    # WHNF demand before result observation can stop.
+    # 5. No continuation remains: handle the root result.
+    # A root reference to a pending object still requires WHNF.
     if isinstance(reference, HeapReference):
         value = machine.heap.get(reference).value
 
         if isinstance(value, (PendingGlobal, Indirection)):
             return (
-                replace(machine, control=Force(reference)),
+                replace(
+                    machine,
+                    control=Force(reference),
+                ),
                 "CORE_ROOT_REQUIRE_WHNF",
             )
 
@@ -764,4 +801,149 @@ def create_initial_core_state(
         session_id=session_id,
         transition_index=0,
         machine_state=machine,
+    )
+
+def _resume_apply_function(
+    machine: MachineState,
+    control: Return,
+    frame: ApplyFunctionFrame,
+) -> tuple[MachineState, str]:
+    """Demand the function, then begin strict CBV argument evaluation."""
+    reference = control.reference
+
+    if not frame.awaiting_whnf:
+        machine.stack.pop()
+        machine.stack.push(
+            replace(frame, awaiting_whnf=True)
+        )
+
+        return (
+            replace(machine, control=Force(reference)),
+            "CORE_APPLY_REQUIRE_FUNCTION_WHNF",
+        )
+
+    if not _reference_is_whnf(machine, reference):
+        raise InvalidMachineStateError(
+            "Function demand returned without WHNF"
+        )
+
+    if machine.strategy is not Strategy.CBV:
+        raise UnsupportedTransitionError(
+            "Non-strict application is not implemented yet"
+        )
+
+    if not isinstance(reference, HeapReference):
+        raise TypeError("Cannot apply a non-function value")
+
+    function_value = machine.heap.get(reference).value
+
+    if isinstance(function_value, PredefinedFunction):
+        raise UnsupportedTransitionError(
+            "Predefined function application is not implemented yet"
+        )
+
+    if not isinstance(function_value, Closure):
+        raise TypeError("Cannot apply a non-function value")
+
+    # The function is ready. CBV evaluates its argument
+    # in the original call-site environment.
+    machine.stack.pop()
+    machine.stack.push(
+        ApplyArgumentFrame(
+            function=reference,
+            return_environment=frame.environment,
+        )
+    )
+
+    return (
+        replace(
+            machine,
+            local_environment=frame.environment,
+            control=EvaluateCore(frame.argument),
+        ),
+        "CORE_CBV_EVAL_ARGUMENT",
+    )
+
+def _resume_apply_argument(
+    machine: MachineState,
+    control: Return,
+    frame: ApplyArgumentFrame,
+) -> tuple[MachineState, str]:
+    """Demand the CBV argument, then enter the closure body."""
+    if frame.return_environment is None:
+        raise UnsupportedTransitionError(
+            "Incomplete application-argument continuation"
+        )
+
+    reference = control.reference
+
+    if not frame.awaiting_whnf:
+        machine.stack.pop()
+        machine.stack.push(
+            replace(frame, awaiting_whnf=True)
+        )
+
+        return (
+            replace(machine, control=Force(reference)),
+            "CORE_CBV_REQUIRE_ARGUMENT_WHNF",
+        )
+
+    if not _reference_is_whnf(machine, reference):
+        raise InvalidMachineStateError(
+            "CBV argument returned without WHNF"
+        )
+
+    function_reference = frame.function
+
+    if not isinstance(function_reference, HeapReference):
+        raise InvalidMachineStateError(
+            "Applied function has an invalid reference"
+        )
+
+    function_value = machine.heap.get(
+        function_reference
+    ).value
+
+    if not isinstance(function_value, Closure):
+        raise InvalidMachineStateError(
+            "Applied function is no longer a closure"
+        )
+
+    # Reconstruct lexical scope from the closure's captures.
+    call_environment = function_value.call_environment(
+        reference,
+        machine.global_environment,
+    )
+
+    machine.stack.pop()
+    machine.stack.push(
+        RestoreEnvironmentFrame(frame.return_environment)
+    )
+
+    return (
+        replace(
+            machine,
+            local_environment=call_environment,
+            control=EvaluateCore(
+                function_value.lambda_expression.body
+            ),
+        ),
+        "CORE_CBV_ENTER_BODY",
+    )
+
+def _resume_caller_environment(
+    machine: MachineState,
+    control: Return,
+    frame: RestoreEnvironmentFrame,
+) -> tuple[MachineState, str]:
+    """Leave a function body without changing its returned reference."""
+    machine.stack.pop()
+
+    return (
+        replace(
+            machine,
+            local_environment=frame.environment,
+            control=Return(control.reference),
+        ),
+        "CORE_RESTORE_CALLER_ENVIRONMENT",
     )

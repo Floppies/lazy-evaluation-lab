@@ -19,7 +19,11 @@ from lazy_lab.runtime.references import (
     ImmediateBoolean,
     ImmediateInteger,
 )
-from lazy_lab.runtime.stack import Stack, ApplyFunctionFrame
+from lazy_lab.runtime.stack import (
+    Stack,
+    ApplyFunctionFrame,
+    RestoreEnvironmentFrame,
+)                                   
 from lazy_lab.runtime.state import (
     ExecutionConfig,
     ExecutionPhase,
@@ -32,7 +36,12 @@ from lazy_lab.runtime.state import (
     TraceMode,
 )
 from lazy_lab.runtime.transitions import BatchStopReason
-from lazy_lab.core.nodes import CoreLam, CoreInt, CoreVar
+from lazy_lab.core.nodes import (
+    CoreLam,
+    CoreInt,
+    CoreVar,
+    CoreApp,
+)
 from lazy_lab.runtime.closures import (
     Closure,
     allocate_closure,
@@ -567,3 +576,170 @@ def test_recursive_global_demand_is_step_bounded():
         == 20
     )
     assert result.state.machine_state.status is ExecutionStatus.RUNNING
+
+
+def test_cbv_identity_application_reaches_whnf():
+    program = compile_source(
+        "main = (\\x -> x) 5"
+    )
+    config = make_config(strategy=Strategy.CBV)
+
+    initial = create_initial_core_state(
+        program,
+        config,
+        session_id="cbv-identity",
+    )
+
+    result = run_batch(initial, config, max_steps=80)
+    machine = result.state.machine_state
+
+    assert result.stop_reason is BatchStopReason.WHNF_PENDING
+    assert machine.control == Return(ImmediateInteger(5))
+    assert machine.stack.depth == 0
+    assert machine.local_environment is machine.global_environment
+
+    rules = [entry.rule_id for entry in result.trace]
+
+    assert "CORE_APPLY_REQUIRE_FUNCTION_WHNF" in rules
+    assert "CORE_CBV_EVAL_ARGUMENT" in rules
+    assert "CORE_CBV_REQUIRE_ARGUMENT_WHNF" in rules
+    assert "CORE_CBV_ENTER_BODY" in rules
+    assert "CORE_RESTORE_CALLER_ENVIRONMENT" in rules
+
+    assert initial.transition_index == 0
+    assert initial.machine_state.heap.current_slots == 0
+
+
+def test_cbv_applies_previously_installed_global_closure():
+    program = compile_source(
+        "identity x = x\n"
+        "main = identity 7"
+    )
+    config = make_config(strategy=Strategy.CBV)
+
+    initial = create_initial_core_state(
+        program,
+        config,
+        session_id="cbv-global-function",
+    )
+
+    result = run_batch(initial, config, max_steps=80)
+    machine = result.state.machine_state
+
+    assert result.stop_reason is BatchStopReason.WHNF_PENDING
+    assert machine.control == Return(ImmediateInteger(7))
+    assert machine.stack.depth == 0
+
+    identity_ref = machine.global_environment.lookup(
+        "identity"
+    )
+
+    assert isinstance(
+        machine.heap.get(identity_ref).value,
+        Closure,
+    )
+
+
+def test_cbv_nested_curried_application():
+    program = compile_source(
+        "main = (\\x -> \\y -> x) 10 20"
+    )
+    config = make_config(strategy=Strategy.CBV)
+
+    initial = create_initial_core_state(
+        program,
+        config,
+        session_id="cbv-curried",
+    )
+
+    result = run_batch(initial, config, max_steps=120)
+    machine = result.state.machine_state
+
+    assert result.stop_reason is BatchStopReason.WHNF_PENDING
+    assert machine.control == Return(ImmediateInteger(10))
+    assert machine.stack.depth == 0
+    assert machine.local_environment is machine.global_environment
+
+    # One closure for each evaluated lambda.
+    closures = [
+        cell.value
+        for cell in machine.heap.cells.values()
+        if isinstance(cell.value, Closure)
+    ]
+
+    assert len(closures) == 2
+    assert sorted(c.required_slots for c in closures) == [1, 2]
+
+
+def test_cbv_does_not_skip_unused_diverging_argument():
+    program = compile_source(
+        "loop = loop\n"
+        "main = (\\x -> 42) loop"
+    )
+    config = replace(
+        make_config(strategy=Strategy.CBV),
+        execution_step_limit=35,
+    )
+
+    initial = create_initial_core_state(
+        program,
+        config,
+        session_id="cbv-strictness",
+    )
+
+    result = run_batch(initial, config, max_steps=100)
+
+    assert result.stop_reason is BatchStopReason.EVALUATOR_BUDGET
+    assert result.state.machine_state.status is ExecutionStatus.RUNNING
+
+    assert "CORE_CBV_EVAL_ARGUMENT" in [
+        entry.rule_id for entry in result.trace
+    ]
+
+    assert "CORE_CBV_ENTER_BODY" not in [
+        entry.rule_id for entry in result.trace
+    ]
+
+
+def test_cbv_restores_call_site_environment():
+    program = compile_source("")
+    config = make_config(strategy=Strategy.CBV)
+
+    expression = CoreApp(
+        CoreLam("x", CoreVar("x")),
+        CoreInt(5),
+    )
+
+    initial = create_initial_core_state(
+        program,
+        config,
+        session_id="cbv-environment",
+        entry=expression,
+    )
+
+    result = run_batch(initial, config, max_steps=80)
+    machine = result.state.machine_state
+
+    assert result.stop_reason is BatchStopReason.WHNF_PENDING
+    assert machine.control == Return(ImmediateInteger(5))
+    assert machine.local_environment is machine.global_environment
+    assert machine.stack.depth == 0
+
+
+def test_restore_environment_frame_preserves_lexical_identity():
+    environment = Environment({
+        "x": ImmediateInteger(42),
+    })
+
+    frame = RestoreEnvironmentFrame(environment)
+
+    assert frame.environment is environment
+
+    stack = Stack()
+    stack.push(frame)
+
+    snapshot = stack.clone()
+
+    assert snapshot.peek() is frame
+    assert stack.pop() is frame
+    assert snapshot.depth == 1

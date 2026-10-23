@@ -10,8 +10,8 @@ from lazy_lab.core.nodes import CoreLam
 from lazy_lab.core.free_variables import free_variable_names
 
 from .environment import Environment
-from .heap import HeapObject
-from .references import RuntimeRef
+from .heap import HeapObject, Heap
+from .references import RuntimeRef, HeapReference
 
 
 @dataclass(frozen=True, slots=True, eq=False)
@@ -124,3 +124,37 @@ def select_free_local_names(
         global_environment.lookup(name)
 
     return tuple(sorted(captured))
+
+def allocate_closure(
+    heap: Heap,
+    lambda_expression: CoreLam,
+    definition_environment: Environment,
+    global_environment: Environment,
+) -> HeapReference:
+    """Allocate a closure capturing only free local references.
+
+    The caller must supply an owned heap or an isolated successor
+    snapshot. The lambda body is never evaluated here.
+    """
+    if not isinstance(heap, Heap):
+        raise TypeError("Expected a Heap")
+
+    # Determine which free names resolve in local scopes.
+    free_local_names = select_free_local_names(
+        lambda_expression,
+        definition_environment,
+        global_environment,
+    )
+
+    # Construct the complete immutable object first.
+    closure = capture_closure(
+        lambda_expression,
+        definition_environment,
+        free_local_names,
+    )
+
+    # Allocate exactly the number of abstract slots needed.
+    return heap.allocate(
+        closure,
+        allocated_slots=closure.required_slots,
+    )

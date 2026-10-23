@@ -671,3 +671,42 @@ objects, or modify lexical environments.
 
 Runtime closure construction and allocation are completed
 in B04.3.3.
+
+### 10.4 Closure Construction and Heap Allocation
+
+`allocate_closure()` integrates free-variable analysis, selective
+local capture, closure construction and simulated heap allocation.
+
+The operation:
+
+1. Identifies the free local names of the lambda.
+2. Captures their existing runtime references.
+3. Constructs an immutable `Closure`.
+4. Allocates a heap cell with exactly the required capacity.
+
+The abstract allocation size is:
+
+`1 + number_of_captured_local_references`
+
+Global and predefined references are not stored in
+`Closure.captured_locals`.
+
+Captures preserve runtime reference identity. The allocation
+operation does not dereference, force or evaluate captured
+values, and does not execute the lambda body.
+
+No heap mutation occurs before free-name selection and closure
+construction have completed successfully.
+
+The helper mutates its supplied heap. Evaluator transitions
+must call it on snapshot-isolated successor storage.
+
+Direct closure allocation assumes that the definition-site
+environment already contains all required local references.
+
+Recursive local binding groups require additional reservation
+and installation rules, introduced in B04.6. This helper does
+not itself initialize recursive binding groups.
+
+Integration with `EvaluateCore(CoreLam)` belongs to B04.4.
+

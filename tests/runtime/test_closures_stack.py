@@ -9,9 +9,19 @@ from lazy_lab.core.nodes import (
     CorePrimOp,
     CoreApp,
 )
-from lazy_lab.runtime.closures import capture_closure, select_free_local_names
+from lazy_lab.runtime.closures import (
+    capture_closure,
+    select_free_local_names,
+    allocate_closure,
+    Closure,
+)
 from lazy_lab.runtime.environment import Environment, UnboundNameError
-from lazy_lab.runtime.heap import Heap, Reserved
+from lazy_lab.runtime.heap import (
+    Heap,
+    Reserved,
+    HeapReference,
+    Indirection,
+)
 from lazy_lab.runtime.references import ImmediateInteger
 from lazy_lab.runtime.stack import (
     ApplyArgumentFrame,
@@ -368,3 +378,243 @@ def test_capture_selection_handles_deep_environment_chain():
         local_env,
         globals_env,
     ) == ("local2499",)
+
+def test_allocate_closure_uses_exact_capture_size():
+    global_env = Environment({
+        "global_value": ImmediateInteger(100),
+    })
+
+    local_env = global_env.extend({
+        "x": ImmediateInteger(10),
+        "y": ImmediateInteger(20),
+        "unused": ImmediateInteger(30),
+    })
+
+    expression = CoreLam(
+        "argument",
+        CorePrimOp(
+            "+",
+            (
+                CoreVar("x"),
+                CorePrimOp(
+                    "+",
+                    (
+                        CoreVar("y"),
+                        CoreVar("global_value"),
+                    ),
+                ),
+            ),
+        ),
+    )
+
+    heap = Heap()
+
+    reference = allocate_closure(
+        heap,
+        expression,
+        local_env,
+        global_env,
+    )
+
+    cell = heap.get(reference)
+    closure = cell.value
+
+    assert isinstance(reference, HeapReference)
+    assert isinstance(closure, Closure)
+    assert cell.allocated_slots == 3
+    assert closure.required_slots == 3
+
+    assert set(closure.captured_locals.bindings) == {
+        "x", "y"
+    }
+
+    assert closure.captured_locals.lookup("x") == (
+        ImmediateInteger(10)
+    )
+    assert closure.captured_locals.lookup("y") == (
+        ImmediateInteger(20)
+    )
+
+    assert heap.current_slots == 3
+    assert heap.next_object_id == 1
+
+def test_allocate_global_lambda_requires_one_slot():
+    global_env = Environment({
+        "global_value": ImmediateInteger(100),
+    })
+
+    expression = CoreLam(
+        "argument",
+        CorePrimOp(
+            "+",
+            (
+                CoreVar("global_value"),
+                CoreVar("argument"),
+            ),
+        ),
+    )
+
+    heap = Heap()
+
+    reference = allocate_closure(
+        heap,
+        expression,
+        global_env,
+        global_env,
+    )
+
+    closure = heap.get(reference).value
+
+    assert isinstance(closure, Closure)
+    assert closure.captured_locals.bindings == {}
+    assert closure.required_slots == 1
+    assert heap.get(reference).allocated_slots == 1
+    assert heap.current_slots == 1
+
+    call_env = closure.call_environment(
+        ImmediateInteger(5),
+        global_env,
+    )
+
+    assert call_env.lookup("global_value") == (
+        ImmediateInteger(100)
+    )
+    assert call_env.lookup("argument") == (
+        ImmediateInteger(5)
+    )
+
+def test_allocate_closure_preserves_local_shadowing():
+    global_env = Environment({
+        "x": ImmediateInteger(100),
+    })
+
+    local_env = global_env.extend({
+        "x": ImmediateInteger(10),
+    })
+
+    expression = CoreLam(
+        "argument",
+        CoreVar("x"),
+    )
+
+    heap = Heap()
+
+    reference = allocate_closure(
+        heap,
+        expression,
+        local_env,
+        global_env,
+    )
+
+    closure = heap.get(reference).value
+
+    assert isinstance(closure, Closure)
+    assert closure.required_slots == 2
+
+    call_env = closure.call_environment(
+        ImmediateInteger(5),
+        global_env,
+    )
+
+    assert call_env.lookup("x") == ImmediateInteger(10)
+    assert global_env.lookup("x") == ImmediateInteger(100)
+
+def test_closure_captures_heap_reference_identity():
+    heap = Heap()
+
+    captured_reference = heap.allocate(
+        Reserved(),
+        allocated_slots=1,
+    )
+
+    global_env = Environment()
+
+    local_env = global_env.extend({
+        "x": captured_reference,
+    })
+
+    expression = CoreLam(
+        "argument",
+        CoreVar("x"),
+    )
+
+    closure_reference = allocate_closure(
+        heap,
+        expression,
+        local_env,
+        global_env,
+    )
+
+    closure = heap.get(closure_reference).value
+
+    assert isinstance(closure, Closure)
+    assert closure.captured_locals.lookup("x") is (
+        captured_reference
+    )
+
+    heap.replace(
+        captured_reference,
+        Indirection(ImmediateInteger(42)),
+    )
+
+    assert closure.captured_locals.lookup("x") is (
+        captured_reference
+    )
+
+    assert heap.get(captured_reference).value == (
+        Indirection(ImmediateInteger(42))
+    )
+
+def test_failed_closure_allocation_preserves_heap():
+    heap = Heap()
+
+    global_env = Environment()
+    local_env = global_env.extend({})
+
+    expression = CoreLam(
+        "argument",
+        CoreVar("missing"),
+    )
+
+    slots_before = heap.current_slots
+    next_id_before = heap.next_object_id
+
+    with pytest.raises(UnboundNameError):
+        allocate_closure(
+            heap,
+            expression,
+            local_env,
+            global_env,
+        )
+
+    assert heap.current_slots == slots_before
+    assert heap.next_object_id == next_id_before
+    assert len(heap.cells) == 0
+
+def test_closure_allocation_does_not_mutate_original_heap():
+    original_heap = Heap()
+    isolated_heap = original_heap.clone()
+
+    global_env = Environment()
+    expression = CoreLam(
+        "x",
+        CoreVar("x"),
+    )
+
+    reference = allocate_closure(
+        isolated_heap,
+        expression,
+        global_env,
+        global_env,
+    )
+
+    assert isinstance(
+        isolated_heap.get(reference).value,
+        Closure,
+    )
+
+    assert original_heap.current_slots == 0
+    assert original_heap.next_object_id == 0
+    assert len(original_heap.cells) == 0
+
+    assert isolated_heap.current_slots == 1

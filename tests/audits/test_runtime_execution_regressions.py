@@ -191,9 +191,8 @@ def test_all_terminal_statuses_stop_without_transition(status):
     assert batch.stop_reason is BatchStopReason.TERMINAL_STATUS
 
 
-@pytest.mark.parametrize("control", [Force(ImmediateInteger(1)), InitializeCoreBindings(())])
-def test_deferred_controls_raise_explicit_errors(control):
-    state = make_state(control=control)
+def test_incomplete_initialization_control_is_rejected():
+    state = make_state(control=InitializeCoreBindings(()))
     for advance in [lambda: step(state, make_config()), lambda: run_batch(state, make_config(), max_steps=2)]:
         with pytest.raises(UnsupportedTransitionError):
             advance()
@@ -268,12 +267,29 @@ def test_configuration_mismatch_precedes_terminal_and_budget_checks():
         run_batch(state, config, max_steps=1)
 
 
-def test_unsupported_control_precedes_step_budget_but_batch_can_stop_first():
-    """Record the current API boundary; do not invent deferred Force rules."""
-    state = make_state(control=Force(ImmediateInteger(1)), evaluator_transition_count=100)
-    with pytest.raises(UnsupportedTransitionError):
-        step(state, make_config())
-    assert run_batch(state, make_config(), max_steps=1).stop_reason is BatchStopReason.EVALUATOR_BUDGET
+@pytest.mark.parametrize("count", [99, 100])
+def test_force_immediate_respects_evaluator_budget(count):
+    reference = ImmediateInteger(1)
+    state = make_state(control=Force(reference), evaluator_transition_count=count)
+    config = make_config(execution_step_limit=100)
+
+    if count < config.execution_step_limit:
+        transition = step(state, config)
+        assert transition.rule_id == "CORE_FORCE_IMMEDIATE"
+        assert transition.next_state.machine_state.control == Return(reference)
+        assert transition.next_state.machine_state.evaluator_transition_count == count + 1
+        assert transition.next_state.transition_index == 82
+    else:
+        with pytest.raises(EvaluatorBudgetExhaustedError):
+            step(state, config)
+        batch = run_batch(state, config, max_steps=1)
+        assert batch.stop_reason is BatchStopReason.EVALUATOR_BUDGET
+        assert batch.state is state
+        assert batch.trace == ()
+
+    assert state.transition_index == 81
+    assert state.machine_state.control == Force(reference)
+    assert state.machine_state.evaluator_transition_count == count
 
 
 @pytest.mark.parametrize("api", [step, run_batch])

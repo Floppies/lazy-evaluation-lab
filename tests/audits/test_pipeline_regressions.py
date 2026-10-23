@@ -94,26 +94,6 @@ def test_signed_core_literals_are_immediates_without_frontend_negation(value):
 
 
 @pytest.mark.parametrize("source", [
-    "main = -1",
-    "main = 1 + 2",
-    "main = let { x = 1 } in x",
-    "main = if True then 1 else 2",
-    "main = []",
-    "main = [1]",
-])
-def test_b03_only_rejects_compiled_constructs_awaiting_later_milestones(source):
-    """Replace these milestone-specific expectations as B04-B06 grow."""
-    program = compile_source(source)
-    expression = next(binding.rhs for binding in program.bindings if binding.name == "main")
-    state, config = literal_demo(expression, Strategy.CBNEED, TraceMode.FULL)
-    with pytest.raises(UnsupportedTransitionError):
-        step(state, config)
-    assert state.state_id == state.transition_index == 0
-    assert state.machine_state.evaluator_transition_count == 0
-    assert state.machine_state.control.expression is expression
-
-
-@pytest.mark.parametrize("source", [
     "f x = 10\nf [] = unknown\nmain = 42",
     "f [] = 10\nf [] = unknown\nmain = 42",
     "main = if True then 42 else unknown",

@@ -17,12 +17,13 @@ from lazy_lab.engine.core_machine import (
     run_batch,
     step,
 )
-from lazy_lab.runtime.control import EvaluateCore, Return
+from lazy_lab.runtime.control import EvaluateCore, Return, Force
 from lazy_lab.runtime.environment import Environment, UnboundNameError
-from lazy_lab.runtime.heap import Heap
+from lazy_lab.runtime.heap import Heap, Indirection, Reserved
 from lazy_lab.runtime.references import (
     ImmediateBoolean,
     ImmediateInteger,
+    HeapReference,
 )
 from lazy_lab.runtime.stack import Stack, ApplyFunctionFrame
 from lazy_lab.runtime.state import (
@@ -441,3 +442,85 @@ def test_nested_applications_preserve_continuation_order():
     assert original.machine_state.stack.depth == 0
     assert first.next_state.machine_state.stack.depth == 1
     assert second.next_state.machine_state.stack.depth == 2
+
+
+def test_forcing_immediate_returns_same_reference():
+    original = make_state(CoreInt(0))
+    reference = ImmediateInteger(42)
+
+    original = replace(
+        original,
+        machine_state=replace(
+            original.machine_state,
+            control=Force(reference),
+        ),
+    )
+
+    transition = step(original, make_config())
+    machine = transition.next_state.machine_state
+
+    assert transition.rule_id == "CORE_FORCE_IMMEDIATE"
+    assert machine.control == Return(reference)
+    assert machine.heap.current_slots == 0
+    assert machine.stack.depth == 0
+    assert original.machine_state.control == Force(reference)
+
+
+def test_force_follows_indirection():
+    original = make_state(CoreInt(0))
+    heap = Heap()
+
+    reference = heap.allocate(
+        Indirection(ImmediateInteger(42)),
+        allocated_slots=1,
+    )
+
+    original = replace(
+        original,
+        machine_state=replace(
+            original.machine_state,
+            heap=heap,
+            control=Force(reference),
+        ),
+    )
+
+    transition = step(original, make_config())
+    machine = transition.next_state.machine_state
+
+    assert transition.rule_id == "CORE_FORCE_INDIRECTION"
+    assert machine.control == Force(ImmediateInteger(42))
+    assert isinstance(
+        machine.heap.get(reference).value,
+        Indirection,
+    )
+
+    assert original.machine_state.heap.current_slots == 1
+    assert original.transition_index == 0
+
+
+def test_force_rejects_uninitialized_cell():
+    original = make_state(CoreInt(0))
+    heap = Heap()
+
+    reference = heap.allocate(
+        Reserved(),
+        allocated_slots=1,
+    )
+
+    original = replace(
+        original,
+        machine_state=replace(
+            original.machine_state,
+            heap=heap,
+            control=Force(reference),
+        ),
+    )
+
+    with pytest.raises(
+        InvalidMachineStateError,
+        match="uninitialized",
+    ):
+        step(original, make_config())
+
+    assert isinstance(heap.get(reference).value, Reserved)
+    assert original.transition_index == 0

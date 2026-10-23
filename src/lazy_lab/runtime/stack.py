@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from lazy_lab.core.nodes import CoreExpr
 
 from .environment import Environment
-from .references import RuntimeRef
+from .references import RuntimeRef, HeapReference
 
 
 class StackFrame:
@@ -33,6 +33,15 @@ class IfFrame(StackFrame):
     then_branch: CoreExpr
     else_branch: CoreExpr
     environment: Environment
+
+
+@dataclass(frozen=True, slots=True)
+class GlobalDemandFrame(StackFrame):
+    """Resume the caller after evaluating a pending global RHS."""
+
+    return_environment: Environment
+    pending_reference: HeapReference
+    awaiting_whnf: bool = False
 
 
 class EmptyStackError(LookupError):

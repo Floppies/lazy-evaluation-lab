@@ -15,7 +15,12 @@ from lazy_lab.core.nodes import (
     CoreApp,
 )
 from lazy_lab.semantics.predefined import PREDEFINED_IDENTIFIERS
-from lazy_lab.runtime.control import EvaluateCore, Return, InitializeCoreBindings
+from lazy_lab.runtime.control import ( 
+    EvaluateCore,
+    Return,
+    InitializeCoreBindings,
+    Force,
+)
 from lazy_lab.runtime.references import (
     ImmediateBoolean,
     ImmediateInteger,
@@ -25,8 +30,13 @@ from lazy_lab.runtime.environment import Environment, UnboundNameError
 from lazy_lab.runtime.heap import (
     Heap,
     Reserved,
+    Indirection,
 )
-from lazy_lab.runtime.stack import Stack, ApplyFunctionFrame
+from lazy_lab.runtime.stack import (
+    Stack,
+    ApplyFunctionFrame,
+    GlobalDemandFrame,
+)
 from lazy_lab.runtime.predefined import PredefinedFunction
 from lazy_lab.runtime.state import (
     ExecutionConfig,
@@ -47,6 +57,7 @@ from lazy_lab.runtime.transitions import (
 from lazy_lab.runtime.closures import (
     capture_closure,
     allocate_closure,
+    Closure,
 )
 from lazy_lab.runtime.global_bindings import PendingGlobal
 
@@ -191,7 +202,7 @@ def step(
 
     if not isinstance(
         control,
-        (EvaluateCore, InitializeCoreBindings),
+        (EvaluateCore, InitializeCoreBindings, Force, Return),
     ):
         raise UnsupportedTransitionError(
             f"Unsupported control: {type(control).__name__}"
@@ -222,6 +233,18 @@ def step(
 
     if isinstance(control, InitializeCoreBindings):
         next_machine, rule_id = _advance_global_initialization(
+            snapshot.machine_state,
+            control,
+    )
+
+    elif isinstance(control, Force):
+        next_machine, rule_id = _advance_force(
+            snapshot.machine_state,
+            control,
+        )
+
+    elif isinstance(control, Return):
+        next_machine, rule_id = _advance_return(
             snapshot.machine_state,
             control,
         )
@@ -265,6 +288,10 @@ def _stop_reason(
     if (
         isinstance(machine.control, Return)
         and machine.stack.depth == 0
+        and _reference_is_whnf(
+            machine,
+            machine.control.reference,
+        )
     ):
         return BatchStopReason.WHNF_PENDING
 
@@ -479,6 +506,151 @@ def _advance_global_initialization(
             control=EvaluateCore(control.entry_expression),
         ),
         "CORE_INIT_ENTER_ENTRY",
+    )
+
+def _reference_is_whnf(
+    machine: MachineState,
+    reference,
+) -> bool:
+    """Recognize supported weak-head-normal-form references."""
+    if isinstance(
+        reference,
+        (ImmediateInteger, ImmediateBoolean),
+    ):
+        return True
+
+    if not isinstance(reference, HeapReference):
+        raise TypeError("Expected a runtime reference")
+
+    value = machine.heap.get(reference).value
+
+    return isinstance(
+        value,
+        (Closure, PredefinedFunction),
+    )
+
+def _advance_force(
+    machine: MachineState,
+    control: Force,
+) -> tuple[MachineState, str]:
+    """Demand WHNF without implementing thunk updates."""
+    reference = control.reference
+
+    if isinstance(
+        reference,
+        (ImmediateInteger, ImmediateBoolean),
+    ):
+        return (
+            replace(machine, control=Return(reference)),
+            "CORE_FORCE_IMMEDIATE",
+        )
+
+    if not isinstance(reference, HeapReference):
+        raise TypeError("Expected a runtime reference")
+
+    value = machine.heap.get(reference).value
+
+    if isinstance(value, Indirection):
+        return (
+            replace(machine, control=Force(value.target)),
+            "CORE_FORCE_INDIRECTION",
+        )
+
+    if isinstance(value, (Closure, PredefinedFunction)):
+        return (
+            replace(machine, control=Return(reference)),
+            "CORE_FORCE_FUNCTION_WHNF",
+        )
+
+    if isinstance(value, PendingGlobal):
+        machine.stack.push(
+            GlobalDemandFrame(
+                return_environment=machine.local_environment,
+                pending_reference=reference,
+            )
+        )
+
+        return (
+            replace(
+                machine,
+                local_environment=machine.global_environment,
+                control=EvaluateCore(value.expression),
+            ),
+            "CORE_FORCE_GLOBAL_RHS",
+        )
+
+    if isinstance(value, Reserved):
+        raise InvalidMachineStateError(
+            "Cannot force an uninitialized heap cell"
+        )
+
+    raise UnsupportedTransitionError(
+        f"Unsupported heap object: {type(value).__name__}"
+    )
+
+def _advance_return(
+    machine: MachineState,
+    control: Return,
+) -> tuple[MachineState, str]:
+    """Resume a supported continuation or demand a root result."""
+    reference = control.reference
+
+    if machine.stack.depth > 0:
+        frame = machine.stack.peek()
+
+        if not isinstance(frame, GlobalDemandFrame):
+            raise UnsupportedTransitionError(
+                "Return continuation is not implemented yet: "
+                f"{type(frame).__name__}"
+            )
+
+        if not frame.awaiting_whnf:
+            machine.stack.pop()
+            machine.stack.push(
+                replace(frame, awaiting_whnf=True)
+            )
+
+            return (
+                replace(machine, control=Force(reference)),
+                "CORE_GLOBAL_REQUIRE_WHNF",
+            )
+
+        if not _reference_is_whnf(machine, reference):
+            raise InvalidMachineStateError(
+                "Global demand resumed without WHNF"
+            )
+
+        machine.stack.pop()
+
+        return (
+            replace(
+                machine,
+                local_environment=frame.return_environment,
+                control=Return(reference),
+            ),
+            "CORE_GLOBAL_DEMAND_RETURN",
+        )
+
+    # Root returns containing pending objects still require
+    # WHNF demand before result observation can stop.
+    if isinstance(reference, HeapReference):
+        value = machine.heap.get(reference).value
+
+        if isinstance(value, (PendingGlobal, Indirection)):
+            return (
+                replace(machine, control=Force(reference)),
+                "CORE_ROOT_REQUIRE_WHNF",
+            )
+
+        if isinstance(value, Reserved):
+            raise InvalidMachineStateError(
+                "Root result refers to an uninitialized cell"
+            )
+
+    # An already-WHNF root Return belongs to the result
+    # consumer, not to another evaluator transition.
+    raise UnsupportedTransitionError(
+        "Root result is awaiting observation"
     )
 
 def run_batch(

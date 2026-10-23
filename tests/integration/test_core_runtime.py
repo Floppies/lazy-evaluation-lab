@@ -32,7 +32,7 @@ from lazy_lab.runtime.state import (
     TraceMode,
 )
 from lazy_lab.runtime.transitions import BatchStopReason
-from lazy_lab.core.nodes import CoreLam, CoreInt
+from lazy_lab.core.nodes import CoreLam, CoreInt, CoreVar
 from lazy_lab.runtime.closures import (
     Closure,
     allocate_closure,
@@ -363,13 +363,22 @@ def test_global_variable_lookup_does_not_force_rhs():
         session_id="global-lookup",
     )
 
-    result = run_batch(initial, config, max_steps=20)
-    machine = result.state.machine_state
+    state = initial
+    while state.machine_state.phase is ExecutionPhase.INITIALIZATION:
+        state = step(state, config).next_state
 
-    main_reference = machine.global_environment.lookup("main")
-    answer_reference = machine.global_environment.lookup("answer")
+    before = state.machine_state
+    assert before.control == EvaluateCore(CoreVar("main"))
+    main_reference = before.global_environment.lookup("main")
+    answer_reference = before.global_environment.lookup("answer")
 
+    # Inspect only the lookup transition, before root-result demand.
+    transition = step(state, config)
+    machine = transition.next_state.machine_state
+
+    assert transition.rule_id == "CORE_EVAL_VARIABLE"
     assert machine.control == Return(main_reference)
+    assert machine.control.reference is main_reference
     assert isinstance(
         machine.heap.get(main_reference).value,
         PendingGlobal,
@@ -379,8 +388,12 @@ def test_global_variable_lookup_does_not_force_rhs():
         PendingGlobal,
     )
 
-    assert result.trace[-1].rule_id == "CORE_EVAL_VARIABLE"
-    assert result.stop_reason is BatchStopReason.WHNF_PENDING
+    for reference in (main_reference, answer_reference):
+        assert machine.heap.get(reference) == before.heap.get(reference)
+    assert machine.heap.next_object_id == before.heap.next_object_id
+    assert machine.heap.current_slots == before.heap.current_slots
+    assert machine.stack.depth == 0
+    assert machine.evaluator_transition_count == before.evaluator_transition_count + 1
     assert machine.status is ExecutionStatus.RUNNING
 
 
@@ -456,3 +469,101 @@ def test_compiled_application_preserves_pending_function_frame():
     assert state.transition_index == 0
     assert state.machine_state.stack.depth == 0
     assert state.machine_state.heap.current_slots == 0
+
+
+def test_global_alias_chain_reaches_whnf_without_updates():
+    program = compile_source(
+        "loop = loop\n"
+        "answer = 42\n"
+        "main = answer"
+    )
+
+    config = make_config()
+    initial = create_initial_core_state(
+        program,
+        config,
+        session_id="global-alias-demand",
+    )
+
+    result = run_batch(initial, config, max_steps=50)
+    machine = result.state.machine_state
+
+    assert result.stop_reason is BatchStopReason.WHNF_PENDING
+    assert machine.control == Return(ImmediateInteger(42))
+    assert machine.stack.depth == 0
+    assert machine.local_environment is machine.global_environment
+
+    # No global RHS was updated or memoized.
+    for name in ("loop", "answer", "main"):
+        reference = machine.global_environment.lookup(name)
+
+        assert isinstance(
+            machine.heap.get(reference).value,
+            PendingGlobal,
+        )
+
+    assert any(
+        entry.rule_id == "CORE_FORCE_GLOBAL_RHS"
+        for entry in result.trace
+    )
+    assert any(
+        entry.rule_id == "CORE_GLOBAL_DEMAND_RETURN"
+        for entry in result.trace
+    )
+
+    # The first state remains unchanged.
+    assert initial.transition_index == 0
+    assert initial.machine_state.heap.current_slots == 0
+
+
+def test_global_alias_to_function_reaches_whnf():
+    program = compile_source(
+        "identity x = x\n"
+        "main = identity"
+    )
+
+    config = make_config()
+    initial = create_initial_core_state(
+        program,
+        config,
+        session_id="global-function-demand",
+    )
+
+    result = run_batch(initial, config, max_steps=50)
+    machine = result.state.machine_state
+
+    identity_reference = machine.global_environment.lookup(
+        "identity"
+    )
+
+    assert result.stop_reason is BatchStopReason.WHNF_PENDING
+    assert machine.control == Return(identity_reference)
+    assert isinstance(
+        machine.heap.get(identity_reference).value,
+        Closure,
+    )
+    assert machine.stack.depth == 0
+
+
+def test_recursive_global_demand_is_step_bounded():
+    program = compile_source("main = main")
+
+    config = replace(
+        make_config(),
+        execution_step_limit=20,
+    )
+
+    initial = create_initial_core_state(
+        program,
+        config,
+        session_id="cyclic-global-demand",
+    )
+
+    result = run_batch(initial, config, max_steps=100)
+
+    assert result.stop_reason is BatchStopReason.EVALUATOR_BUDGET
+    assert (
+        result.state.machine_state.evaluator_transition_count
+        == 20
+    )
+    assert result.state.machine_state.status is ExecutionStatus.RUNNING

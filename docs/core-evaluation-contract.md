@@ -767,3 +767,66 @@ Evaluation of `CoreLam` and `CoreApp`, continuation handling,
 and strategy-specific argument demand belong to B04.4.
 
 Local recursive binding initialization remains in B04.6.
+
+## 11. Initial Core Expression Evaluation
+
+### 11.1 Variable Evaluation
+
+`CORE_EVAL_VARIABLE` evaluates `CoreVar(name)` by resolving
+the name in the current lexical environment.
+
+The operation returns the existing runtime reference.
+
+Variable evaluation does not:
+
+- Allocate a new heap object.
+- Dereference the resulting heap cell.
+- Force a pending global RHS.
+- Establish that the result is in WHNF.
+
+Local bindings shadow global and predefined bindings through
+ordinary lexical lookup.
+
+### 11.2 Lambda Evaluation
+
+`CORE_EVAL_LAMBDA` evaluates a `CoreLam` by allocating a
+closure in the simulated heap.
+
+The closure retains its Core lambda and captures only the
+required free local references from the definition-site
+environment.
+
+The allocation size is determined by the number of captured
+local references.
+
+Lambda evaluation does not execute the lambda body or
+force captured references.
+
+A lambda already installed as a global closure is accessed
+through `CORE_EVAL_VARIABLE`; it is not reconstructed.
+
+### 11.3 Transition Semantics
+
+Both rules produce `Return(reference)`.
+
+Successful transitions:
+
+- Preserve the previous execution state.
+- Advance the state ID and transition index.
+- Increment the evaluator transition counter.
+- Report their stable rule identifier.
+
+Heap mutations take place on isolated successor storage.
+
+### 11.4 Current Operational Boundary
+
+Variable lookup and lambda evaluation are supported.
+
+Function application, pending-global forcing, and continuation
+resumption are not yet implemented by these rules.
+
+A root `Return` referring to `PendingGlobal` must not be
+interpreted as a value already in WHNF.
+
+Canonical root observation and forcing are completed by
+subsequent B04 rules.

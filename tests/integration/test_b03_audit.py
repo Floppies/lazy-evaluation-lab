@@ -96,13 +96,11 @@ def test_signed_core_literals_are_immediates_without_frontend_negation(value):
 @pytest.mark.parametrize("source", [
     "main = -1",
     "main = 1 + 2",
-    "x = 42\nmain = x",
     "main = let { x = 1 } in x",
     "main = if True then 1 else 2",
     "main = []",
     "main = [1]",
     "main = (\\x -> x) 1",
-    "main = \\x -> x",
     "f [] = 0\nf (h:t) = h\nmain = f []",
 ])
 def test_b03_only_rejects_compiled_constructs_awaiting_later_milestones(source):

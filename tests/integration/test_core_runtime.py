@@ -10,6 +10,7 @@ from lazy_lab.engine.core_machine import (
     UnsupportedTransitionError,
     run_batch,
     step,
+    create_initial_core_state,
 )
 from lazy_lab.runtime.control import EvaluateCore, Return
 from lazy_lab.runtime.environment import Environment
@@ -36,6 +37,8 @@ from lazy_lab.runtime.closures import (
     Closure,
     allocate_closure,
 )
+from lazy_lab.runtime.global_bindings import PendingGlobal
+
 
 def make_config(
     strategy: Strategy = Strategy.CBNEED,
@@ -148,7 +151,6 @@ def test_compiled_literals_use_runtime(
     "source",
     [
         "main = 1 + 2",
-        "x = 42\nmain = x",
         "main = let { x = 1 } in x",
     ],
 )
@@ -346,3 +348,67 @@ def test_compiled_nested_closure_preserves_local_shadowing():
     assert inner_call_env.lookup("x") == ImmediateInteger(10)
     assert inner_call_env.lookup("y") == ImmediateInteger(20)
     assert global_env.lookup("x") == ImmediateInteger(100)
+
+
+def test_global_variable_lookup_does_not_force_rhs():
+    program = compile_source(
+        "answer = 42\n"
+        "main = answer"
+    )
+    config = make_config()
+
+    initial = create_initial_core_state(
+        program,
+        config,
+        session_id="global-lookup",
+    )
+
+    result = run_batch(initial, config, max_steps=20)
+    machine = result.state.machine_state
+
+    main_reference = machine.global_environment.lookup("main")
+    answer_reference = machine.global_environment.lookup("answer")
+
+    assert machine.control == Return(main_reference)
+    assert isinstance(
+        machine.heap.get(main_reference).value,
+        PendingGlobal,
+    )
+    assert isinstance(
+        machine.heap.get(answer_reference).value,
+        PendingGlobal,
+    )
+
+    assert result.trace[-1].rule_id == "CORE_EVAL_VARIABLE"
+    assert result.stop_reason is BatchStopReason.WHNF_PENDING
+    assert machine.status is ExecutionStatus.RUNNING
+
+
+def test_global_lambda_lookup_reuses_installed_closure():
+    program = compile_source(
+        "identity x = x\n"
+        "main = identity"
+    )
+    config = make_config()
+
+    initial = create_initial_core_state(
+        program,
+        config,
+        session_id="global-closure",
+        entry="identity",
+    )
+
+    result = run_batch(initial, config, max_steps=20)
+    machine = result.state.machine_state
+
+    reference = machine.global_environment.lookup("identity")
+
+    assert machine.control == Return(reference)
+    assert isinstance(machine.heap.get(reference).value, Closure)
+
+    # One predefined function and two global bindings.
+    # CoreVar lookup must not allocate another closure.
+    assert machine.heap.next_object_id == 3
+    assert machine.heap.current_slots == 3
+
+    assert result.trace[-1].rule_id == "CORE_EVAL_VARIABLE"

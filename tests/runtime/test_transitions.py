@@ -2,7 +2,13 @@ from dataclasses import replace
 
 import pytest
 
-from lazy_lab.core.nodes import CoreApp, CoreBool, CoreInt
+from lazy_lab.core.nodes import (
+    CoreApp,
+    CoreBool,
+    CoreInt,
+    CoreLam,
+    CoreVar,
+)
 from lazy_lab.engine.core_machine import (
     EvaluatorBudgetExhaustedError,
     InvalidMachineStateError,
@@ -11,7 +17,7 @@ from lazy_lab.engine.core_machine import (
     step,
 )
 from lazy_lab.runtime.control import EvaluateCore, Return
-from lazy_lab.runtime.environment import Environment
+from lazy_lab.runtime.environment import Environment, UnboundNameError
 from lazy_lab.runtime.heap import Heap
 from lazy_lab.runtime.references import (
     ImmediateBoolean,
@@ -33,7 +39,7 @@ from lazy_lab.runtime.transitions import (
     BatchStopReason,
     TransitionKind,
 )
-
+from lazy_lab.runtime.closures import Closure
 
 def make_config(
     trace_mode=TraceMode.FULL,
@@ -220,3 +226,90 @@ def test_second_literal_step_is_not_implemented():
 
     with pytest.raises(UnsupportedTransitionError):
         step(first.next_state, make_config())
+
+
+def test_lambda_transition_allocates_closure():
+    global_env = Environment({
+        "global_value": ImmediateInteger(100),
+    })
+
+    local_env = global_env.extend({
+        "x": ImmediateInteger(10),
+    })
+
+    expression = CoreLam(
+        "argument",
+        CoreVar("x"),
+    )
+
+    original = make_state(expression)
+    original = replace(
+        original,
+        machine_state=replace(
+            original.machine_state,
+            local_environment=local_env,
+            global_environment=global_env,
+        ),
+    )
+
+    transition = step(original, make_config())
+    machine = transition.next_state.machine_state
+
+    assert transition.rule_id == "CORE_EVAL_LAMBDA"
+    assert isinstance(machine.control, Return)
+
+    reference = machine.control.reference
+    closure = machine.heap.get(reference).value
+
+    assert isinstance(closure, Closure)
+    assert closure.lambda_expression is expression
+    assert closure.captured_locals.lookup("x") == (
+        ImmediateInteger(10)
+    )
+    assert closure.required_slots == 2
+
+    assert machine.heap.current_slots == 2
+    assert machine.evaluator_transition_count == 1
+
+    # The previous state must remain unchanged.
+    assert original.machine_state.heap.current_slots == 0
+    assert original.transition_index == 0
+
+
+def test_variable_transition_preserves_local_reference():
+    global_env = Environment({
+        "x": ImmediateInteger(100),
+    })
+
+    local_env = global_env.extend({
+        "x": ImmediateInteger(10),
+    })
+
+    original = make_state(CoreVar("x"))
+    original = replace(
+        original,
+        machine_state=replace(
+            original.machine_state,
+            local_environment=local_env,
+            global_environment=global_env,
+        ),
+    )
+
+    transition = step(original, make_config())
+    machine = transition.next_state.machine_state
+
+    assert transition.rule_id == "CORE_EVAL_VARIABLE"
+    assert machine.control == Return(ImmediateInteger(10))
+    assert machine.heap.current_slots == 0
+    assert machine.stack.depth == 0
+
+
+def test_variable_transition_rejects_unknown_name():
+    original = make_state(CoreVar("missing"))
+
+    with pytest.raises(UnboundNameError):
+        step(original, make_config())
+
+    assert original.transition_index == 0
+    assert original.machine_state.evaluator_transition_count == 0
+    assert original.machine_state.heap.current_slots == 0

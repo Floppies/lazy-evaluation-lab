@@ -43,7 +43,10 @@ from lazy_lab.runtime.transitions import (
     TransitionKind,
     TransitionResult,
 )
-from lazy_lab.runtime.closures import capture_closure
+from lazy_lab.runtime.closures import (
+    capture_closure,
+    allocate_closure,
+)
 from lazy_lab.runtime.global_bindings import PendingGlobal
 
 class UnsupportedTransitionError(NotImplementedError):
@@ -97,20 +100,62 @@ def _evaluate_boolean(
     )
 
 
+
 def _dispatch_core_evaluation(
-    expression: CoreExpr,
-) -> tuple[Return, str]:
-    """Select one of the currently supported Core rules."""
+    machine: MachineState,
+) -> tuple[MachineState, str]:
+    """Apply one Core expression evaluation rule.
+
+    The supplied machine belongs to an isolated successor
+    snapshot. Rules may modify its heap.
+    """
+    control = machine.control
+
+    if not isinstance(control, EvaluateCore):
+        raise InvalidMachineStateError(
+            "Expected EvaluateCore control"
+        )
+
+    expression = control.expression
+
     if isinstance(expression, CoreInt):
-        return _evaluate_integer(expression)
+        next_control, rule_id = _evaluate_integer(expression)
 
-    if isinstance(expression, CoreBool):
-        return _evaluate_boolean(expression)
+    elif isinstance(expression, CoreBool):
+        next_control, rule_id = _evaluate_boolean(expression)
 
-    raise UnsupportedTransitionError(
-        f"Unsupported Core expression: "
-        f"{type(expression).__name__}"
+    elif isinstance(expression, CoreVar):
+        # Name resolution returns the existing reference.
+        # It must not force or dereference the heap object.
+        reference = machine.local_environment.lookup(
+            expression.name
+        )
+        next_control = Return(reference)
+        rule_id = "CORE_EVAL_VARIABLE"
+
+    elif isinstance(expression, CoreLam):
+        # Allocate a closure using the current definition-site
+        # environment, without evaluating the lambda body.
+        reference = allocate_closure(
+            machine.heap,
+            expression,
+            machine.local_environment,
+            machine.global_environment,
+        )
+        next_control = Return(reference)
+        rule_id = "CORE_EVAL_LAMBDA"
+
+    else:
+        raise UnsupportedTransitionError(
+            f"Unsupported Core expression: "
+            f"{type(expression).__name__}"
+        )
+
+    return (
+        replace(machine, control=next_control),
+        rule_id,
     )
+
 
 def step(
     state: ExecutionState,
@@ -165,15 +210,10 @@ def step(
             control,
         )
     else:
-        next_control, rule_id = _dispatch_core_evaluation(
-            control.expression
-        )
-
-        next_machine = replace(
-            snapshot.machine_state,
-            control=next_control,
-        )
-
+        next_machine, rule_id = _dispatch_core_evaluation(
+        snapshot.machine_state
+    )
+        
     next_machine = replace(
         next_machine,
         evaluator_transition_count=(

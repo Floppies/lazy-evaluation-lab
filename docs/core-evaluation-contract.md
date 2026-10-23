@@ -636,3 +636,38 @@ global lexical environment instead.
 
 Selective local capture and runtime closure allocation
 are completed in subsequent B04.3 subtasks.
+
+### 10.3 Selective Local Capture
+
+`select_free_local_names()` identifies which free variables
+of a `CoreLam` resolve to local lexical bindings.
+
+The analysis receives:
+
+- The lambda expression.
+- Its definition-site environment.
+- The global environment used as the lexical boundary.
+
+Only bindings found between the definition environment and
+the global environment are eligible for capture.
+
+The global environment and its predefined parent scope are
+excluded from captured locals.
+
+Local shadowing takes precedence over global and predefined
+bindings, even when the identifiers have identical names.
+
+The global environment must be an ancestor of the definition
+environment, or be the definition environment itself.
+
+The function validates that every remaining free identifier
+resolves through the global scope.
+
+The result is a sorted tuple of local names, providing
+deterministic capture order and closure allocation sizes.
+
+The operation does not evaluate references, allocate heap
+objects, or modify lexical environments.
+
+Runtime closure construction and allocation are completed
+in B04.3.3.

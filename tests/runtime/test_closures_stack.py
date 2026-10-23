@@ -2,9 +2,15 @@ import pytest
 
 from dataclasses import FrozenInstanceError
 
-from lazy_lab.core.nodes import CoreInt, CoreLam, CoreVar
-from lazy_lab.runtime.closures import capture_closure
-from lazy_lab.runtime.environment import Environment
+from lazy_lab.core.nodes import (
+    CoreInt,
+    CoreLam,
+    CoreVar,
+    CorePrimOp,
+    CoreApp,
+)
+from lazy_lab.runtime.closures import capture_closure, select_free_local_names
+from lazy_lab.runtime.environment import Environment, UnboundNameError
 from lazy_lab.runtime.heap import Heap, Reserved
 from lazy_lab.runtime.references import ImmediateInteger
 from lazy_lab.runtime.stack import (
@@ -14,7 +20,6 @@ from lazy_lab.runtime.stack import (
     Stack,
     IfFrame,
 )
-
 
 def test_closure_captures_definition_site():
     globals_env = Environment({
@@ -193,3 +198,173 @@ def test_nested_continuations_preserve_lifo_order():
     assert stack.pop() is inner
     assert stack.pop() is outer
     assert stack.depth == 0
+
+
+def test_selects_only_free_local_names():
+    globals_env = Environment({
+        "global_value": ImmediateInteger(100),
+    })
+
+    local_env = globals_env.extend({
+        "x": ImmediateInteger(10),
+        "unused": ImmediateInteger(20),
+    })
+
+    expression = CoreLam(
+        "parameter",
+        CorePrimOp(
+            "+",
+            (
+                CoreVar("x"),
+                CoreVar("global_value"),
+            ),
+        ),
+    )
+
+    names = select_free_local_names(
+        expression,
+        local_env,
+        globals_env,
+    )
+
+    assert names == ("x",)
+
+def test_local_shadow_of_global_is_captured():
+    globals_env = Environment({
+        "x": ImmediateInteger(100),
+    })
+
+    local_env = globals_env.extend({
+        "x": ImmediateInteger(10),
+    })
+
+    expression = CoreLam("parameter", CoreVar("x"))
+
+    names = select_free_local_names(
+        expression,
+        local_env,
+        globals_env,
+    )
+
+    assert names == ("x",)
+
+    closure = capture_closure(
+        expression,
+        local_env,
+        names,
+    )
+
+    assert closure.captured_locals.lookup("x") == (
+        ImmediateInteger(10)
+    )
+
+    call_env = closure.call_environment(
+        ImmediateInteger(5),
+        globals_env,
+    )
+
+    assert call_env.lookup("x") == ImmediateInteger(10)
+
+def test_predefined_name_is_not_captured():
+    predefined_env = Environment({
+        "seq": ImmediateInteger(0),
+    })
+
+    globals_env = predefined_env.extend({
+        "main": ImmediateInteger(42),
+    })
+
+    local_env = globals_env.extend({
+        "x": ImmediateInteger(10),
+    })
+
+    expression = CoreLam(
+        "parameter",
+        CoreApp(
+            CoreVar("seq"),
+            CoreVar("x"),
+        ),
+    )
+
+    names = select_free_local_names(
+        expression,
+        local_env,
+        globals_env,
+    )
+
+    assert names == ("x",)
+
+def test_lambda_parameter_is_excluded_from_capture():
+    globals_env = Environment()
+
+    local_env = globals_env.extend({
+        "x": ImmediateInteger(10),
+    })
+
+    expression = CoreLam("x", CoreVar("x"))
+
+    assert select_free_local_names(
+        expression,
+        local_env,
+        globals_env,
+    ) == ()
+
+def test_unresolved_free_name_is_rejected():
+    globals_env = Environment()
+    local_env = globals_env.extend({})
+
+    expression = CoreLam(
+        "argument",
+        CoreVar("missing"),
+    )
+
+    with pytest.raises(UnboundNameError):
+        select_free_local_names(
+            expression,
+            local_env,
+            globals_env,
+        )
+
+def test_capture_selection_requires_global_ancestor():
+    globals_env = Environment({
+        "global_value": ImmediateInteger(1),
+    })
+
+    unrelated_env = Environment({
+        "x": ImmediateInteger(10),
+    })
+
+    expression = CoreLam("argument", CoreVar("x"))
+
+    with pytest.raises(ValueError, match="ancestor"):
+        select_free_local_names(
+            expression,
+            unrelated_env,
+            globals_env,
+        )
+
+def test_capture_selection_handles_deep_environment_chain():
+    globals_env = Environment({
+        "global_value": ImmediateInteger(1),
+    })
+
+    local_env = globals_env
+
+    for index in range(2500):
+        local_env = local_env.extend({
+            f"local{index}": ImmediateInteger(index),
+        })
+
+    expression = CoreLam(
+        "argument",
+        CoreApp(
+            CoreVar("local2499"),
+            CoreVar("global_value"),
+        ),
+    )
+
+    assert select_free_local_names(
+        expression,
+        local_env,
+        globals_env,
+    ) == ("local2499",)

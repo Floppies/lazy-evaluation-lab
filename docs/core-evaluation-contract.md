@@ -951,3 +951,34 @@ and full thunk machinery are implemented in later milestones.
 
 Nested curried applications preserve lexical capture and
 LIFO continuation order.
+
+### 11.9 B04.4 Integration and Acceptance
+
+The initial Core function evaluator supports ordinary
+call-by-value closure applications.
+
+The implemented transitions preserve:
+
+- Left-to-right function and argument evaluation.
+- Strict WHNF demand for CBV arguments.
+- Lexical closure capture and shadowing.
+- Argument evaluation in the original call-site environment.
+- Restoration of the caller environment after body execution.
+- Global-function lookup and demand-driven global aliases.
+- Explicit continuation order.
+- Independent execution-state snapshots.
+- Semantically equivalent execution across trace modes.
+
+Global RHS evaluation remains demand-driven and does not
+introduce sharing updates.
+
+Applying a non-function value produces an explicit runtime
+error.
+
+Function application under CBN and CBNeed is not yet supported.
+Their complete argument representations and demand behavior
+remain responsibilities of later milestones.
+
+Predefined function application, primitive operators,
+conditionals and local recursive bindings are outside the
+completed B04.4 scope.

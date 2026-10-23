@@ -23,6 +23,7 @@ from lazy_lab.runtime.stack import (
     Stack,
     ApplyFunctionFrame,
     RestoreEnvironmentFrame,
+    ApplyArgumentFrame,
 )                                   
 from lazy_lab.runtime.state import (
     ExecutionConfig,
@@ -743,3 +744,282 @@ def test_restore_environment_frame_preserves_lexical_identity():
     assert snapshot.peek() is frame
     assert stack.pop() is frame
     assert snapshot.depth == 1
+
+
+def test_cbv_nested_application_preserves_lexical_capture():
+    program = compile_source(
+        "x = 99\n"
+        "main = (\\x -> (\\y -> x) 20) 10"
+    )
+
+    config = make_config(strategy=Strategy.CBV)
+
+    initial = create_initial_core_state(
+        program,
+        config,
+        session_id="cbv-lexical-capture",
+    )
+
+    result = run_batch(initial, config, max_steps=100)
+    machine = result.state.machine_state
+
+    assert result.stop_reason is BatchStopReason.WHNF_PENDING
+    assert machine.control == Return(ImmediateInteger(10))
+    assert machine.stack.depth == 0
+    assert machine.local_environment is machine.global_environment
+
+    # The global binding x must not be changed.
+    global_x = machine.global_environment.lookup("x")
+
+    assert isinstance(
+        machine.heap.get(global_x).value,
+        PendingGlobal,
+    )
+
+    closures = [
+        cell.value
+        for cell in machine.heap.cells.values()
+        if isinstance(cell.value, Closure)
+    ]
+
+    assert len(closures) == 2
+    assert sorted(c.required_slots for c in closures) == [1, 2]
+
+    captured = [
+        closure
+        for closure in closures
+        if "x" in closure.captured_locals.bindings
+    ]
+
+    assert len(captured) == 1
+    assert captured[0].captured_locals.lookup("x") == (
+        ImmediateInteger(10)
+    )
+
+
+def test_cbv_global_function_uses_argument_call_site_scope():
+    program = compile_source(
+        "identity y = y\n"
+        "main = (\\x -> identity x) 17"
+    )
+
+    config = make_config(strategy=Strategy.CBV)
+
+    initial = create_initial_core_state(
+        program,
+        config,
+        session_id="cbv-call-site",
+    )
+
+    result = run_batch(initial, config, max_steps=100)
+    machine = result.state.machine_state
+
+    assert result.stop_reason is BatchStopReason.WHNF_PENDING
+    assert machine.control == Return(ImmediateInteger(17))
+    assert machine.stack.depth == 0
+    assert machine.local_environment is machine.global_environment
+
+    rules = [entry.rule_id for entry in result.trace]
+
+    assert rules.count("CORE_CBV_ENTER_BODY") == 2
+    assert rules.count("CORE_CBV_EVAL_ARGUMENT") == 2
+
+
+def test_cbv_applies_function_through_global_alias():
+    program = compile_source(
+        "identity x = x\n"
+        "alias = identity\n"
+        "main = alias 23"
+    )
+
+    config = make_config(strategy=Strategy.CBV)
+
+    initial = create_initial_core_state(
+        program,
+        config,
+        session_id="cbv-global-alias",
+    )
+
+    result = run_batch(initial, config, max_steps=100)
+    machine = result.state.machine_state
+
+    assert result.stop_reason is BatchStopReason.WHNF_PENDING
+    assert machine.control == Return(ImmediateInteger(23))
+    assert machine.stack.depth == 0
+
+    alias_reference = machine.global_environment.lookup(
+        "alias"
+    )
+
+    assert isinstance(
+        machine.heap.get(alias_reference).value,
+        PendingGlobal,
+    )
+
+    rules = [entry.rule_id for entry in result.trace]
+
+    assert "CORE_FORCE_GLOBAL_RHS" in rules
+    assert "CORE_CBV_ENTER_BODY" in rules
+
+
+def test_cbv_enter_body_preserves_previous_snapshot():
+    program = compile_source(
+        "main = (\\x -> x) 9"
+    )
+    config = make_config(strategy=Strategy.CBV)
+
+    state = create_initial_core_state(
+        program,
+        config,
+        session_id="cbv-body-snapshot",
+    )
+
+    # Advance until the machine enters the closure body.
+    for _ in range(60):
+        transition = step(state, config)
+
+        if transition.rule_id == "CORE_CBV_ENTER_BODY":
+            break
+
+        state = transition.next_state
+    else:
+        pytest.fail("CBV never entered the function body")
+
+    previous = state
+    successor = transition.next_state
+
+    before = previous.machine_state
+    after = successor.machine_state
+
+    assert isinstance(
+        before.stack.peek(),
+        ApplyArgumentFrame,
+    )
+    assert isinstance(
+        after.stack.peek(),
+        RestoreEnvironmentFrame,
+    )
+
+    assert before.local_environment is (
+        before.global_environment
+    )
+
+    assert after.local_environment.lookup("x") == (
+        ImmediateInteger(9)
+    )
+
+    assert before.heap is not after.heap
+    assert before.stack is not after.stack
+    assert before.stack.depth == after.stack.depth
+
+    # Running the successor must not modify the previous state.
+    result = run_batch(
+        successor,
+        config,
+        max_steps=60,
+    )
+
+    assert result.stop_reason is BatchStopReason.WHNF_PENDING
+    assert result.state.machine_state.control == Return(
+        ImmediateInteger(9)
+    )
+
+    assert isinstance(
+        previous.machine_state.stack.peek(),
+        ApplyArgumentFrame,
+    )
+    assert previous.transition_index == state.transition_index
+
+
+def test_cbv_rejects_application_of_non_function():
+    program = compile_source("")
+    config = make_config(strategy=Strategy.CBV)
+
+    initial = create_initial_core_state(
+        program,
+        config,
+        session_id="cbv-invalid-function",
+        entry=CoreApp(CoreInt(1), CoreInt(2)),
+    )
+
+    with pytest.raises(
+        TypeError,
+        match="Cannot apply a non-function value",
+    ):
+        run_batch(initial, config, max_steps=40)
+
+    assert initial.transition_index == 0
+    assert initial.machine_state.stack.depth == 0
+    assert initial.machine_state.heap.current_slots == 0
+
+
+@pytest.mark.parametrize(
+    "strategy",
+    [Strategy.CBN, Strategy.CBNEED],
+)
+def test_non_strict_application_remains_explicitly_unsupported(
+    strategy,
+):
+    program = compile_source(
+        "main = (\\x -> x) 5"
+    )
+    config = make_config(strategy=strategy)
+
+    initial = create_initial_core_state(
+        program,
+        config,
+        session_id="non-strict-boundary",
+    )
+
+    with pytest.raises(
+        UnsupportedTransitionError,
+        match="Non-strict application",
+    ):
+        run_batch(initial, config, max_steps=40)
+
+
+def test_cbv_trace_modes_have_equivalent_machine_results():
+    program = compile_source(
+        "main = (\\x -> \\y -> x) 10 20"
+    )
+
+    full_config = make_config(
+        strategy=Strategy.CBV,
+        trace_mode=TraceMode.FULL,
+    )
+
+    metrics_config = make_config(
+        strategy=Strategy.CBV,
+        trace_mode=TraceMode.METRICS_ONLY,
+    )
+
+    initial = create_initial_core_state(
+        program,
+        full_config,
+        session_id="cbv-trace-equivalence",
+    )
+
+    full = run_batch(initial, full_config, max_steps=100)
+    metrics = run_batch(initial, metrics_config, max_steps=100)
+
+    assert full.stop_reason == metrics.stop_reason
+    assert full.stop_reason is BatchStopReason.WHNF_PENDING
+
+    left = full.state.machine_state
+    right = metrics.state.machine_state
+
+    assert left.control == right.control
+    assert left.control == Return(ImmediateInteger(10))
+
+    assert left.stack.depth == right.stack.depth == 0
+    assert left.heap.current_slots == right.heap.current_slots
+    assert left.heap.next_object_id == right.heap.next_object_id
+
+    assert (
+        left.evaluator_transition_count
+        == right.evaluator_transition_count
+    )
+    assert full.state.transition_index == metrics.state.transition_index
+
+    assert len(full.trace) > 0
+    assert metrics.trace == ()

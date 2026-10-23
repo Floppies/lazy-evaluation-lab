@@ -1,5 +1,7 @@
 import pytest
 
+from dataclasses import FrozenInstanceError
+
 from lazy_lab.core.nodes import CoreInt, CoreLam, CoreVar
 from lazy_lab.runtime.closures import capture_closure
 from lazy_lab.runtime.environment import Environment
@@ -10,6 +12,7 @@ from lazy_lab.runtime.stack import (
     ApplyFunctionFrame,
     EmptyStackError,
     Stack,
+    IfFrame,
 )
 
 
@@ -121,3 +124,72 @@ def test_lambda_parameter_is_not_captured():
             Environment({"x": ImmediateInteger(7)}),
             ("x",),
         )
+
+def test_application_frame_preserves_call_site_context():
+    environment = Environment({
+        "x": ImmediateInteger(10),
+    })
+    argument = CoreVar("x")
+
+    frame = ApplyFunctionFrame(argument, environment)
+
+    assert frame.argument is argument
+    assert frame.environment is environment
+    assert frame.environment.lookup("x") == ImmediateInteger(10)
+
+
+def test_argument_frame_preserves_function_reference():
+    reference = ImmediateInteger(7)
+    frame = ApplyArgumentFrame(reference)
+
+    assert frame.function is reference
+
+
+def test_if_frame_preserves_branches_and_environment():
+    environment = Environment({
+        "x": ImmediateInteger(3),
+    })
+    then_branch = CoreVar("x")
+    else_branch = CoreInt(0)
+
+    frame = IfFrame(
+        then_branch,
+        else_branch,
+        environment,
+    )
+
+    assert frame.then_branch is then_branch
+    assert frame.else_branch is else_branch
+    assert frame.environment is environment
+
+
+def test_continuation_frames_are_immutable():
+    frame = ApplyFunctionFrame(
+        CoreInt(5),
+        Environment(),
+    )
+
+    with pytest.raises(FrozenInstanceError):
+        frame.argument = CoreInt(10)
+
+
+def test_nested_continuations_preserve_lifo_order():
+    environment = Environment()
+    outer = IfFrame(
+        CoreInt(1),
+        CoreInt(2),
+        environment,
+    )
+    inner = ApplyFunctionFrame(
+        CoreInt(3),
+        environment,
+    )
+
+    stack = Stack()
+    stack.push(outer)
+    stack.push(inner)
+
+    assert stack.depth == 2
+    assert stack.pop() is inner
+    assert stack.pop() is outer
+    assert stack.depth == 0

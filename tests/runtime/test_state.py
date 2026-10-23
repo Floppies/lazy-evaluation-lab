@@ -147,17 +147,18 @@ def test_config_rejects_invalid_machine_strategy():
         )
 
 
-def test_config_accepts_core_need():
+@pytest.mark.parametrize("strategy", list(Strategy))
+def test_config_accepts_core_strategy(strategy):
     config = ExecutionConfig(
         machine_kind=MachineKind.CORE,
-        strategy=Strategy.CBNEED,
+        strategy=strategy,
         result_policy=ResultPolicy.WHNF_ONLY,
         execution_step_limit=1000,
         result_node_limit=100,
         trace_mode=TraceMode.FULL,
     )
 
-    assert config.strategy is Strategy.CBNEED
+    assert config.strategy is strategy
 
 
 @pytest.mark.parametrize(
@@ -173,3 +174,56 @@ def test_invalid_state_identity(field_name, invalid_value):
 
     with pytest.raises(ValueError):
         replace(state, **{field_name: invalid_value})
+
+def test_snapshot_preserves_independent_continuation_stack():
+    environment = Environment()
+    frame = ApplyFunctionFrame(
+        CoreInt(5),
+        environment,
+    )
+
+    stack = Stack()
+    stack.push(frame)
+
+    machine = MachineState(
+        machine_kind=MachineKind.CORE,
+        strategy=Strategy.CBV,
+        status=ExecutionStatus.RUNNING,
+        phase=ExecutionPhase.EVALUATION,
+        control=EvaluateCore(CoreInt(42)),
+        local_environment=environment,
+        global_environment=environment,
+        heap=Heap(),
+        stack=stack,
+    )
+
+    state = ExecutionState(
+        state_id=0,
+        session_id="continuation-test",
+        transition_index=0,
+        machine_state=machine,
+    )
+
+    snapshot = state.snapshot()
+
+    assert snapshot.machine_state.stack is not stack
+    assert snapshot.machine_state.stack.peek() is frame
+
+    stack.pop()
+
+    assert stack.depth == 0
+    assert snapshot.machine_state.stack.depth == 1
+    assert snapshot.machine_state.stack.peek() is frame
+
+@pytest.mark.parametrize("strategy", list(Strategy))
+def test_core_accepts_each_evaluation_strategy(strategy):
+    config = ExecutionConfig(
+        machine_kind=MachineKind.CORE,
+        strategy=strategy,
+        result_policy=ResultPolicy.WHNF_ONLY,
+        execution_step_limit=100,
+        result_node_limit=100,
+        trace_mode=TraceMode.FULL,
+    )
+
+    assert config.strategy is strategy

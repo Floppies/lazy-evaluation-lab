@@ -53,6 +53,10 @@ def check_core_expression(expr: core.CoreExpr) -> None:
             "map f (x:xs) = f x : map f xs\n"
             "main = map (\\x -> x + 1) [1, 2, 3]"
         ),
+        (
+            "loop = loop\n"
+            "main = 42"
+        )
     ],
 )
 def test_valid_core_name_resolution(source):

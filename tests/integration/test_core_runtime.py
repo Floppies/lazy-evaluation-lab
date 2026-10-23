@@ -31,7 +31,11 @@ from lazy_lab.runtime.state import (
     TraceMode,
 )
 from lazy_lab.runtime.transitions import BatchStopReason
-
+from lazy_lab.core.nodes import CoreLam
+from lazy_lab.runtime.closures import (
+    Closure,
+    allocate_closure,
+)
 
 def make_config(
     strategy: Strategy = Strategy.CBNEED,
@@ -219,3 +223,126 @@ def test_stg_execution_is_not_yet_implemented():
 
     with pytest.raises(UnsupportedTransitionError):
         step(stg_state, stg_config)
+
+def test_compiled_nested_lambdas_capture_outer_argument():
+    program = compile_source(
+        "global_value = 100\n"
+        "main = \\x -> \\y -> global_value + x + y"
+    )
+
+    outer_expression = program.bindings[1].rhs
+    assert isinstance(outer_expression, CoreLam)
+
+    global_env = Environment({
+        "global_value": ImmediateInteger(100),
+    })
+    heap = Heap()
+
+    # Build the outer function without evaluating its body.
+    outer_ref = allocate_closure(
+        heap,
+        outer_expression,
+        global_env,
+        global_env,
+    )
+
+    outer_closure = heap.get(outer_ref).value
+
+    assert isinstance(outer_closure, Closure)
+    assert outer_closure.captured_locals.bindings == {}
+    assert outer_closure.required_slots == 1
+
+    # Simulate lexical parameter binding for the outer call.
+    outer_call_env = outer_closure.call_environment(
+        ImmediateInteger(10),
+        global_env,
+    )
+
+    inner_expression = outer_expression.body
+    assert isinstance(inner_expression, CoreLam)
+
+    # The inner lambda must capture x from its definition site.
+    inner_ref = allocate_closure(
+        heap,
+        inner_expression,
+        outer_call_env,
+        global_env,
+    )
+
+    inner_closure = heap.get(inner_ref).value
+
+    assert isinstance(inner_closure, Closure)
+    assert set(inner_closure.captured_locals.bindings) == {"x"}
+    assert inner_closure.captured_locals.lookup("x") == (
+        ImmediateInteger(10)
+    )
+    assert inner_closure.required_slots == 2
+
+    inner_call_env = inner_closure.call_environment(
+        ImmediateInteger(7),
+        global_env,
+    )
+
+    assert inner_call_env.lookup("global_value") == (
+        ImmediateInteger(100)
+    )
+    assert inner_call_env.lookup("x") == ImmediateInteger(10)
+    assert inner_call_env.lookup("y") == ImmediateInteger(7)
+
+    assert heap.current_slots == 3
+    assert heap.next_object_id == 2
+
+def test_compiled_nested_closure_preserves_local_shadowing():
+    program = compile_source(
+        "x = 100\n"
+        "main = \\x -> \\y -> x"
+    )
+
+    outer_expression = program.bindings[1].rhs
+    assert isinstance(outer_expression, CoreLam)
+
+    global_env = Environment({
+        "x": ImmediateInteger(100),
+    })
+    heap = Heap()
+
+    outer_ref = allocate_closure(
+        heap,
+        outer_expression,
+        global_env,
+        global_env,
+    )
+    outer_closure = heap.get(outer_ref).value
+
+    assert isinstance(outer_closure, Closure)
+
+    # The outer parameter shadows global x.
+    outer_call_env = outer_closure.call_environment(
+        ImmediateInteger(10),
+        global_env,
+    )
+
+    inner_expression = outer_expression.body
+    assert isinstance(inner_expression, CoreLam)
+
+    inner_ref = allocate_closure(
+        heap,
+        inner_expression,
+        outer_call_env,
+        global_env,
+    )
+    inner_closure = heap.get(inner_ref).value
+
+    assert isinstance(inner_closure, Closure)
+    assert inner_closure.captured_locals.lookup("x") == (
+        ImmediateInteger(10)
+    )
+
+    inner_call_env = inner_closure.call_environment(
+        ImmediateInteger(20),
+        global_env,
+    )
+
+    assert inner_call_env.lookup("x") == ImmediateInteger(10)
+    assert inner_call_env.lookup("y") == ImmediateInteger(20)
+    assert global_env.lookup("x") == ImmediateInteger(100)

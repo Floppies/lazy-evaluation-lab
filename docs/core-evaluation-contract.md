@@ -710,3 +710,60 @@ not itself initialize recursive binding groups.
 
 Integration with `EvaluateCore(CoreLam)` belongs to B04.4.
 
+### 10.5 Nested Closures and Lexical Scope
+
+Nested Core lambdas produce distinct closures when evaluated.
+
+Each closure captures only the free local references required
+by its own lambda expression.
+
+A parameter bound by an outer function may become a free
+local variable of an inner lambda.
+
+For example:
+
+```haskell
+main = \x -> \y -> x + y
+```
+
+The outer closure captures no local references.
+
+After the outer function is applied, the inner closure
+captures the reference bound to `x`.
+
+When the inner function is applied, its call environment
+combines:
+
+- The global lexical environment.
+- The inner closure's captured local references.
+- The current argument binding.
+
+Local captured references shadow global bindings with
+the same names.
+
+The caller's unrelated local environment is not inherited.
+
+Closure construction does not evaluate lambda bodies or
+dereference captured heap references.
+
+### 10.6 B04.3 Completion Criteria
+
+B04.3 establishes the infrastructure for selective Core
+closure allocation:
+
+- Iterative free-variable analysis.
+- Correct handling of nested lexical scopes.
+- Separation of local captures from global references.
+- Deterministic capture selection.
+- Heap allocation with exact abstract slot capacity.
+- Stable captured reference identity.
+- Independent execution-state snapshots.
+- Integration tests with compiled nested lambdas.
+
+This infrastructure does not yet implement operational
+function application.
+
+Evaluation of `CoreLam` and `CoreApp`, continuation handling,
+and strategy-specific argument demand belong to B04.4.
+
+Local recursive binding initialization remains in B04.6.

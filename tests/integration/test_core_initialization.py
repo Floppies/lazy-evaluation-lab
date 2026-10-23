@@ -1,9 +1,15 @@
 import pytest
 
+from dataclasses import replace
+
 from lazy_lab.core.nodes import CoreBinding, CoreInt
 from lazy_lab.engine.core_machine import (
     _reserve_global_scope,
     _install_global_rhs,
+    step,
+    run_batch,
+    BatchStopReason,
+    EvaluatorBudgetExhaustedError
 )
 from lazy_lab.pipeline import compile_source
 from lazy_lab.runtime.environment import (
@@ -11,7 +17,7 @@ from lazy_lab.runtime.environment import (
 )
 from lazy_lab.runtime.heap import Heap, Reserved
 from lazy_lab.runtime.predefined import PredefinedFunction
-from lazy_lab.runtime.references import HeapReference
+from lazy_lab.runtime.references import HeapReference, ImmediateInteger
 from lazy_lab.core.nodes import CoreInt, CoreVar
 from lazy_lab.runtime.state import (
     ExecutionConfig,
@@ -27,7 +33,11 @@ from lazy_lab.engine.core_machine import (
     create_initial_core_state,
 )
 from lazy_lab.pipeline import compile_source
-from lazy_lab.runtime.control import InitializeCoreBindings
+from lazy_lab.runtime.control import (
+    InitializeCoreBindings,
+    EvaluateCore,
+    Return
+)
 from lazy_lab.runtime.global_bindings import PendingGlobal
 from lazy_lab.runtime.predefined import PredefinedFunction
 from lazy_lab.runtime.closures import Closure
@@ -512,3 +522,238 @@ def test_unreserved_global_cannot_be_installed():
 def test_pending_global_rejects_non_core_expression():
     with pytest.raises(TypeError):
         PendingGlobal("42")
+
+
+@pytest.mark.parametrize("strategy", list(Strategy))
+def test_initialization_reserves_scope_in_one_transition(strategy):
+    program = compile_source(
+        "first = second\n"
+        "second = 42\n"
+        "main = first"
+    )
+    config = make_config(strategy)
+    original = create_initial_core_state(
+        program,
+        config,
+        session_id="reserve-test",
+    )
+
+    transition = step(original, config)
+    next_state = transition.next_state
+    machine = next_state.machine_state
+
+    assert transition.rule_id == "CORE_INIT_RESERVE_GLOBAL_SCOPE"
+    assert transition.phase_before is ExecutionPhase.INITIALIZATION
+    assert transition.phase_after is ExecutionPhase.INITIALIZATION
+
+    assert isinstance(machine.control, InitializeCoreBindings)
+    assert machine.control.scope_reserved is True
+    assert machine.control.next_index == 0
+
+    assert set(machine.global_environment.bindings) == {
+        "first", "second", "main"
+    }
+
+    assert all(
+        isinstance(
+            machine.heap.get(
+                machine.global_environment.lookup(name)
+            ).value,
+            Reserved,
+        )
+        for name in ("first", "second", "main")
+    )
+
+    assert original.machine_state.heap.current_slots == 0
+    assert original.machine_state.global_environment.bindings == {}
+    assert next_state.transition_index == 1
+    assert machine.evaluator_transition_count == 1
+
+
+def test_each_installation_advances_one_binding():
+    program = compile_source(
+        "answer = 42\n"
+        "identity x = x\n"
+        "main = answer"
+    )
+    config = make_config()
+    initial = create_initial_core_state(
+        program,
+        config,
+        session_id="install-test",
+    )
+
+    reserved = step(initial, config).next_state
+    first = step(reserved, config)
+    first_machine = first.next_state.machine_state
+
+    assert first.rule_id == "CORE_INIT_INSTALL_GLOBAL"
+    assert first_machine.control.next_index == 1
+
+    environment = first_machine.global_environment
+
+    assert isinstance(
+        first_machine.heap.get(
+            environment.lookup("answer")
+        ).value,
+        PendingGlobal,
+    )
+    assert isinstance(
+        first_machine.heap.get(
+            environment.lookup("identity")
+        ).value,
+        Reserved,
+    )
+
+    second = step(first.next_state, config)
+    second_machine = second.next_state.machine_state
+
+    assert second.rule_id == "CORE_INIT_INSTALL_GLOBAL"
+    assert second_machine.control.next_index == 2
+
+    assert isinstance(
+        second_machine.heap.get(
+            second_machine.global_environment.lookup("identity")
+        ).value,
+        Closure,
+    )
+
+    # Installing the second RHS cannot alter the first snapshot.
+    assert isinstance(
+        first_machine.heap.get(
+            environment.lookup("identity")
+        ).value,
+        Reserved,
+    )
+
+
+@pytest.mark.parametrize("strategy", list(Strategy))
+def test_initialization_enters_selected_global(strategy):
+    program = compile_source(
+        "loop = loop\n"
+        "main = 42"
+    )
+    config = make_config(strategy)
+    initial = create_initial_core_state(
+        program,
+        config,
+        session_id="entry-test",
+    )
+
+    current = initial
+    transitions = []
+
+    for _ in range(len(program.bindings) + 2):
+        transition = step(current, config)
+        transitions.append(transition)
+        current = transition.next_state
+
+    machine = current.machine_state
+
+    assert machine.phase is ExecutionPhase.EVALUATION
+    assert machine.control == EvaluateCore(CoreVar("main"))
+    assert machine.strategy is strategy
+
+    assert [
+        item.rule_id for item in transitions
+    ] == [
+        "CORE_INIT_RESERVE_GLOBAL_SCOPE",
+        "CORE_INIT_INSTALL_GLOBAL",
+        "CORE_INIT_INSTALL_GLOBAL",
+        "CORE_INIT_ENTER_ENTRY",
+    ]
+
+    assert isinstance(
+        machine.heap.get(
+            machine.global_environment.lookup("loop")
+        ).value,
+        PendingGlobal,
+    )
+
+    assert current.transition_index == 4
+    assert machine.evaluator_transition_count == 4
+    assert initial.machine_state.heap.current_slots == 0
+
+
+def test_batch_can_stop_at_initialization_boundary():
+    program = compile_source("main = 42")
+    config = make_config()
+    initial = create_initial_core_state(
+        program,
+        config,
+        session_id="batch-initialization",
+    )
+
+    result = run_batch(
+        initial,
+        config,
+        max_steps=len(program.bindings) + 2,
+    )
+
+    assert result.stop_reason is BatchStopReason.BATCH_LIMIT
+    assert [
+        entry.rule_id for entry in result.trace
+    ] == [
+        "CORE_INIT_RESERVE_GLOBAL_SCOPE",
+        "CORE_INIT_INSTALL_GLOBAL",
+        "CORE_INIT_ENTER_ENTRY",
+    ]
+
+    assert result.state.machine_state.control == EvaluateCore(
+        CoreVar("main")
+    )
+    assert result.state.machine_state.phase is ExecutionPhase.EVALUATION
+
+
+def test_explicit_expression_runs_after_empty_global_group():
+    program = compile_source("")
+    config = make_config()
+
+    initial = create_initial_core_state(
+        program,
+        config,
+        session_id="empty-program",
+        entry=CoreInt(9),
+    )
+
+    result = run_batch(
+        initial,
+        config,
+        max_steps=10,
+    )
+
+    assert result.stop_reason is BatchStopReason.WHNF_PENDING
+    assert result.state.machine_state.control == Return(
+        ImmediateInteger(9)
+    )
+
+    assert [
+        entry.rule_id for entry in result.trace
+    ] == [
+        "CORE_INIT_RESERVE_GLOBAL_SCOPE",
+        "CORE_INIT_ENTER_ENTRY",
+        "CORE_EVAL_INTEGER",
+    ]
+
+
+def test_initialization_respects_evaluator_budget():
+    program = compile_source("main = 42")
+    config = replace(
+        make_config(),
+        execution_step_limit=1,
+    )
+
+    initial = create_initial_core_state(
+        program,
+        config,
+        session_id="budget-test",
+    )
+
+    after_reservation = step(initial, config).next_state
+
+    with pytest.raises(EvaluatorBudgetExhaustedError):
+        step(after_reservation, config)
+
+    assert after_reservation.transition_index == 1
+    assert after_reservation.machine_state.control.next_index == 0
+    assert after_reservation.machine_state.evaluator_transition_count == 1

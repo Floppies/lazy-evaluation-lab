@@ -556,3 +556,44 @@ applying initialization transitions.
 
 The operational installation sequence and entry-expression
 activation are implemented in B04.2.4.
+
+### 9.6 Operational Initialization Transitions
+
+Global initialization is performed through explicit Core
+machine transitions.
+
+`InitializeCoreBindings` tracks whether the global scope has
+been reserved and which RHS must be installed next.
+
+The initialization sequence consists of three rule families:
+
+1. `CORE_INIT_RESERVE_GLOBAL_SCOPE` creates all predefined
+   and user-defined global references.
+2. `CORE_INIT_INSTALL_GLOBAL` installs one global RHS
+   representation per transition.
+3. `CORE_INIT_ENTER_ENTRY` switches the machine to the
+   evaluation phase with the selected entry expression.
+
+All global addresses exist before the first RHS installation.
+
+Global RHS installation preserves stable object identities
+and does not evaluate the stored expressions.
+
+Each successful initialization transition produces an
+independent successor `ExecutionState`, increments the
+transition index and evaluator-transition counter, and
+reports a stable rule identifier.
+
+Initialization transitions count toward the execution
+step budget. They are not automatically classified as
+semantic reductions of the source program.
+
+Once initialization finishes, the selected entry is
+evaluated through the ordinary Core machine rules.
+
+For a program with N global bindings, initialization
+requires N + 2 machine transitions.
+
+The current milestone does not yet implement variable
+forcing or demand-driven evaluation of pending global
+RHS expressions.

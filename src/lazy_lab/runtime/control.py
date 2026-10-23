@@ -31,6 +31,7 @@ class InitializeCoreBindings:
     bindings: tuple[CoreBinding, ...]
     next_index: int = 0
     entry_expression: CoreExpr | None = None
+    scope_reserved: bool = False
 
 
 CoreControl: TypeAlias = (

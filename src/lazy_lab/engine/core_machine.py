@@ -112,12 +112,11 @@ def _dispatch_core_evaluation(
         f"{type(expression).__name__}"
     )
 
-
 def step(
     state: ExecutionState,
     config: ExecutionConfig,
 ) -> TransitionResult:
-    """Apply one supported Core evaluation transition."""
+    """Apply one supported Core machine transition."""
     _validate_configuration(state, config)
 
     machine = state.machine_state
@@ -129,10 +128,25 @@ def step(
 
     control = machine.control
 
-    if not isinstance(control, EvaluateCore):
+    if not isinstance(
+        control,
+        (EvaluateCore, InitializeCoreBindings),
+    ):
         raise UnsupportedTransitionError(
             f"Unsupported control: {type(control).__name__}"
         )
+
+    # Legacy B03 controls without an entry remain unsupported.
+    # Initialization is only executable for states created
+    # through the valid Core initialization contract.
+    if isinstance(control, InitializeCoreBindings):
+        if (
+            machine.phase is not ExecutionPhase.INITIALIZATION
+            or control.entry_expression is None
+        ):
+            raise UnsupportedTransitionError(
+                "Invalid or incomplete initialization control"
+            )
 
     if (
         machine.evaluator_transition_count
@@ -142,17 +156,26 @@ def step(
             "Evaluator step limit reached"
         )
 
-    # Rule selection and application.
-    next_control, rule_id = _dispatch_core_evaluation(
-        control.expression
-    )
-
-    # Construct an independent successor state.
+    # All mutations below affect isolated successor storage.
     snapshot = state.snapshot()
 
+    if isinstance(control, InitializeCoreBindings):
+        next_machine, rule_id = _advance_global_initialization(
+            snapshot.machine_state,
+            control,
+        )
+    else:
+        next_control, rule_id = _dispatch_core_evaluation(
+            control.expression
+        )
+
+        next_machine = replace(
+            snapshot.machine_state,
+            control=next_control,
+        )
+
     next_machine = replace(
-        snapshot.machine_state,
-        control=next_control,
+        next_machine,
         evaluator_transition_count=(
             machine.evaluator_transition_count + 1
         ),
@@ -305,6 +328,102 @@ def _install_global_rhs(
     heap.replace(reference, value)
 
     return reference
+
+
+def _advance_global_initialization(
+    machine: MachineState,
+    control: InitializeCoreBindings,
+) -> tuple[MachineState, str]:
+    """Apply one Core global-initialization rule.
+
+    The supplied machine must belong to an isolated successor
+    snapshot. Its heap may be mutated by the installation helpers.
+    """
+    if machine.phase is not ExecutionPhase.INITIALIZATION:
+        raise InvalidMachineStateError(
+            "Global initialization requires INITIALIZATION phase"
+        )
+
+    if control.entry_expression is None:
+        raise InvalidMachineStateError(
+            "Global initialization requires an entry expression"
+        )
+
+    if type(control.scope_reserved) is not bool:
+        raise InvalidMachineStateError(
+            "scope_reserved must be a boolean"
+        )
+
+    if (
+        type(control.next_index) is not int
+        or not 0 <= control.next_index <= len(control.bindings)
+    ):
+        raise InvalidMachineStateError(
+            "Invalid global initialization index"
+        )
+
+    if machine.stack.depth != 0:
+        raise InvalidMachineStateError(
+            "Global initialization requires an empty stack"
+        )
+
+    # Stage 1: all global addresses must exist before RHS
+    # installation can begin.
+    if not control.scope_reserved:
+        if control.next_index != 0:
+            raise InvalidMachineStateError(
+                "Cannot install globals before scope reservation"
+            )
+
+        environment = _reserve_global_scope(
+            machine.heap,
+            control.bindings,
+        )
+
+        return (
+            replace(
+                machine,
+                global_environment=environment,
+                local_environment=environment,
+                control=replace(
+                    control,
+                    scope_reserved=True,
+                ),
+            ),
+            "CORE_INIT_RESERVE_GLOBAL_SCOPE",
+        )
+
+    # Stage 2: install exactly one global RHS per transition.
+    if control.next_index < len(control.bindings):
+        binding = control.bindings[control.next_index]
+
+        _install_global_rhs(
+            machine.heap,
+            machine.global_environment,
+            binding,
+        )
+
+        return (
+            replace(
+                machine,
+                control=replace(
+                    control,
+                    next_index=control.next_index + 1,
+                ),
+            ),
+            "CORE_INIT_INSTALL_GLOBAL",
+        )
+
+    # Stage 3: the global group is installed. Begin evaluating
+    # the user-selected entry without forcing unrelated globals.
+    return (
+        replace(
+            machine,
+            phase=ExecutionPhase.EVALUATION,
+            control=EvaluateCore(control.entry_expression),
+        ),
+        "CORE_INIT_ENTER_ENTRY",
+    )
 
 def run_batch(
     state: ExecutionState,

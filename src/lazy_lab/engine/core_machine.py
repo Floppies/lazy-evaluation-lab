@@ -11,14 +11,16 @@ from lazy_lab.core.nodes import (
     CoreProgram,
     CoreVar,
     CoreBinding,
+    CoreLam,
 )
 from lazy_lab.semantics.predefined import PREDEFINED_IDENTIFIERS
 from lazy_lab.runtime.control import EvaluateCore, Return, InitializeCoreBindings
 from lazy_lab.runtime.references import (
     ImmediateBoolean,
     ImmediateInteger,
+    HeapReference,
 )
-from lazy_lab.runtime.environment import Environment
+from lazy_lab.runtime.environment import Environment, UnboundNameError
 from lazy_lab.runtime.heap import (
     Heap,
     Reserved,
@@ -41,7 +43,8 @@ from lazy_lab.runtime.transitions import (
     TransitionKind,
     TransitionResult,
 )
-
+from lazy_lab.runtime.closures import capture_closure
+from lazy_lab.runtime.global_bindings import PendingGlobal
 
 class UnsupportedTransitionError(NotImplementedError):
     """The requested transition is not implemented yet."""
@@ -245,6 +248,63 @@ def _reserve_global_scope(
 
     return predefined_environment.extend(global_bindings)
 
+def _install_global_rhs(
+    heap: Heap,
+    global_environment: Environment,
+    binding: CoreBinding,
+) -> HeapReference:
+    """Install one global RHS without evaluating its expression.
+
+    The complete global scope must already be reserved.
+
+    Mutates the supplied heap. The caller must use owned or
+    snapshot-isolated storage when executing a transition.
+    """
+    if not isinstance(heap, Heap):
+        raise TypeError("Expected a Heap")
+
+    if not isinstance(global_environment, Environment):
+        raise TypeError("Expected an Environment")
+
+    if not isinstance(binding, CoreBinding):
+        raise TypeError("Expected a CoreBinding")
+
+    # Check the user-defined global scope directly: lexical lookup
+    # could otherwise select a shadowed predefined function.
+    if binding.name not in global_environment.bindings:
+        raise UnboundNameError(
+            f"Global binding was not reserved: {binding.name!r}"
+        )
+
+    reference = global_environment.bindings[binding.name]
+
+    if not isinstance(reference, HeapReference):
+        raise TypeError(
+            "Global binding must reference a heap cell"
+        )
+
+    cell = heap.get(reference)
+
+    if not isinstance(cell.value, Reserved):
+        raise ValueError(
+            f"Global binding already initialized: {binding.name!r}"
+        )
+
+    if isinstance(binding.rhs, CoreLam):
+        # A top-level lambda has no free local bindings to capture.
+        # References to globals are resolved through the separate
+        # global environment when the closure is applied.
+        value = capture_closure(
+            binding.rhs,
+            Environment(),
+            free_local_names=(),
+        )
+    else:
+        value = PendingGlobal(binding.rhs)
+
+    heap.replace(reference, value)
+
+    return reference
 
 def run_batch(
     state: ExecutionState,

@@ -523,3 +523,36 @@ storage.
 
 Pending global RHS representations and initialization
 transitions are implemented in subsequent B04.2 subtasks.
+
+### 9.5 Installing Global RHS Representations
+
+After every global binding has a stable reserved address, the
+runtime installs RHS representations without evaluating them.
+
+A non-lambda global RHS is represented by `PendingGlobal`,
+which retains the original Core expression.
+
+A top-level lambda RHS is installed directly as a `Closure`.
+Its body is not evaluated, and the closure captures no local
+bindings. Global references are resolved through the separate
+global environment when the function is applied.
+
+Installation preserves the original heap address and its
+allocated slot capacity. It does not allocate a second object
+for the global binding.
+
+`PendingGlobal` uses one abstract heap slot. The host memory
+occupied by its Core AST is outside the simulated heap.
+
+`PendingGlobal` does not implement forcing, memoization,
+updates or strategy-specific sharing.
+
+Global RHS demand remains independent from argument
+strictness and local `CoreLetRec` initialization.
+
+Each installation operation modifies an owned heap. The
+evaluator must use isolated successor-state storage when
+applying initialization transitions.
+
+The operational installation sequence and entry-expression
+activation are implemented in B04.2.4.

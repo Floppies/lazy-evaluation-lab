@@ -1,7 +1,10 @@
 import pytest
 
 from lazy_lab.core.nodes import CoreBinding, CoreInt
-from lazy_lab.engine.core_machine import _reserve_global_scope
+from lazy_lab.engine.core_machine import (
+    _reserve_global_scope,
+    _install_global_rhs,
+)
 from lazy_lab.pipeline import compile_source
 from lazy_lab.runtime.environment import (
     UnboundNameError,
@@ -25,6 +28,9 @@ from lazy_lab.engine.core_machine import (
 )
 from lazy_lab.pipeline import compile_source
 from lazy_lab.runtime.control import InitializeCoreBindings
+from lazy_lab.runtime.global_bindings import PendingGlobal
+from lazy_lab.runtime.predefined import PredefinedFunction
+from lazy_lab.runtime.closures import Closure
 
 def make_config(strategy=Strategy.CBNEED):
     return ExecutionConfig(
@@ -315,3 +321,194 @@ def test_stg_initialization_is_not_supported():
             stg_config,
             session_id="stg-not-yet",
         )
+
+
+def test_global_literal_is_installed_without_evaluation():
+    program = compile_source(
+        "answer = 42\n"
+        "main = answer"
+    )
+
+    heap = Heap()
+    environment = _reserve_global_scope(
+        heap, program.bindings
+    )
+
+    reference = environment.lookup("answer")
+    original_slots = heap.current_slots
+
+    installed = _install_global_rhs(
+        heap, environment, program.bindings[0]
+    )
+
+    assert installed is reference
+    assert heap.current_slots == original_slots
+    assert heap.get(reference).value.expression == CoreInt(42)
+    assert isinstance(
+        heap.get(reference).value, PendingGlobal
+    )
+
+    # The other global has not been installed.
+    assert isinstance(
+        heap.get(environment.lookup("main")).value,
+        Reserved,
+    )
+
+
+def test_global_alias_is_not_resolved_during_installation():
+    program = compile_source(
+        "main = answer\n"
+        "answer = 42"
+    )
+
+    heap = Heap()
+    environment = _reserve_global_scope(
+        heap, program.bindings
+    )
+
+    main_ref = environment.lookup("main")
+    answer_ref = environment.lookup("answer")
+
+    _install_global_rhs(
+        heap, environment, program.bindings[0]
+    )
+
+    pending = heap.get(main_ref).value
+
+    assert isinstance(pending, PendingGlobal)
+    assert pending.expression.name == "answer"
+    assert isinstance(heap.get(answer_ref).value, Reserved)
+
+
+def test_global_lambda_installs_closure_without_running_body():
+    program = compile_source(
+        "identity x = x\n"
+        "main = identity"
+    )
+
+    heap = Heap()
+    environment = _reserve_global_scope(
+        heap, program.bindings
+    )
+
+    reference = environment.lookup("identity")
+    slots_before = heap.current_slots
+
+    _install_global_rhs(
+        heap, environment, program.bindings[0]
+    )
+
+    closure = heap.get(reference).value
+
+    assert isinstance(closure, Closure)
+    assert closure.lambda_expression.parameter == "x"
+    assert closure.captured_locals.bindings == {}
+    assert closure.required_slots == 1
+    assert heap.current_slots == slots_before
+
+    # Its body has not been evaluated.
+    assert isinstance(
+        heap.get(environment.lookup("main")).value,
+        Reserved,
+    )
+
+
+def test_all_global_installations_preserve_addresses():
+    program = compile_source(
+        "first = second\n"
+        "second = 42\n"
+        "main = first"
+    )
+
+    heap = Heap()
+    environment = _reserve_global_scope(
+        heap, program.bindings
+    )
+
+    references = {
+        binding.name: environment.lookup(binding.name)
+        for binding in program.bindings
+    }
+    initial_slots = heap.current_slots
+    next_object_id = heap.next_object_id
+
+    for binding in program.bindings:
+        _install_global_rhs(heap, environment, binding)
+
+    for name, reference in references.items():
+        assert environment.lookup(name) is reference
+        assert isinstance(
+            heap.get(reference).value, PendingGlobal
+        )
+
+    assert heap.current_slots == initial_slots
+    assert heap.next_object_id == next_object_id
+
+
+def test_installing_shadowed_seq_keeps_builtin_unchanged():
+    program = compile_source(
+        "seq x y = x\n"
+        "main = seq 1 2"
+    )
+
+    heap = Heap()
+    environment = _reserve_global_scope(
+        heap, program.bindings
+    )
+
+    builtin_ref = environment.parent.lookup("seq")
+    user_ref = environment.lookup("seq")
+
+    _install_global_rhs(
+        heap, environment, program.bindings[0]
+    )
+
+    assert isinstance(heap.get(user_ref).value, Closure)
+    assert isinstance(
+        heap.get(builtin_ref).value,
+        PredefinedFunction,
+    )
+
+
+def test_reinstalling_global_is_rejected_without_mutation():
+    program = compile_source("main = 42")
+
+    heap = Heap()
+    environment = _reserve_global_scope(
+        heap, program.bindings
+    )
+
+    binding = program.bindings[0]
+    reference = environment.lookup("main")
+
+    _install_global_rhs(heap, environment, binding)
+    installed_cell = heap.get(reference)
+
+    with pytest.raises(ValueError, match="already initialized"):
+        _install_global_rhs(heap, environment, binding)
+
+    assert heap.get(reference) is installed_cell
+
+
+def test_unreserved_global_cannot_be_installed():
+    program = compile_source("main = 42")
+
+    heap = Heap()
+    environment = _reserve_global_scope(
+        heap, program.bindings
+    )
+
+    extra_binding = CoreBinding("missing", CoreInt(1))
+    slots_before = heap.current_slots
+
+    with pytest.raises(UnboundNameError):
+        _install_global_rhs(
+            heap, environment, extra_binding
+        )
+
+    assert heap.current_slots == slots_before
+
+
+def test_pending_global_rejects_non_core_expression():
+    with pytest.raises(TypeError):
+        PendingGlobal("42")

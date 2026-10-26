@@ -229,7 +229,13 @@ def step(
 
     if not isinstance(
         control,
-        (EvaluateCore, InitializeCoreBindings, Force, Return),
+        (
+            EvaluateCore,
+            InitializeCoreBindings,
+            Force,
+            Return,
+            ApplyPrimitive
+        ),
     ):
         raise UnsupportedTransitionError(
             f"Unsupported control: {type(control).__name__}"
@@ -275,6 +281,13 @@ def step(
             snapshot.machine_state,
             control,
         )
+
+    elif isinstance(control, ApplyPrimitive):
+        next_machine, rule_id = _advance_apply_primitive(
+            snapshot.machine_state,
+            control,
+        )
+        
     else:
         next_machine, rule_id = _dispatch_core_evaluation(
         snapshot.machine_state
@@ -720,6 +733,102 @@ def _advance_return(
     # consumer, not to another evaluator transition.
     raise UnsupportedTransitionError(
         "Root result is awaiting observation"
+    )
+
+def _advance_apply_primitive(
+    machine: MachineState,
+    control: ApplyPrimitive,
+) -> tuple[MachineState, str]:
+    """Execute a primitive with fully evaluated WHNF operands."""
+    operator = control.operator
+    arguments = control.arguments
+
+    binary_operators = {
+        "+", "-", "*",
+        "<", "<=", ">", ">=",
+        "==", "!=",
+    }
+
+    if operator == "negate":
+        expected_arity = 1
+    elif operator in binary_operators:
+        expected_arity = 2
+    else:
+        raise InvalidMachineStateError(
+            f"Unsupported primitive operator: {operator!r}"
+        )
+
+    if len(arguments) != expected_arity:
+        raise InvalidMachineStateError(
+            f"Primitive {operator!r} expects "
+            f"{expected_arity} operands, got {len(arguments)}"
+        )
+
+    # Equality is supported for values of the same primitive
+    # type: Integer == Integer or Boolean == Boolean.
+    if operator in {"==", "!="}:
+        left, right = arguments
+
+        if (
+            type(left) is not type(right)
+            or type(left) not in (
+                ImmediateInteger,
+                ImmediateBoolean,
+            )
+        ):
+            raise TypeError(
+                f"Primitive {operator!r} requires operands "
+                "of the same primitive type"
+            )
+
+        equal = left.value == right.value
+        result = ImmediateBoolean(
+            equal if operator == "==" else not equal
+        )
+
+    else:
+        # Arithmetic, ordering and negation require integers.
+        if not all(
+            isinstance(argument, ImmediateInteger)
+            for argument in arguments
+        ):
+            raise TypeError(
+                f"Primitive {operator!r} requires integer operands"
+            )
+
+        if operator == "negate":
+            result = ImmediateInteger(-arguments[0].value)
+
+        else:
+            left, right = (
+                argument.value for argument in arguments
+            )
+
+            if operator == "+":
+                result = ImmediateInteger(left + right)
+            elif operator == "-":
+                result = ImmediateInteger(left - right)
+            elif operator == "*":
+                result = ImmediateInteger(left * right)
+            elif operator == "<":
+                result = ImmediateBoolean(left < right)
+            elif operator == "<=":
+                result = ImmediateBoolean(left <= right)
+            elif operator == ">":
+                result = ImmediateBoolean(left > right)
+            elif operator == ">=":
+                result = ImmediateBoolean(left >= right)
+            else:
+                raise InvalidMachineStateError(
+                    f"Unexpected primitive operator: {operator!r}"
+                )
+
+    return (
+        replace(
+            machine,
+            control=Return(result),
+        ),
+        "CORE_PRIM_EXECUTE",
     )
 
 def run_batch(

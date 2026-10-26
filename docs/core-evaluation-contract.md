@@ -1058,3 +1058,35 @@ nested operand evaluation is in progress.
 Primitive operators are strict under every evaluation strategy,
 even though complete non-strict function application belongs
 to subsequent milestones.
+
+### 12.4 Primitive Execution
+
+`ApplyPrimitive` contains an operator and runtime references
+whose operands have already reached WHNF.
+
+`CORE_PRIM_EXECUTE` consumes this control and produces a
+`Return` containing an immediate result.
+
+The supported primitive operations are:
+
+- Integer arithmetic: negate, +, -, *.
+- Integer comparisons: <, <=, >, >=.
+- Equality and inequality for two integers or two booleans.
+
+Arithmetic and ordering require integer operands.
+
+Equality and inequality require operands of the same supported
+primitive type.
+
+Unsupported operators, invalid arities and invalid operand
+types produce explicit runtime errors.
+
+Primitive execution does not allocate heap objects, modify
+the continuation stack or perform additional forcing.
+
+The operation is a single evaluator transition. Primitive
+execution is strict regardless of the selected evaluation
+strategy.
+
+Constructor equality, structural list comparison and other
+primitive data types are outside this initial implementation.

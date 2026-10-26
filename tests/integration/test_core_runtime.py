@@ -1134,3 +1134,99 @@ def test_primitive_forces_global_operand_without_memoization():
 
     assert initial.transition_index == 0
     assert initial.machine_state.heap.current_slots == 0
+
+
+@pytest.mark.parametrize(
+    "source,expected",
+    [
+        ("main = 1 + 2 * 3", ImmediateInteger(7)),
+        ("main = (1 + 2) * 3", ImmediateInteger(9)),
+        ("main = 10 - 15", ImmediateInteger(-5)),
+        ("main = -5", ImmediateInteger(-5)),
+        ("main = 10 * -3", ImmediateInteger(-30)),
+        ("main = 3 < 5", ImmediateBoolean(True)),
+        ("main = 3 <= 3", ImmediateBoolean(True)),
+        ("main = 3 > 5", ImmediateBoolean(False)),
+        ("main = 5 >= 5", ImmediateBoolean(True)),
+        ("main = 4 == 4", ImmediateBoolean(True)),
+        ("main = 4 != 4", ImmediateBoolean(False)),
+        ("main = True == False", ImmediateBoolean(False)),
+        ("main = True != False", ImmediateBoolean(True)),
+    ],
+)
+def test_primitive_operations_produce_expected_whnf(
+    source,
+    expected,
+):
+    config = make_config(strategy=Strategy.CBV)
+    program = compile_source(source)
+
+    initial = create_initial_core_state(
+        program,
+        config,
+        session_id="primitive-evaluation",
+    )
+
+    result = run_batch(initial, config, max_steps=150)
+
+    assert result.stop_reason is BatchStopReason.WHNF_PENDING
+    assert result.state.machine_state.control == Return(expected)
+    assert result.state.machine_state.stack.depth == 0
+
+    assert any(
+        entry.rule_id == "CORE_PRIM_EXECUTE"
+        for entry in result.trace
+    )
+
+
+def test_cbv_function_accepts_primitive_argument():
+    program = compile_source(
+        "double x = x * 2\n"
+        "main = double (3 + 4)"
+    )
+
+    config = make_config(strategy=Strategy.CBV)
+
+    initial = create_initial_core_state(
+        program,
+        config,
+        session_id="cbv-primitive-argument",
+    )
+
+    result = run_batch(initial, config, max_steps=150)
+    machine = result.state.machine_state
+
+    assert result.stop_reason is BatchStopReason.WHNF_PENDING
+    assert machine.control == Return(ImmediateInteger(14))
+    assert machine.stack.depth == 0
+
+    rules = [entry.rule_id for entry in result.trace]
+
+    assert rules.count("CORE_PRIM_EXECUTE") == 2
+    assert "CORE_CBV_ENTER_BODY" in rules
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        "main = True + 1",
+        "main = -False",
+        "main = True < False",
+        "main = 1 == True",
+    ],
+)
+def test_primitives_reject_invalid_operand_types(source):
+    program = compile_source(source)
+    config = make_config(strategy=Strategy.CBV)
+
+    initial = create_initial_core_state(
+        program,
+        config,
+        session_id="primitive-type-error",
+    )
+
+    with pytest.raises(TypeError):
+        run_batch(initial, config, max_steps=100)
+
+    assert initial.transition_index == 0
+    assert initial.machine_state.heap.current_slots == 0

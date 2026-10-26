@@ -665,9 +665,21 @@ def test_primitive_operands_are_forced_left_to_right():
     assert original.transition_index == 0
     assert original.machine_state.stack.depth == 0
 
-    # Actual primitive execution is added in B04.5.3.
-    with pytest.raises(UnsupportedTransitionError):
-        step(current, config)
+    transition = step(current, config)
+
+    assert transition.rule_id == "CORE_PRIM_EXECUTE"
+    assert transition.next_state.machine_state.control == Return(
+        ImmediateInteger(30)
+    )
+
+    assert transition.next_state.machine_state.stack.depth == 0
+    assert current.machine_state.control == ApplyPrimitive(
+        "+",
+        (
+            ImmediateInteger(10),
+            ImmediateInteger(20),
+        ),
+    )
 
 
 def test_primitive_next_operand_uses_original_environment():
@@ -775,3 +787,36 @@ def test_primitive_operand_follows_indirection():
         Indirection(ImmediateInteger(9))
     )
     assert machine.stack.depth == 0
+
+
+@pytest.mark.parametrize(
+    "operator,arguments",
+    [
+        ("+", (ImmediateInteger(1),)),
+        ("negate", (
+            ImmediateInteger(1),
+            ImmediateInteger(2),
+        )),
+        ("unknown", (ImmediateInteger(1),)),
+    ],
+)
+def test_invalid_primitive_control_does_not_advance(
+    operator,
+    arguments,
+):
+    original = make_state(CoreInt(0))
+
+    original = replace(
+        original,
+        machine_state=replace(
+            original.machine_state,
+            control=ApplyPrimitive(operator, arguments),
+        ),
+    )
+
+    with pytest.raises(InvalidMachineStateError):
+        step(original, make_config())
+
+    assert original.transition_index == 0
+    assert original.machine_state.stack.depth == 0
+    assert original.machine_state.evaluator_transition_count == 0

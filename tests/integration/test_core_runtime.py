@@ -1499,3 +1499,39 @@ def test_conditional_can_resume_after_evaluator_budget():
     assert paused.transition_index == 10
     assert paused.machine_state.stack.depth > 0
     assert initial.transition_index == 0
+
+
+def test_local_function_group_returns_closure_without_running_bodies():
+    program = compile_source(
+        "main = let { f x = g x; g y = f y } in f"
+    )
+
+    config = make_config(strategy=Strategy.CBV)
+
+    initial = create_initial_core_state(
+        program,
+        config,
+        session_id="local-function-result",
+    )
+
+    result = run_batch(initial, config, max_steps=100)
+    machine = result.state.machine_state
+
+    assert result.stop_reason is BatchStopReason.WHNF_PENDING
+    assert isinstance(machine.control, Return)
+    assert machine.stack.depth == 0
+
+    # The returned value is an evaluated closure.
+    result_ref = machine.control.reference
+    assert isinstance(
+        machine.heap.get(result_ref).value,
+        Closure,
+    )
+
+    assert machine.local_environment is machine.global_environment
+
+    rules = [entry.rule_id for entry in result.trace]
+
+    assert rules.count(RuleId.CORE_LETREC_INSTALL_FUNCTION) == 2
+    assert RuleId.CORE_LETREC_ENTER_BODY in rules
+    assert RuleId.CORE_RESTORE_CALLER_ENVIRONMENT in rules

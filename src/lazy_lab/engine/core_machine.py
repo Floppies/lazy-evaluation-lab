@@ -256,9 +256,10 @@ def step(
         (
             EvaluateCore,
             InitializeCoreBindings,
+            InitializeLocalBindings,
             Force,
             Return,
-            ApplyPrimitive
+            ApplyPrimitive,
         ),
     ):
         raise UnsupportedTransitionError(
@@ -293,6 +294,12 @@ def step(
             snapshot.machine_state,
             control,
     )
+
+    elif isinstance(control, InitializeLocalBindings):
+        next_machine, rule_id = _advance_local_initialization(
+            snapshot.machine_state,
+            control,
+        )
 
     elif isinstance(control, Force):
         next_machine, rule_id = _advance_force(
@@ -570,6 +577,89 @@ def _advance_global_initialization(
             control=EvaluateCore(control.entry_expression),
         ),
         RuleId.CORE_INIT_ENTER_ENTRY,
+    )
+
+def _advance_local_initialization(
+    machine: MachineState,
+    control: InitializeLocalBindings,
+) -> tuple[MachineState, RuleId]:
+    """Initialize local recursive bindings in source order."""
+    if machine.strategy is not Strategy.CBV:
+        raise UnsupportedTransitionError(
+            "Non-strict local initialization is not implemented"
+        )
+
+    if machine.phase is not ExecutionPhase.EVALUATION:
+        raise InvalidMachineStateError(
+            "Local initialization requires EVALUATION phase"
+        )
+
+    if (
+        type(control.next_index) is not int
+        or not 0 <= control.next_index <= len(control.bindings)
+    ):
+        raise InvalidMachineStateError(
+            "Invalid local initialization index"
+        )
+
+    # All bindings were installed: evaluate the let body.
+    if control.next_index == len(control.bindings):
+        return (
+            replace(
+                machine,
+                control=EvaluateCore(control.body),
+            ),
+            RuleId.CORE_LETREC_ENTER_BODY,
+        )
+
+    binding = control.bindings[control.next_index]
+
+    # Non-function RHS initialization belongs to B04.6.3.
+    if not isinstance(binding.rhs, CoreLam):
+        raise UnsupportedTransitionError(
+            "Non-lambda local RHS initialization "
+            "is not implemented yet"
+        )
+
+    # Resolve the reserved cell directly in this scope,
+    # avoiding accidental fallback to an outer binding.
+    reference = machine.local_environment.bindings.get(
+        binding.name
+    )
+
+    if not isinstance(reference, HeapReference):
+        raise InvalidMachineStateError(
+            "Local binding has no reserved heap reference"
+        )
+
+    if not isinstance(machine.heap.get(reference).value, Reserved):
+        raise InvalidMachineStateError(
+            "Local binding is already initialized"
+        )
+
+    # Allocate the actual closure with exact capture capacity.
+    closure_reference = allocate_closure(
+        machine.heap,
+        binding.rhs,
+        machine.local_environment,
+        machine.global_environment,
+    )
+
+    # Keep the original recursive binding address stable.
+    machine.heap.replace(
+        reference,
+        Indirection(closure_reference),
+    )
+
+    return (
+        replace(
+            machine,
+            control=replace(
+                control,
+                next_index=control.next_index + 1,
+            ),
+        ),
+        RuleId.CORE_LETREC_INSTALL_FUNCTION,
     )
 
 def _reference_is_whnf(

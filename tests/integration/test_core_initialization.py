@@ -15,7 +15,7 @@ from lazy_lab.pipeline import compile_source
 from lazy_lab.runtime.environment import (
     UnboundNameError,
 )
-from lazy_lab.runtime.heap import Heap, Reserved
+from lazy_lab.runtime.heap import Heap, Reserved, Indirection
 from lazy_lab.runtime.stack import RestoreEnvironmentFrame
 from lazy_lab.runtime.predefined import PredefinedFunction
 from lazy_lab.runtime.references import HeapReference, ImmediateInteger
@@ -816,3 +816,79 @@ def test_compiled_letrec_enters_reserved_local_scope():
 
     assert initial.transition_index == 0
     assert initial.machine_state.heap.current_slots == 0
+
+    
+def test_local_recursive_functions_use_stable_indirections():
+    program = compile_source(
+        "main = let { f x = g x; g y = f y } in f"
+    )
+    config = make_config(strategy=Strategy.CBV)
+
+    state = create_initial_core_state(
+        program,
+        config,
+        session_id="recursive-functions",
+    )
+
+    for _ in range(30):
+        if isinstance(
+            state.machine_state.control,
+            InitializeLocalBindings,
+        ):
+            break
+        state = step(state, config).next_state
+    else:
+        pytest.fail("Local initialization was not reached")
+
+    reserved = state.machine_state
+    f_ref = reserved.local_environment.lookup("f")
+    g_ref = reserved.local_environment.lookup("g")
+
+    assert isinstance(reserved.heap.get(f_ref).value, Reserved)
+    assert isinstance(reserved.heap.get(g_ref).value, Reserved)
+
+    first = step(state, config)
+    first_machine = first.next_state.machine_state
+
+    assert first.rule_id is RuleId.CORE_LETREC_INSTALL_FUNCTION
+    assert first_machine.control.next_index == 1
+
+    f_indirection = first_machine.heap.get(f_ref).value
+    assert isinstance(f_indirection, Indirection)
+
+    f_closure = first_machine.heap.get(
+        f_indirection.target
+    ).value
+
+    assert isinstance(f_closure, Closure)
+    assert f_closure.captured_locals.lookup("g") == g_ref
+
+    # g still has its original reserved cell.
+    assert isinstance(first_machine.heap.get(g_ref).value, Reserved)
+
+    second = step(first.next_state, config)
+    machine = second.next_state.machine_state
+
+    assert second.rule_id is RuleId.CORE_LETREC_INSTALL_FUNCTION
+    assert machine.control.next_index == 2
+
+    g_indirection = machine.heap.get(g_ref).value
+    assert isinstance(g_indirection, Indirection)
+
+    g_closure = machine.heap.get(
+        g_indirection.target
+    ).value
+
+    assert isinstance(g_closure, Closure)
+    assert g_closure.captured_locals.lookup("f") == f_ref
+
+    # Stable anchors and exact closure capacities.
+    assert machine.heap.get(f_ref).allocated_slots == 1
+    assert machine.heap.get(g_ref).allocated_slots == 1
+    assert machine.heap.get(f_indirection.target).allocated_slots == 2
+    assert machine.heap.get(g_indirection.target).allocated_slots == 2
+
+    # Previous snapshots remain unchanged.
+    assert isinstance(reserved.heap.get(f_ref).value, Reserved)
+    assert isinstance(reserved.heap.get(g_ref).value, Reserved)
+    assert isinstance(first_machine.heap.get(g_ref).value, Reserved)

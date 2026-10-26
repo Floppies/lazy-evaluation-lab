@@ -61,6 +61,8 @@ class RuleId(StrEnum):
 
     # Local recursive bindings
     CORE_LETREC_RESERVE_SCOPE = "CORE_LETREC_RESERVE_SCOPE"
+    CORE_LETREC_INSTALL_FUNCTION = "CORE_LETREC_INSTALL_FUNCTION"
+    CORE_LETREC_ENTER_BODY = "CORE_LETREC_ENTER_BODY"
 
 
 @dataclass(frozen=True, slots=True)

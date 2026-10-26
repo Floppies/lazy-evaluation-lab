@@ -25,7 +25,11 @@ from lazy_lab.runtime.references import (
     ImmediateInteger,
     HeapReference,
 )
-from lazy_lab.runtime.stack import Stack, ApplyFunctionFrame
+from lazy_lab.runtime.stack import (
+    Stack,
+    ApplyFunctionFrame,
+    PrimitiveOperandsFrame,
+)
 from lazy_lab.runtime.state import (
     ExecutionConfig,
     ExecutionPhase,
@@ -186,25 +190,6 @@ def test_step_budget_is_enforced():
     assert result.stop_reason is BatchStopReason.EVALUATOR_BUDGET
     assert result.state.transition_index == 0
     assert result.trace == ()
-
-
-def test_unsupported_primitive_does_not_advance():
-    state = make_state(
-        CorePrimOp(
-            "+",
-            (CoreInt(1), CoreInt(2)),
-        )
-    )
-
-    with pytest.raises(
-        UnsupportedTransitionError,
-        match="CorePrimOp",
-    ):
-        step(state, make_config())
-
-    assert state.transition_index == 0
-    assert state.machine_state.stack.depth == 0
-    assert state.machine_state.evaluator_transition_count == 0
 
 
 def test_terminal_state_cannot_advance():
@@ -524,3 +509,105 @@ def test_force_rejects_uninitialized_cell():
 
     assert isinstance(heap.get(reference).value, Reserved)
     assert original.transition_index == 0
+
+
+def test_primitive_starts_with_first_operand():
+    expression = CorePrimOp(
+        "+",
+        (CoreInt(10), CoreInt(20)),
+    )
+
+    original = make_state(expression)
+    transition = step(original, make_config())
+    machine = transition.next_state.machine_state
+
+    assert transition.rule_id == "CORE_EVAL_PRIMITIVE_START"
+    assert machine.control == EvaluateCore(CoreInt(10))
+    assert machine.stack.depth == 1
+
+    frame = machine.stack.peek()
+
+    assert isinstance(frame, PrimitiveOperandsFrame)
+    assert frame.operator == "+"
+    assert frame.remaining_arguments == (CoreInt(20),)
+    assert frame.evaluated_arguments == ()
+    assert frame.awaiting_whnf is False
+
+    assert frame.environment is machine.local_environment
+    assert machine.heap.current_slots == 0
+
+    assert original.machine_state.stack.depth == 0
+    assert original.transition_index == 0
+    assert transition.next_state.transition_index == 1
+
+
+def test_primitive_frame_preserves_lexical_environment():
+    global_env = Environment({
+        "x": ImmediateInteger(100),
+    })
+
+    local_env = global_env.extend({
+        "x": ImmediateInteger(10),
+    })
+
+    expression = CorePrimOp(
+        "+",
+        (CoreVar("x"), CoreInt(2)),
+    )
+
+    original = make_state(expression)
+    original = replace(
+        original,
+        machine_state=replace(
+            original.machine_state,
+            local_environment=local_env,
+            global_environment=global_env,
+        ),
+    )
+
+    transition = step(original, make_config())
+    machine = transition.next_state.machine_state
+
+    frame = machine.stack.peek()
+
+    assert isinstance(frame, PrimitiveOperandsFrame)
+    assert frame.environment is local_env
+    assert frame.environment.lookup("x") == ImmediateInteger(10)
+    assert machine.control == EvaluateCore(CoreVar("x"))
+
+
+def test_unary_primitive_has_no_remaining_operands():
+    expression = CorePrimOp(
+        "negate",
+        (CoreInt(5),),
+    )
+
+    transition = step(
+        make_state(expression),
+        make_config(),
+    )
+
+    machine = transition.next_state.machine_state
+    frame = machine.stack.peek()
+
+    assert isinstance(frame, PrimitiveOperandsFrame)
+    assert frame.operator == "negate"
+    assert frame.remaining_arguments == ()
+    assert frame.evaluated_arguments == ()
+    assert machine.control == EvaluateCore(CoreInt(5))
+
+
+def test_empty_primitive_does_not_advance():
+    expression = CorePrimOp("+", ())
+
+    original = make_state(expression)
+
+    with pytest.raises(
+        InvalidMachineStateError,
+        match="at least one operand",
+    ):
+        step(original, make_config())
+
+    assert original.transition_index == 0
+    assert original.machine_state.stack.depth == 0
+    assert original.machine_state.heap.current_slots == 0

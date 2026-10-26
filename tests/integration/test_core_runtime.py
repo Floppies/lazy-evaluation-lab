@@ -24,6 +24,7 @@ from lazy_lab.runtime.stack import (
     ApplyFunctionFrame,
     RestoreEnvironmentFrame,
     ApplyArgumentFrame,
+    PrimitiveOperandsFrame,
 )                                   
 from lazy_lab.runtime.state import (
     ExecutionConfig,
@@ -42,6 +43,7 @@ from lazy_lab.core.nodes import (
     CoreInt,
     CoreVar,
     CoreApp,
+    CorePrimOp,
 )
 from lazy_lab.runtime.closures import (
     Closure,
@@ -160,7 +162,6 @@ def test_compiled_literals_use_runtime(
 @pytest.mark.parametrize(
     "source",
     [
-        "main = 1 + 2",
         "main = let { x = 1 } in x",
     ],
 )
@@ -1023,3 +1024,44 @@ def test_cbv_trace_modes_have_equivalent_machine_results():
 
     assert len(full.trace) > 0
     assert metrics.trace == ()
+
+
+def test_compiled_primitive_starts_left_to_right_evaluation():
+    program = compile_source(
+        "main = 1 + 2 * 3"
+    )
+    config = make_config(strategy=Strategy.CBV)
+
+    initial = create_initial_core_state(
+        program,
+        config,
+        session_id="primitive-start",
+    )
+
+    current = initial
+
+    for _ in range(30):
+        transition = step(current, config)
+        current = transition.next_state
+
+        if transition.rule_id == "CORE_EVAL_PRIMITIVE_START":
+            break
+    else:
+        pytest.fail("Primitive evaluation never started")
+
+    machine = current.machine_state
+    frame = machine.stack.peek()
+
+    assert machine.control == EvaluateCore(CoreInt(1))
+    assert isinstance(frame, PrimitiveOperandsFrame)
+    assert frame.operator == "+"
+    assert len(frame.remaining_arguments) == 1
+
+    # Precedence was preserved by the compiler.
+    assert frame.remaining_arguments[0] == CorePrimOp(
+        "*",
+        (CoreInt(2), CoreInt(3)),
+    )
+
+    assert frame.evaluated_arguments == ()
+    assert machine.status is ExecutionStatus.RUNNING

@@ -9,7 +9,7 @@ from lazy_lab.runtime.control import EvaluateCore, Return
 from lazy_lab.runtime.environment import Environment
 from lazy_lab.runtime.heap import Heap
 from lazy_lab.runtime.references import ImmediateBoolean, ImmediateInteger
-from lazy_lab.runtime.stack import Stack
+from lazy_lab.runtime.stack import Stack, PrimitiveOperandsFrame
 from lazy_lab.runtime.state import (
     ExecutionConfig,
     ExecutionPhase,
@@ -103,11 +103,27 @@ def test_source_names_are_checked_even_when_literal_demo_would_ignore_them(sourc
         compile_source(source)
 
 
-def test_deep_compiled_core_is_rejected_without_recursive_formatting():
-    program = compile_source("main = " + " + ".join("1" for _ in range(2000)))
+def test_deep_compiled_primitive_starts_iteratively():
+    program = compile_source(
+        "main = " + " + ".join("1" for _ in range(2000))
+    )
+
     expression = program.bindings[0].rhs
-    state, config = literal_demo(expression, Strategy.CBNEED, TraceMode.FULL)
-    with pytest.raises(UnsupportedTransitionError, match="CorePrimOp"):
-        step(state, config)
-    assert state.machine_state.control.expression is expression
+    state, config = literal_demo(
+        expression,
+        Strategy.CBNEED,
+        TraceMode.FULL,
+    )
+
+    transition = step(state, config)
+    machine = transition.next_state.machine_state
+
+    assert transition.rule_id == "CORE_EVAL_PRIMITIVE_START"
+    assert isinstance(
+        machine.stack.peek(),
+        PrimitiveOperandsFrame,
+    )
+    assert isinstance(machine.control, EvaluateCore)
+
     assert state.transition_index == 0
+    assert state.machine_state.stack.depth == 0

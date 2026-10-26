@@ -13,6 +13,7 @@ from lazy_lab.core.nodes import (
     CoreBinding,
     CoreLam,
     CoreApp,
+    CorePrimOp,
 )
 from lazy_lab.semantics.predefined import PREDEFINED_IDENTIFIERS
 from lazy_lab.runtime.control import ( 
@@ -38,6 +39,7 @@ from lazy_lab.runtime.stack import (
     ApplyArgumentFrame,
     RestoreEnvironmentFrame,
     GlobalDemandFrame,
+    PrimitiveOperandsFrame,
 )
 from lazy_lab.runtime.predefined import PredefinedFunction
 from lazy_lab.runtime.state import (
@@ -174,6 +176,27 @@ def _dispatch_core_evaluation(
         # The argument remains unevaluated in its frame.
         next_control = EvaluateCore(expression.function)
         rule_id = "CORE_EVAL_APPLICATION"
+    
+    elif isinstance(expression, CorePrimOp):
+        if not expression.arguments:
+            raise InvalidMachineStateError(
+                "Core primitive requires at least one operand"
+            )
+
+        # Primitive operands are evaluated from left to right.
+        first_argument = expression.arguments[0]
+
+        machine.stack.push(
+            PrimitiveOperandsFrame(
+                operator=expression.operator,
+                remaining_arguments=expression.arguments[1:],
+                evaluated_arguments=(),
+                environment=machine.local_environment,
+            )
+        )
+
+        next_control = EvaluateCore(first_argument)
+        rule_id = "CORE_EVAL_PRIMITIVE_START"
 
     else:
         raise UnsupportedTransitionError(

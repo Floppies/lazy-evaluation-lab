@@ -52,6 +52,17 @@ class RestoreEnvironmentFrame(StackFrame):
     environment: Environment
 
 
+@dataclass(frozen=True, slots=True)
+class PrimitiveOperandsFrame(StackFrame):
+    """Track left-to-right strict primitive operand evaluation."""
+
+    operator: str
+    remaining_arguments: tuple[CoreExpr, ...]
+    evaluated_arguments: tuple[RuntimeRef, ...]
+    environment: Environment
+    awaiting_whnf: bool = False
+
+
 class EmptyStackError(LookupError):
     """Raised when accessing an empty stack."""
 

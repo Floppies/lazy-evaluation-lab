@@ -982,3 +982,39 @@ remain responsibilities of later milestones.
 Predefined function application, primitive operators,
 conditionals and local recursive bindings are outside the
 completed B04.4 scope.
+
+## 12. Primitive Operations and Conditionals
+
+### 12.1 Primitive Evaluation Initialization
+
+`CORE_EVAL_PRIMITIVE_START` begins evaluation of a
+`CorePrimOp` expression.
+
+The rule preserves the primitive operator, the remaining
+operand expressions, the original lexical environment and
+the references of previously evaluated operands in a
+`PrimitiveOperandsFrame`.
+
+Operands are scheduled from left to right.
+
+The first transition evaluates only the first operand.
+No operand value is forced and no primitive computation
+is performed by this rule.
+
+The continuation distinguishes initial operand evaluation
+from subsequent WHNF demand through an explicit demand flag.
+
+### 12.2 Operational Boundary
+
+B04.5.1 establishes the initial primitive evaluation
+continuation.
+
+The following rules are implemented separately:
+
+- WHNF demand and operand continuation.
+- Primitive operation execution and type checking.
+- Conditional evaluation and branch selection.
+- End-to-end primitive and conditional regression tests.
+
+B04.5 does not introduce thunk memoization, shared updates
+or recursive constructor evaluation.

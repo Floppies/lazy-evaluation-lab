@@ -16,9 +16,11 @@ from lazy_lab.runtime.environment import (
     UnboundNameError,
 )
 from lazy_lab.runtime.heap import Heap, Reserved
+from lazy_lab.runtime.stack import RestoreEnvironmentFrame
 from lazy_lab.runtime.predefined import PredefinedFunction
 from lazy_lab.runtime.references import HeapReference, ImmediateInteger
-from lazy_lab.core.nodes import CoreInt, CoreVar
+from lazy_lab.runtime.transitions import RuleId
+from lazy_lab.core.nodes import CoreInt, CoreVar, CoreLetRec
 from lazy_lab.runtime.state import (
     ExecutionConfig,
     ExecutionPhase,
@@ -36,7 +38,8 @@ from lazy_lab.pipeline import compile_source
 from lazy_lab.runtime.control import (
     InitializeCoreBindings,
     EvaluateCore,
-    Return
+    Return,
+    InitializeLocalBindings,
 )
 from lazy_lab.runtime.global_bindings import PendingGlobal
 from lazy_lab.runtime.predefined import PredefinedFunction
@@ -757,3 +760,59 @@ def test_initialization_respects_evaluator_budget():
     assert after_reservation.transition_index == 1
     assert after_reservation.machine_state.control.next_index == 0
     assert after_reservation.machine_state.evaluator_transition_count == 1
+
+def test_compiled_letrec_enters_reserved_local_scope():
+    program = compile_source(
+        "main = let { x = 10; y = x } in y"
+    )
+    config = make_config(strategy=Strategy.CBV)
+
+    initial = create_initial_core_state(
+        program,
+        config,
+        session_id="cbv-local-scope",
+    )
+
+    current = initial
+
+    for _ in range(30):
+        control = current.machine_state.control
+
+        if (
+            isinstance(control, EvaluateCore)
+            and isinstance(control.expression, CoreLetRec)
+        ):
+            break
+
+        current = step(current, config).next_state
+    else:
+        pytest.fail("Compiled CoreLetRec was never reached")
+
+    previous = current
+    transition = step(previous, config)
+    machine = transition.next_state.machine_state
+
+    assert transition.rule_id is RuleId.CORE_LETREC_RESERVE_SCOPE
+    assert isinstance(machine.control, InitializeLocalBindings)
+
+    assert set(machine.local_environment.bindings) == {"x", "y"}
+    assert machine.local_environment.parent is (
+        previous.machine_state.local_environment
+    )
+
+    assert machine.stack.depth == (
+        previous.machine_state.stack.depth + 1
+    )
+
+    assert isinstance(
+        machine.stack.peek(),
+        RestoreEnvironmentFrame,
+    )
+
+    assert previous.machine_state.stack.depth + 1 == machine.stack.depth
+    assert previous.machine_state.heap.current_slots + 2 == (
+        machine.heap.current_slots
+    )
+
+    assert initial.transition_index == 0
+    assert initial.machine_state.heap.current_slots == 0

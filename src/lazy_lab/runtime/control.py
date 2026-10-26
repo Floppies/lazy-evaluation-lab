@@ -35,6 +35,15 @@ class InitializeCoreBindings:
 
 
 @dataclass(frozen=True, slots=True)
+class InitializeLocalBindings:
+    """Initialize a reserved local recursive binding group."""
+
+    bindings: tuple[CoreBinding, ...]
+    body: CoreExpr
+    next_index: int = 0
+
+
+@dataclass(frozen=True, slots=True)
 class ApplyPrimitive:
     """Primitive whose operands have all reached WHNF."""
 
@@ -47,6 +56,7 @@ CoreControl: TypeAlias = (
     | Return
     | Force
     | InitializeCoreBindings
-    | ApplyPrimitive
+    | InitializeLocalBindings
+    | ApplyPrimitive 
 )
 

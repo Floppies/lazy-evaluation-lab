@@ -15,6 +15,7 @@ from lazy_lab.core.nodes import (
     CoreApp,
     CorePrimOp,
     CoreIf,
+    CoreLetRec,
 )
 from lazy_lab.semantics.predefined import PREDEFINED_IDENTIFIERS
 from lazy_lab.runtime.control import ( 
@@ -23,6 +24,7 @@ from lazy_lab.runtime.control import (
     InitializeCoreBindings,
     Force,
     ApplyPrimitive,
+    InitializeLocalBindings,
 )
 from lazy_lab.runtime.references import (
     ImmediateBoolean,
@@ -215,6 +217,12 @@ def _dispatch_core_evaluation(
         next_control = EvaluateCore(expression.condition)
         rule_id = RuleId.CORE_EVAL_IF_CONDITION
 
+    elif isinstance(expression, CoreLetRec):
+        return _enter_local_letrec(
+            machine,
+            expression,
+        )
+    
     else:
         raise UnsupportedTransitionError(
             f"Unsupported Core expression: "
@@ -1241,4 +1249,68 @@ def _resume_if_condition(
             control=EvaluateCore(selected_branch),
         ),
         rule_id,
+    )
+
+def _enter_local_letrec(
+    machine: MachineState,
+    expression: CoreLetRec,
+) -> tuple[MachineState, RuleId]:
+    """Reserve every local binding before evaluating any RHS."""
+    if machine.strategy is not Strategy.CBV:
+        raise UnsupportedTransitionError(
+            "Non-strict local bindings are not implemented yet"
+        )
+
+    bindings = expression.bindings
+
+    if (
+        not isinstance(bindings, tuple)
+        or not bindings
+        or any(not isinstance(b, CoreBinding) for b in bindings)
+    ):
+        raise InvalidMachineStateError(
+            "CoreLetRec requires a non-empty binding group"
+        )
+
+    names = [binding.name for binding in bindings]
+
+    if (
+        any(not isinstance(name, str) or not name for name in names)
+        or len(names) != len(set(names))
+    ):
+        raise InvalidMachineStateError(
+            "Invalid or duplicate local binding names"
+        )
+
+    outer_environment = machine.local_environment
+
+    # Every binding receives a stable one-slot address.
+    references = {}
+
+    for binding in bindings:
+        references[binding.name] = machine.heap.allocate(
+            Reserved(),
+            allocated_slots=1,
+        )
+
+    # All group names are visible in every RHS.
+    recursive_environment = outer_environment.extend(
+        references
+    )
+
+    # Restore the enclosing scope when the let body returns.
+    machine.stack.push(
+        RestoreEnvironmentFrame(outer_environment)
+    )
+
+    return (
+        replace(
+            machine,
+            local_environment=recursive_environment,
+            control=InitializeLocalBindings(
+                bindings=bindings,
+                body=expression.body,
+            ),
+        ),
+        RuleId.CORE_LETREC_RESERVE_SCOPE,
     )

@@ -1183,3 +1183,43 @@ B04.5 does not implement local recursive bindings,
 predefined seq application or canonical result observation.
 
 These responsibilities remain in subsequent milestones.
+
+## 13. Local Recursive Bindings
+
+### 13.1 CBV Local Scope Reservation
+
+`CORE_LETREC_RESERVE_SCOPE` begins evaluation of a
+CoreLetRec expression under Call by Value.
+
+The rule reserves one stable heap address for each local
+binding before evaluating any right-hand side.
+
+Each address initially contains Reserved and occupies
+one abstract heap slot.
+
+All references are installed together in a child lexical
+environment of the original local environment.
+
+This makes every binding visible from every RHS, allowing
+forward references and mutually recursive definitions.
+
+The enclosing environment is preserved using
+RestoreEnvironmentFrame.
+
+The machine then enters InitializeLocalBindings, which
+retains the binding group, body and source-order index.
+
+Reservation does not evaluate any RHS or the let body.
+
+Local binding cells may later point through Indirection
+objects to separately allocated results, including closures
+with captured references.
+
+Strict RHS initialization and recursive dependency handling
+are implemented in subsequent B04.6 subtasks.
+
+CBN and CBNeed local bindings remain unsupported by this
+CBV-specific rule.
+
+The reservation rule does not implement thunk allocation,
+sharing updates or blackhole detection.

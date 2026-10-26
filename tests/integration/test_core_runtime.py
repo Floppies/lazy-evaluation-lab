@@ -16,6 +16,7 @@ from lazy_lab.runtime.control import (
     EvaluateCore,
     Return,
     ApplyPrimitive,
+    InitializeLocalBindings,
 )
 from lazy_lab.runtime.environment import Environment
 from lazy_lab.runtime.heap import Heap, Indirection, Reserved
@@ -49,6 +50,7 @@ from lazy_lab.core.nodes import (
     CoreVar,
     CoreApp,
     CorePrimOp,
+    CoreLetRec,
 )
 from lazy_lab.runtime.closures import (
     Closure,

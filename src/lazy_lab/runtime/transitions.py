@@ -59,6 +59,9 @@ class RuleId(StrEnum):
     CORE_IF_SELECT_THEN = "CORE_IF_SELECT_THEN"
     CORE_IF_SELECT_ELSE = "CORE_IF_SELECT_ELSE"
 
+    # Local recursive bindings
+    CORE_LETREC_RESERVE_SCOPE = "CORE_LETREC_RESERVE_SCOPE"
+
 
 @dataclass(frozen=True, slots=True)
 class TransitionResult:

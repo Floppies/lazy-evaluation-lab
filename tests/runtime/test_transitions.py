@@ -10,6 +10,8 @@ from lazy_lab.core.nodes import (
     CoreVar,
     CorePrimOp,
     CoreIf,
+    CoreLetRec,
+    CoreBinding,
 )
 from lazy_lab.engine.core_machine import (
     EvaluatorBudgetExhaustedError,
@@ -23,6 +25,7 @@ from lazy_lab.runtime.control import (
     Return,
     Force,
     ApplyPrimitive,
+    InitializeLocalBindings,
 )
 from lazy_lab.runtime.environment import Environment, UnboundNameError
 from lazy_lab.runtime.heap import Heap, Indirection, Reserved
@@ -36,6 +39,7 @@ from lazy_lab.runtime.stack import (
     ApplyFunctionFrame,
     PrimitiveOperandsFrame,
     IfFrame,
+    RestoreEnvironmentFrame,
 )
 from lazy_lab.runtime.state import (
     ExecutionConfig,
@@ -933,3 +937,180 @@ def test_batch_preserves_typed_rule_identifiers():
         isinstance(entry.rule_id, RuleId)
         for entry in result.trace
     )
+
+
+def test_cbv_letrec_reserves_all_bindings_before_initialization():
+    expression = CoreLetRec(
+        bindings=(
+            CoreBinding("x", CoreInt(10)),
+            CoreBinding("y", CoreVar("x")),
+        ),
+        body=CoreVar("y"),
+    )
+
+    original = make_state(expression)
+    original = replace(
+        original,
+        machine_state=replace(
+            original.machine_state,
+            strategy=Strategy.CBV,
+        ),
+    )
+    config = replace(make_config(), strategy=Strategy.CBV)
+
+    transition = step(original, config)
+    machine = transition.next_state.machine_state
+
+    assert transition.rule_id is RuleId.CORE_LETREC_RESERVE_SCOPE
+
+    assert machine.control == InitializeLocalBindings(
+        expression.bindings,
+        expression.body,
+    )
+
+    local_env = machine.local_environment
+
+    assert local_env.parent is original.machine_state.local_environment
+    assert set(local_env.bindings) == {"x", "y"}
+
+    x_ref = local_env.lookup("x")
+    y_ref = local_env.lookup("y")
+
+    assert isinstance(x_ref, HeapReference)
+    assert isinstance(y_ref, HeapReference)
+    assert x_ref != y_ref
+
+    assert isinstance(machine.heap.get(x_ref).value, Reserved)
+    assert isinstance(machine.heap.get(y_ref).value, Reserved)
+
+    assert machine.heap.current_slots == 2
+    assert machine.heap.next_object_id == 2
+
+    assert machine.stack.depth == 1
+    frame = machine.stack.peek()
+
+    assert isinstance(frame, RestoreEnvironmentFrame)
+    assert frame.environment is original.machine_state.local_environment
+
+    assert original.machine_state.heap.current_slots == 0
+    assert original.machine_state.stack.depth == 0
+    assert original.transition_index == 0
+
+
+def test_cbv_letrec_local_scope_shadows_globals():
+    global_env = Environment({
+        "x": ImmediateInteger(99),
+    })
+
+    expression = CoreLetRec(
+        bindings=(
+            CoreBinding("x", CoreInt(10)),
+        ),
+        body=CoreVar("x"),
+    )
+
+    original = make_state(expression)
+    original = replace(
+        original,
+        machine_state=replace(
+            original.machine_state,
+            strategy=Strategy.CBV,
+            global_environment=global_env,
+            local_environment=global_env,
+        ),
+    )
+
+    config = replace(make_config(), strategy=Strategy.CBV)
+
+    transition = step(original, config)
+    machine = transition.next_state.machine_state
+
+    local_x = machine.local_environment.lookup("x")
+
+    assert isinstance(local_x, HeapReference)
+    assert local_x != global_env.lookup("x")
+
+    assert global_env.lookup("x") == ImmediateInteger(99)
+
+    assert machine.local_environment.parent is global_env
+    assert isinstance(
+        machine.heap.get(local_x).value,
+        Reserved,
+    )
+
+
+def test_cbv_letrec_reserves_mutually_recursive_functions():
+    expression = CoreLetRec(
+        bindings=(
+            CoreBinding(
+                "f",
+                CoreLam("x", CoreVar("g")),
+            ),
+            CoreBinding(
+                "g",
+                CoreLam("y", CoreVar("f")),
+            ),
+        ),
+        body=CoreVar("f"),
+    )
+
+    original = make_state(expression)
+    original = replace(
+        original,
+        machine_state=replace(
+            original.machine_state,
+            strategy=Strategy.CBV,
+        ),
+    )
+
+    config = replace(make_config(), strategy=Strategy.CBV)
+
+    transition = step(original, config)
+    machine = transition.next_state.machine_state
+
+    f_ref = machine.local_environment.lookup("f")
+    g_ref = machine.local_environment.lookup("g")
+
+    assert f_ref != g_ref
+    assert isinstance(machine.heap.get(f_ref).value, Reserved)
+    assert isinstance(machine.heap.get(g_ref).value, Reserved)
+
+    assert machine.heap.current_slots == 2
+    assert machine.control.next_index == 0
+
+    # No function body or RHS has been evaluated.
+    assert not any(
+        isinstance(cell.value, Closure)
+        for cell in machine.heap.cells.values()
+    )
+
+
+@pytest.mark.parametrize(
+    "strategy",
+    [Strategy.CBN, Strategy.CBNEED],
+)
+def test_non_strict_letrec_is_not_implemented_yet(strategy):
+    expression = CoreLetRec(
+        (CoreBinding("x", CoreInt(10)),),
+        CoreVar("x"),
+    )
+
+    original = make_state(expression)
+    original = replace(
+        original,
+        machine_state=replace(
+            original.machine_state,
+            strategy=strategy,
+        ),
+    )
+    config = replace(make_config(), strategy=strategy)
+
+    with pytest.raises(
+        UnsupportedTransitionError,
+        match="Non-strict local bindings",
+    ):
+        step(original, config)
+
+    assert original.machine_state.heap.current_slots == 0
+    assert original.machine_state.stack.depth == 0
+    assert original.transition_index == 0

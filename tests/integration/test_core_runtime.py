@@ -17,6 +17,7 @@ from lazy_lab.runtime.control import (
     Return,
     ApplyPrimitive,
     InitializeLocalBindings,
+    Force,
 )
 from lazy_lab.runtime.environment import Environment
 from lazy_lab.runtime.heap import Heap, Indirection, Reserved
@@ -31,6 +32,7 @@ from lazy_lab.runtime.stack import (
     ApplyArgumentFrame,
     PrimitiveOperandsFrame,
     GlobalDemandFrame,
+    LocalValueInitializationFrame,
 )                                   
 from lazy_lab.runtime.state import (
     ExecutionConfig,
@@ -43,7 +45,7 @@ from lazy_lab.runtime.state import (
     Strategy,
     TraceMode,
 )
-from lazy_lab.runtime.transitions import BatchStopReason, RuleId
+from lazy_lab.runtime.transitions import BatchStopReason, RuleId, TraceEntry
 from lazy_lab.core.nodes import (
     CoreLam,
     CoreInt,
@@ -1589,3 +1591,136 @@ def test_cbv_letrec_initializes_functions_and_values():
     assert RuleId.CORE_LETREC_EVAL_VALUE in rules
     assert RuleId.CORE_CBV_ENTER_BODY in rules
     assert RuleId.CORE_LETREC_STORE_VALUE in rules
+
+
+def test_cbv_letrec_resumes_during_strict_rhs_demand():
+    program = compile_source(
+        "main = let { x = 2 + 3; y = x * 2 } in y"
+    )
+    config = make_config(strategy=Strategy.CBV)
+
+    initial = create_initial_core_state(
+        program,
+        config,
+        session_id="letrec-resume",
+    )
+
+    current = initial
+    prefix_trace = []
+
+    for _ in range(100):
+        transition = step(current, config)
+        prefix_trace.append(
+            TraceEntry.from_transition(transition)
+        )
+        current = transition.next_state
+
+        if transition.rule_id is RuleId.CORE_LETREC_REQUIRE_VALUE_WHNF:
+            break
+    else:
+        pytest.fail("Local RHS WHNF demand was not reached")
+
+    paused = current
+    paused_machine = paused.machine_state
+
+    assert isinstance(paused_machine.control, Force)
+
+    frame = paused_machine.stack.peek()
+    assert isinstance(frame, LocalValueInitializationFrame)
+    assert frame.awaiting_whnf is True
+
+    original_frames = paused_machine.stack.frames
+    original_heap = dict(paused_machine.heap.cells)
+
+    # Resume from exactly this intermediate snapshot.
+    resumed = run_batch(paused, config, max_steps=150)
+
+    assert resumed.stop_reason is BatchStopReason.WHNF_PENDING
+    assert resumed.state.machine_state.control == Return(
+        ImmediateInteger(10)
+    )
+
+    # Compare against an uninterrupted execution.
+    uninterrupted = run_batch(
+        initial,
+        config,
+        max_steps=150,
+    )
+
+    assert uninterrupted.stop_reason is BatchStopReason.WHNF_PENDING
+    assert (
+        tuple(prefix_trace) + resumed.trace
+        == uninterrupted.trace
+    )
+
+    assert (
+        resumed.state.transition_index
+        == uninterrupted.state.transition_index
+    )
+
+    # Neither the paused nor the initial state was mutated.
+    assert paused.machine_state.stack.frames == original_frames
+    assert dict(paused.machine_state.heap.cells) == original_heap
+    assert initial.transition_index == 0
+    assert initial.machine_state.heap.current_slots == 0
+
+
+def test_cbv_letrec_chunked_execution_matches_full_batch():
+    program = compile_source(
+        "main = let { "
+        "double x = x * 2; "
+        "a = 10; "
+        "b = double a "
+        "} in b + 1"
+    )
+
+    config = make_config(strategy=Strategy.CBV)
+
+    initial = create_initial_core_state(
+        program,
+        config,
+        session_id="letrec-batch-equivalence",
+    )
+
+    full = run_batch(initial, config, max_steps=150)
+
+    current = initial
+    collected_trace = []
+
+    for _ in range(100):
+        batch = run_batch(
+            current,
+            config,
+            max_steps=3,
+        )
+
+        collected_trace.extend(batch.trace)
+        current = batch.state
+
+        if batch.stop_reason is BatchStopReason.WHNF_PENDING:
+            break
+
+        assert batch.stop_reason is BatchStopReason.BATCH_LIMIT
+    else:
+        pytest.fail("Chunked execution did not terminate")
+
+    assert full.stop_reason is BatchStopReason.WHNF_PENDING
+    assert current.machine_state.control == Return(
+        ImmediateInteger(21)
+    )
+
+    assert tuple(collected_trace) == full.trace
+    assert current.transition_index == full.state.transition_index
+
+    left = current.machine_state
+    right = full.state.machine_state
+
+    assert left.evaluator_transition_count == right.evaluator_transition_count
+    assert left.heap.current_slots == right.heap.current_slots
+    assert left.heap.next_object_id == right.heap.next_object_id
+
+    assert left.stack.depth == right.stack.depth == 0
+    assert left.local_environment is left.global_environment
+    assert right.local_environment is right.global_environment
+
+    assert initial.transition_index == 0

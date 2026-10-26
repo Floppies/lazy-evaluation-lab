@@ -1162,3 +1162,97 @@ def test_nested_letrec_restores_outer_lexical_scope():
 
     assert rules.count(RuleId.CORE_LETREC_RESERVE_SCOPE) == 2
     assert rules.count(RuleId.CORE_RESTORE_CALLER_ENVIRONMENT) >= 2
+
+
+def test_cbv_letrec_preserves_anchor_identity_and_slot_accounting():
+    program = compile_source(
+        "main = let { f z = x + z; x = 40; y = f 2 } in y"
+    )
+    config = make_config(strategy=Strategy.CBV)
+
+    current = create_initial_core_state(
+        program,
+        config,
+        session_id="letrec-allocation-audit",
+    )
+
+    for _ in range(50):
+        transition = step(current, config)
+
+        if transition.rule_id is RuleId.CORE_LETREC_RESERVE_SCOPE:
+            before_reservation = current
+            reserved = transition.next_state
+            break
+
+        current = transition.next_state
+    else:
+        pytest.fail("Local scope reservation was not reached")
+
+    reserved_machine = reserved.machine_state
+    environment = reserved_machine.local_environment
+
+    f_ref = environment.lookup("f")
+    x_ref = environment.lookup("x")
+    y_ref = environment.lookup("y")
+
+    assert len({f_ref, x_ref, y_ref}) == 3
+
+    for reference in (f_ref, x_ref, y_ref):
+        assert isinstance(
+            reserved_machine.heap.get(reference).value,
+            Reserved,
+        )
+
+    # Exactly one administrative slot per binding.
+    assert (
+        reserved_machine.heap.current_slots
+        - before_reservation.machine_state.heap.current_slots
+    ) == 3
+
+    result = run_batch(reserved, config, max_steps=100)
+    machine = result.state.machine_state
+
+    assert result.stop_reason is BatchStopReason.WHNF_PENDING
+    assert machine.control == Return(ImmediateInteger(42))
+
+    # The binding addresses are unchanged.
+    f_cell = machine.heap.get(f_ref)
+    x_cell = machine.heap.get(x_ref)
+    y_cell = machine.heap.get(y_ref)
+
+    assert f_cell.allocated_slots == 1
+    assert x_cell.allocated_slots == 1
+    assert y_cell.allocated_slots == 1
+
+    assert isinstance(f_cell.value, Indirection)
+    assert x_cell.value == Indirection(ImmediateInteger(40))
+    assert y_cell.value == Indirection(ImmediateInteger(42))
+
+    closure_ref = f_cell.value.target
+    closure_cell = machine.heap.get(closure_ref)
+
+    assert isinstance(closure_cell.value, Closure)
+    assert closure_cell.value.captured_locals.lookup("x") == x_ref
+    assert closure_cell.allocated_slots == 2
+
+    # Only the captured closure needed an additional
+    # allocation after reserving the binding cells.
+    assert (
+        machine.heap.current_slots
+        - reserved_machine.heap.current_slots
+    ) == 2
+
+    assert (
+        machine.heap.next_object_id
+        - reserved_machine.heap.next_object_id
+    ) == 1
+
+    # Snapshot isolation.
+    for reference in (f_ref, x_ref, y_ref):
+        assert isinstance(
+            reserved_machine.heap.get(reference).value,
+            Reserved,
+        )
+
+    assert machine.stack.depth == 0
+    assert machine.local_environment is machine.global_environment

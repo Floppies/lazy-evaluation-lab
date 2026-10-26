@@ -1348,3 +1348,46 @@ and thunk-update semantics introduced for CBNeed in B05.
 Error classification concerns operational behavior. The
 chosen stable binding-cell representation is documented
 separately in ADR-006.
+
+### 13.5 B04.6 Integration and Acceptance
+
+B04.6 completes the initial CBV operational support
+for local recursive CoreLetRec binding groups.
+
+The evaluator supports:
+
+- Simultaneous reservation of local binding references.
+- Stable one-slot binding anchors.
+- Lexical shadowing of enclosing bindings.
+- Recursive closure installation without body evaluation.
+- Source-ordered strict initialization of non-lambda RHSs.
+- Explicit WHNF demand before storing local values.
+- Indirections preserving original binding addresses.
+- Detection of premature demands on uninitialized bindings.
+- Restoration of enclosing lexical environments.
+- Execution through nested application and primitive frames.
+
+Function-valued RHSs may capture other reserved bindings.
+Their bodies are not evaluated during initialization.
+
+Non-function RHSs are evaluated strictly to WHNF before
+the corresponding binding is initialized.
+
+The machine preserves snapshot isolation across all
+local initialization transitions.
+
+An execution interrupted during local initialization can
+resume using the same ExecutionState and execution
+configuration, subject to the remaining step budget.
+
+Executing the same program in multiple batches must not
+change its semantic result, allocation accounting, or
+operational transition sequence.
+
+Stable binding cells and indirection overhead are defined
+by ADR-006.
+
+B04.6 does not introduce lazy local bindings, thunk
+memoization, sharing updates or general blackhole detection.
+
+These remain outside the completed CBV local-binding scope.

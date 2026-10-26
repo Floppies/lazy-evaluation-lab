@@ -1391,3 +1391,44 @@ B04.6 does not introduce lazy local bindings, thunk
 memoization, sharing updates or general blackhole detection.
 
 These remain outside the completed CBV local-binding scope.
+
+## 14. First-Class Predefined `seq`
+
+### 14.1 Partial Predefined Function Representation
+
+Predefined functions are first-class runtime values.
+
+An unapplied predefined function is represented by
+`PredefinedFunction`.
+
+A partially applied predefined function is represented
+by `PartialPredefinedFunction`, which retains:
+
+- The predefined function identifier.
+- An immutable tuple of already applied RuntimeRef values.
+- The original arity and remaining arity.
+
+`PartialPredefinedFunction` is a heap object whose abstract
+allocation size is one base slot plus one slot per captured
+argument reference.
+
+A partial application must retain at least one argument
+and fewer arguments than the function's declared arity.
+
+Creating this representation does not evaluate or force
+its captured arguments.
+
+Argument evaluation and demand follow the selected
+evaluation strategy.
+
+Under CBV, applied arguments must reach WHNF before
+the partial application is constructed.
+
+Under CBN and CBNeed, arguments may remain deferred.
+Those strategies require their later runtime machinery.
+
+Saturated applications do not produce
+`PartialPredefinedFunction values`.
+
+The operational rules for application and saturation
+are defined in subsequent B04.7 sections.

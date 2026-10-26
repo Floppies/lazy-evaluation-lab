@@ -51,6 +51,8 @@ from lazy_lab.runtime.state import (
 from lazy_lab.runtime.transitions import (
     BatchStopReason,
     TransitionKind,
+    RuleId,
+    TraceEntry,
 )
 from lazy_lab.runtime.closures import Closure
 
@@ -892,3 +894,42 @@ def test_if_forces_condition_before_selecting_branch(
     assert machine.stack.depth == 0
     assert machine.evaluator_transition_count == 5
 
+
+def test_rule_ids_preserve_string_compatibility():
+    rule = RuleId.CORE_EVAL_INTEGER
+
+    assert rule.value == "CORE_EVAL_INTEGER"
+    assert rule == "CORE_EVAL_INTEGER"
+    assert str(rule) == "CORE_EVAL_INTEGER"
+    assert isinstance(rule, str)
+
+
+def test_transition_and_trace_use_rule_enum():
+    initial = make_state(CoreInt(42))
+    transition = step(initial, make_config())
+
+    assert transition.rule_id is RuleId.CORE_EVAL_INTEGER
+
+    entry = TraceEntry.from_transition(transition)
+
+    assert entry.rule_id is RuleId.CORE_EVAL_INTEGER
+    assert entry.rule_id is transition.rule_id
+    assert entry.next_state_id == transition.next_state.state_id
+
+
+def test_batch_preserves_typed_rule_identifiers():
+    initial = make_state(CoreInt(42))
+
+    result = run_batch(
+        initial,
+        make_config(),
+        max_steps=10,
+    )
+
+    assert len(result.trace) == 1
+    assert result.trace[0].rule_id is RuleId.CORE_EVAL_INTEGER
+
+    assert all(
+        isinstance(entry.rule_id, RuleId)
+        for entry in result.trace
+    )

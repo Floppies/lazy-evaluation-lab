@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from enum import Enum
+from enum import Enum, StrEnum, unique
 
 from .state import ExecutionPhase, ExecutionState
 
@@ -14,11 +14,57 @@ class TransitionKind(str, Enum):
     GC = "GC"
 
 
+@unique
+class RuleId(StrEnum):
+    """Stable identifiers for abstract-machine transitions."""
+
+    # Global initialization
+    CORE_INIT_RESERVE_GLOBAL_SCOPE = "CORE_INIT_RESERVE_GLOBAL_SCOPE"
+    CORE_INIT_INSTALL_GLOBAL = "CORE_INIT_INSTALL_GLOBAL"
+    CORE_INIT_ENTER_ENTRY = "CORE_INIT_ENTER_ENTRY"
+
+    # Core expressions
+    CORE_EVAL_INTEGER = "CORE_EVAL_INTEGER"
+    CORE_EVAL_BOOLEAN = "CORE_EVAL_BOOLEAN"
+    CORE_EVAL_VARIABLE = "CORE_EVAL_VARIABLE"
+    CORE_EVAL_LAMBDA = "CORE_EVAL_LAMBDA"
+    CORE_EVAL_APPLICATION = "CORE_EVAL_APPLICATION"
+    CORE_EVAL_PRIMITIVE_START = "CORE_EVAL_PRIMITIVE_START"
+    CORE_EVAL_IF_CONDITION = "CORE_EVAL_IF_CONDITION"
+
+    # WHNF demand
+    CORE_FORCE_IMMEDIATE = "CORE_FORCE_IMMEDIATE"
+    CORE_FORCE_INDIRECTION = "CORE_FORCE_INDIRECTION"
+    CORE_FORCE_FUNCTION_WHNF = "CORE_FORCE_FUNCTION_WHNF"
+    CORE_FORCE_GLOBAL_RHS = "CORE_FORCE_GLOBAL_RHS"
+    CORE_ROOT_REQUIRE_WHNF = "CORE_ROOT_REQUIRE_WHNF"
+    CORE_GLOBAL_REQUIRE_WHNF = "CORE_GLOBAL_REQUIRE_WHNF"
+    CORE_GLOBAL_DEMAND_RETURN = "CORE_GLOBAL_DEMAND_RETURN"
+
+    # Function application
+    CORE_APPLY_REQUIRE_FUNCTION_WHNF = "CORE_APPLY_REQUIRE_FUNCTION_WHNF"
+    CORE_CBV_EVAL_ARGUMENT = "CORE_CBV_EVAL_ARGUMENT"
+    CORE_CBV_REQUIRE_ARGUMENT_WHNF = "CORE_CBV_REQUIRE_ARGUMENT_WHNF"
+    CORE_CBV_ENTER_BODY = "CORE_CBV_ENTER_BODY"
+    CORE_RESTORE_CALLER_ENVIRONMENT = "CORE_RESTORE_CALLER_ENVIRONMENT"
+
+    # Primitive operations
+    CORE_PRIM_REQUIRE_OPERAND_WHNF = "CORE_PRIM_REQUIRE_OPERAND_WHNF"
+    CORE_PRIM_NEXT_OPERAND = "CORE_PRIM_NEXT_OPERAND"
+    CORE_PRIM_OPERANDS_READY = "CORE_PRIM_OPERANDS_READY"
+    CORE_PRIM_EXECUTE = "CORE_PRIM_EXECUTE"
+
+    # Conditionals
+    CORE_IF_REQUIRE_CONDITION_WHNF = "CORE_IF_REQUIRE_CONDITION_WHNF"
+    CORE_IF_SELECT_THEN = "CORE_IF_SELECT_THEN"
+    CORE_IF_SELECT_ELSE = "CORE_IF_SELECT_ELSE"
+
+
 @dataclass(frozen=True, slots=True)
 class TransitionResult:
     previous_state_id: int
     next_state: ExecutionState
-    rule_id: str
+    rule_id: RuleId
     transition_kind: TransitionKind
     phase_before: ExecutionPhase
     phase_after: ExecutionPhase
@@ -32,7 +78,7 @@ class TransitionResult:
 class TraceEntry:
     previous_state_id: int
     next_state_id: int
-    rule_id: str
+    rule_id: RuleId
     transition_kind: TransitionKind
     phase_before: ExecutionPhase
     phase_after: ExecutionPhase

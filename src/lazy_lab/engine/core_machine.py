@@ -61,6 +61,7 @@ from lazy_lab.runtime.transitions import (
     TraceEntry,
     TransitionKind,
     TransitionResult,
+    RuleId,
 )
 from lazy_lab.runtime.closures import (
     capture_closure,
@@ -102,28 +103,28 @@ def _validate_configuration(
 
 def _evaluate_integer(
     expression: CoreInt,
-) -> tuple[Return, str]:
+) -> tuple[Return, RuleId]:
     """Apply the Core integer literal rule."""
     return (
         Return(ImmediateInteger(expression.value)),
-        "CORE_EVAL_INTEGER",
+        RuleId.CORE_EVAL_INTEGER,
     )
 
 
 def _evaluate_boolean(
     expression: CoreBool,
-) -> tuple[Return, str]:
+) -> tuple[Return, RuleId]:
     """Apply the Core boolean literal rule."""
     return (
         Return(ImmediateBoolean(expression.value)),
-        "CORE_EVAL_BOOLEAN",
+        RuleId.CORE_EVAL_BOOLEAN,
     )
 
 
 
 def _dispatch_core_evaluation(
     machine: MachineState,
-) -> tuple[MachineState, str]:
+) -> tuple[MachineState, RuleId]:
     """Apply one Core expression evaluation rule.
 
     The supplied machine belongs to an isolated successor
@@ -151,7 +152,7 @@ def _dispatch_core_evaluation(
             expression.name
         )
         next_control = Return(reference)
-        rule_id = "CORE_EVAL_VARIABLE"
+        rule_id = RuleId.CORE_EVAL_VARIABLE
 
     elif isinstance(expression, CoreLam):
         # Allocate a closure using the current definition-site
@@ -163,7 +164,7 @@ def _dispatch_core_evaluation(
             machine.global_environment,
         )
         next_control = Return(reference)
-        rule_id = "CORE_EVAL_LAMBDA"
+        rule_id = RuleId.CORE_EVAL_LAMBDA
 
     elif isinstance(expression, CoreApp):
         # Preserve the argument and its lexical call-site
@@ -178,7 +179,7 @@ def _dispatch_core_evaluation(
         # Evaluate only the function position.
         # The argument remains unevaluated in its frame.
         next_control = EvaluateCore(expression.function)
-        rule_id = "CORE_EVAL_APPLICATION"
+        rule_id = RuleId.CORE_EVAL_APPLICATION
     
     elif isinstance(expression, CorePrimOp):
         if not expression.arguments:
@@ -199,7 +200,7 @@ def _dispatch_core_evaluation(
         )
 
         next_control = EvaluateCore(first_argument)
-        rule_id = "CORE_EVAL_PRIMITIVE_START"
+        rule_id = RuleId.CORE_EVAL_PRIMITIVE_START
 
     elif isinstance(expression, CoreIf):
         # Preserve both branches without evaluating them.
@@ -212,7 +213,7 @@ def _dispatch_core_evaluation(
         )
 
         next_control = EvaluateCore(expression.condition)
-        rule_id = "CORE_EVAL_IF_CONDITION"
+        rule_id = RuleId.CORE_EVAL_IF_CONDITION
 
     else:
         raise UnsupportedTransitionError(
@@ -471,7 +472,7 @@ def _install_global_rhs(
 def _advance_global_initialization(
     machine: MachineState,
     control: InitializeCoreBindings,
-) -> tuple[MachineState, str]:
+) -> tuple[MachineState, RuleId]:
     """Apply one Core global-initialization rule.
 
     The supplied machine must belong to an isolated successor
@@ -528,7 +529,7 @@ def _advance_global_initialization(
                     scope_reserved=True,
                 ),
             ),
-            "CORE_INIT_RESERVE_GLOBAL_SCOPE",
+            RuleId.CORE_INIT_RESERVE_GLOBAL_SCOPE,
         )
 
     # Stage 2: install exactly one global RHS per transition.
@@ -549,7 +550,7 @@ def _advance_global_initialization(
                     next_index=control.next_index + 1,
                 ),
             ),
-            "CORE_INIT_INSTALL_GLOBAL",
+            RuleId.CORE_INIT_INSTALL_GLOBAL,
         )
 
     # Stage 3: the global group is installed. Begin evaluating
@@ -560,7 +561,7 @@ def _advance_global_initialization(
             phase=ExecutionPhase.EVALUATION,
             control=EvaluateCore(control.entry_expression),
         ),
-        "CORE_INIT_ENTER_ENTRY",
+        RuleId.CORE_INIT_ENTER_ENTRY,
     )
 
 def _reference_is_whnf(
@@ -587,7 +588,7 @@ def _reference_is_whnf(
 def _advance_force(
     machine: MachineState,
     control: Force,
-) -> tuple[MachineState, str]:
+) -> tuple[MachineState, RuleId]:
     """Demand WHNF without implementing thunk updates."""
     reference = control.reference
 
@@ -597,7 +598,7 @@ def _advance_force(
     ):
         return (
             replace(machine, control=Return(reference)),
-            "CORE_FORCE_IMMEDIATE",
+            RuleId.CORE_FORCE_IMMEDIATE,
         )
 
     if not isinstance(reference, HeapReference):
@@ -608,13 +609,13 @@ def _advance_force(
     if isinstance(value, Indirection):
         return (
             replace(machine, control=Force(value.target)),
-            "CORE_FORCE_INDIRECTION",
+            RuleId.CORE_FORCE_INDIRECTION,
         )
 
     if isinstance(value, (Closure, PredefinedFunction)):
         return (
             replace(machine, control=Return(reference)),
-            "CORE_FORCE_FUNCTION_WHNF",
+            RuleId.CORE_FORCE_FUNCTION_WHNF,
         )
 
     if isinstance(value, PendingGlobal):
@@ -631,7 +632,7 @@ def _advance_force(
                 local_environment=machine.global_environment,
                 control=EvaluateCore(value.expression),
             ),
-            "CORE_FORCE_GLOBAL_RHS",
+            RuleId.CORE_FORCE_GLOBAL_RHS,
         )
 
     if isinstance(value, Reserved):
@@ -646,7 +647,7 @@ def _advance_force(
 def _advance_return(
     machine: MachineState,
     control: Return,
-) -> tuple[MachineState, str]:
+) -> tuple[MachineState, RuleId]:
     """Resume a continuation or demand a root result."""
     reference = control.reference
 
@@ -666,7 +667,7 @@ def _advance_return(
                         machine,
                         control=Force(reference),
                     ),
-                    "CORE_GLOBAL_REQUIRE_WHNF",
+                    RuleId.CORE_GLOBAL_REQUIRE_WHNF,
                 )
 
             if not _reference_is_whnf(machine, reference):
@@ -682,7 +683,7 @@ def _advance_return(
                     local_environment=frame.return_environment,
                     control=Return(reference),
                 ),
-                "CORE_GLOBAL_DEMAND_RETURN",
+                RuleId.CORE_GLOBAL_DEMAND_RETURN,
             )
 
         # 2. Primitive operand evaluation.
@@ -744,7 +745,7 @@ def _advance_return(
                     machine,
                     control=Force(reference),
                 ),
-                "CORE_ROOT_REQUIRE_WHNF",
+                RuleId.CORE_ROOT_REQUIRE_WHNF,
             )
 
         if isinstance(value, Reserved):
@@ -761,7 +762,7 @@ def _advance_return(
 def _advance_apply_primitive(
     machine: MachineState,
     control: ApplyPrimitive,
-) -> tuple[MachineState, str]:
+) -> tuple[MachineState, RuleId]:
     """Execute a primitive with fully evaluated WHNF operands."""
     operator = control.operator
     arguments = control.arguments
@@ -851,7 +852,7 @@ def _advance_apply_primitive(
             machine,
             control=Return(result),
         ),
-        "CORE_PRIM_EXECUTE",
+        RuleId.CORE_PRIM_EXECUTE,
     )
 
 def run_batch(
@@ -971,7 +972,7 @@ def _resume_apply_function(
     machine: MachineState,
     control: Return,
     frame: ApplyFunctionFrame,
-) -> tuple[MachineState, str]:
+) -> tuple[MachineState, RuleId]:
     """Demand the function, then begin strict CBV argument evaluation."""
     reference = control.reference
 
@@ -983,7 +984,7 @@ def _resume_apply_function(
 
         return (
             replace(machine, control=Force(reference)),
-            "CORE_APPLY_REQUIRE_FUNCTION_WHNF",
+            RuleId.CORE_APPLY_REQUIRE_FUNCTION_WHNF,
         )
 
     if not _reference_is_whnf(machine, reference):
@@ -1025,14 +1026,14 @@ def _resume_apply_function(
             local_environment=frame.environment,
             control=EvaluateCore(frame.argument),
         ),
-        "CORE_CBV_EVAL_ARGUMENT",
+        RuleId.CORE_CBV_EVAL_ARGUMENT,
     )
 
 def _resume_apply_argument(
     machine: MachineState,
     control: Return,
     frame: ApplyArgumentFrame,
-) -> tuple[MachineState, str]:
+) -> tuple[MachineState, RuleId]:
     """Demand the CBV argument, then enter the closure body."""
     if frame.return_environment is None:
         raise UnsupportedTransitionError(
@@ -1049,7 +1050,7 @@ def _resume_apply_argument(
 
         return (
             replace(machine, control=Force(reference)),
-            "CORE_CBV_REQUIRE_ARGUMENT_WHNF",
+            RuleId.CORE_CBV_REQUIRE_ARGUMENT_WHNF,
         )
 
     if not _reference_is_whnf(machine, reference):
@@ -1092,14 +1093,14 @@ def _resume_apply_argument(
                 function_value.lambda_expression.body
             ),
         ),
-        "CORE_CBV_ENTER_BODY",
+        RuleId.CORE_CBV_ENTER_BODY,
     )
 
 def _resume_caller_environment(
     machine: MachineState,
     control: Return,
     frame: RestoreEnvironmentFrame,
-) -> tuple[MachineState, str]:
+) -> tuple[MachineState, RuleId]:
     """Leave a function body without changing its returned reference."""
     machine.stack.pop()
 
@@ -1109,14 +1110,14 @@ def _resume_caller_environment(
             local_environment=frame.environment,
             control=Return(control.reference),
         ),
-        "CORE_RESTORE_CALLER_ENVIRONMENT",
+        RuleId.CORE_RESTORE_CALLER_ENVIRONMENT,
     )
 
 def _resume_primitive_operand(
     machine: MachineState,
     control: Return,
     frame: PrimitiveOperandsFrame,
-) -> tuple[MachineState, str]:
+) -> tuple[MachineState, RuleId]:
     """Demand an operand to WHNF and continue left to right."""
     reference = control.reference
 
@@ -1133,7 +1134,7 @@ def _resume_primitive_operand(
                 machine,
                 control=Force(reference),
             ),
-            "CORE_PRIM_REQUIRE_OPERAND_WHNF",
+            RuleId.CORE_PRIM_REQUIRE_OPERAND_WHNF,
         )
 
     # Stage 2: Force returned. The operand must now be WHNF.
@@ -1168,7 +1169,7 @@ def _resume_primitive_operand(
                 local_environment=frame.environment,
                 control=EvaluateCore(next_argument),
             ),
-            "CORE_PRIM_NEXT_OPERAND",
+            RuleId.CORE_PRIM_NEXT_OPERAND,
         )
 
     # Stage 4: all operands reached WHNF.
@@ -1182,14 +1183,14 @@ def _resume_primitive_operand(
                 arguments=evaluated_arguments,
             ),
         ),
-        "CORE_PRIM_OPERANDS_READY",
+        RuleId.CORE_PRIM_OPERANDS_READY,
     )
 
 def _resume_if_condition(
     machine: MachineState,
     control: Return,
     frame: IfFrame,
-) -> tuple[MachineState, str]:
+) -> tuple[MachineState, RuleId]:
     """Demand a boolean condition and select exactly one branch."""
     reference = control.reference
 
@@ -1206,7 +1207,7 @@ def _resume_if_condition(
                 machine,
                 control=Force(reference),
             ),
-            "CORE_IF_REQUIRE_CONDITION_WHNF",
+            RuleId.CORE_IF_REQUIRE_CONDITION_WHNF,
         )
 
     # Second return: the WHNF demand must have completed.
@@ -1223,9 +1224,9 @@ def _resume_if_condition(
     )
 
     rule_id = (
-        "CORE_IF_SELECT_THEN"
+        RuleId.CORE_IF_SELECT_THEN
         if reference.value
-        else "CORE_IF_SELECT_ELSE"
+        else RuleId.CORE_IF_SELECT_ELSE
     )
 
     # The condition continuation is finished.

@@ -21,6 +21,7 @@ from lazy_lab.runtime.control import (
     Return,
     InitializeCoreBindings,
     Force,
+    ApplyPrimitive,
 )
 from lazy_lab.runtime.references import (
     ImmediateBoolean,
@@ -656,7 +657,15 @@ def _advance_return(
                 "CORE_GLOBAL_DEMAND_RETURN",
             )
 
-        # 2. Function position has returned.
+        # 2. Primitive operand evaluation.
+        if isinstance(frame, PrimitiveOperandsFrame):
+            return _resume_primitive_operand(
+                machine,
+                control,
+                frame,
+            )
+
+        # 3. Function position has returned.
         # Demand the function and prepare its argument.
         if isinstance(frame, ApplyFunctionFrame):
             return _resume_apply_function(
@@ -665,7 +674,7 @@ def _advance_return(
                 frame,
             )
 
-        # 3. Argument has returned.
+        # 4. Argument has returned.
         # Under CBV, demand WHNF and enter the closure body.
         if isinstance(frame, ApplyArgumentFrame):
             return _resume_apply_argument(
@@ -674,7 +683,7 @@ def _advance_return(
                 frame,
             )
 
-        # 4. Function body has returned.
+        # 5. Function body has returned.
         # Restore the caller's lexical environment.
         if isinstance(frame, RestoreEnvironmentFrame):
             return _resume_caller_environment(
@@ -688,7 +697,7 @@ def _advance_return(
             f"{type(frame).__name__}"
         )
 
-    # 5. No continuation remains: handle the root result.
+    # 6. No continuation remains: handle the root result.
     # A root reference to a pending object still requires WHNF.
     if isinstance(reference, HeapReference):
         value = machine.heap.get(reference).value
@@ -969,4 +978,77 @@ def _resume_caller_environment(
             control=Return(control.reference),
         ),
         "CORE_RESTORE_CALLER_ENVIRONMENT",
+    )
+
+def _resume_primitive_operand(
+    machine: MachineState,
+    control: Return,
+    frame: PrimitiveOperandsFrame,
+) -> tuple[MachineState, str]:
+    """Demand an operand to WHNF and continue left to right."""
+    reference = control.reference
+
+    # Stage 1: the operand expression returned a reference.
+    # Its value may still require evaluation.
+    if not frame.awaiting_whnf:
+        machine.stack.pop()
+        machine.stack.push(
+            replace(frame, awaiting_whnf=True)
+        )
+
+        return (
+            replace(
+                machine,
+                control=Force(reference),
+            ),
+            "CORE_PRIM_REQUIRE_OPERAND_WHNF",
+        )
+
+    # Stage 2: Force returned. The operand must now be WHNF.
+    if not _reference_is_whnf(machine, reference):
+        raise InvalidMachineStateError(
+            "Primitive operand demand returned without WHNF"
+        )
+
+    evaluated_arguments = (
+        frame.evaluated_arguments + (reference,)
+    )
+
+    machine.stack.pop()
+
+    # Stage 3: evaluate the next operand, if present.
+    if frame.remaining_arguments:
+        next_argument = frame.remaining_arguments[0]
+        remaining = frame.remaining_arguments[1:]
+
+        machine.stack.push(
+            replace(
+                frame,
+                remaining_arguments=remaining,
+                evaluated_arguments=evaluated_arguments,
+                awaiting_whnf=False,
+            )
+        )
+
+        return (
+            replace(
+                machine,
+                local_environment=frame.environment,
+                control=EvaluateCore(next_argument),
+            ),
+            "CORE_PRIM_NEXT_OPERAND",
+        )
+
+    # Stage 4: all operands reached WHNF.
+    # Actual operator execution belongs to B04.5.3.
+    return (
+        replace(
+            machine,
+            local_environment=frame.environment,
+            control=ApplyPrimitive(
+                operator=frame.operator,
+                arguments=evaluated_arguments,
+            ),
+        ),
+        "CORE_PRIM_OPERANDS_READY",
     )

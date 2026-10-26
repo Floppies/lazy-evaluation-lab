@@ -34,6 +34,19 @@ class InitializeCoreBindings:
     scope_reserved: bool = False
 
 
+@dataclass(frozen=True, slots=True)
+class ApplyPrimitive:
+    """Primitive whose operands have all reached WHNF."""
+
+    operator: str
+    arguments: tuple[RuntimeRef, ...]
+
+
 CoreControl: TypeAlias = (
-    EvaluateCore | Return | Force | InitializeCoreBindings
+    EvaluateCore
+    | Return
+    | Force
+    | InitializeCoreBindings
+    | ApplyPrimitive
 )
+

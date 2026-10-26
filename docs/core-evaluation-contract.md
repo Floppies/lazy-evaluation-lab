@@ -1018,3 +1018,43 @@ The following rules are implemented separately:
 
 B04.5 does not introduce thunk memoization, shared updates
 or recursive constructor evaluation.
+
+### 12.3 Primitive Operand Demand
+
+Primitive operands are evaluated strictly from left to right.
+
+`PrimitiveOperandsFrame` retains:
+
+- The primitive operator.
+- The remaining unevaluated Core arguments.
+- Runtime references for completed operands.
+- The original lexical environment.
+- The current WHNF demand stage.
+
+After an operand expression returns a reference, the machine
+requests WHNF explicitly through `Force(reference)`.
+
+Once demand succeeds, the resolved reference is added to
+the evaluated-argument tuple.
+
+If more arguments remain, their evaluation begins in the
+original lexical environment.
+
+When all arguments reach WHNF, the continuation is removed
+and the control becomes `ApplyPrimitive(operator, arguments)`.
+
+The `CORE_PRIM_OPERANDS_READY` transition does not execute
+the primitive operator.
+
+Primitive type checking and computation are completed
+in B04.5.3.
+
+Demanding global references uses the existing global-demand
+continuations and does not introduce memoization or updates.
+
+The surrounding continuation stack remains intact while
+nested operand evaluation is in progress.
+
+Primitive operators are strict under every evaluation strategy,
+even though complete non-strict function application belongs
+to subsequent milestones.

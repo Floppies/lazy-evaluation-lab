@@ -12,7 +12,11 @@ from lazy_lab.engine.core_machine import (
     step,
     create_initial_core_state,
 )
-from lazy_lab.runtime.control import EvaluateCore, Return
+from lazy_lab.runtime.control import (
+    EvaluateCore,
+    Return,
+    ApplyPrimitive,
+)
 from lazy_lab.runtime.environment import Environment
 from lazy_lab.runtime.heap import Heap, Indirection, Reserved
 from lazy_lab.runtime.references import (
@@ -25,6 +29,7 @@ from lazy_lab.runtime.stack import (
     RestoreEnvironmentFrame,
     ApplyArgumentFrame,
     PrimitiveOperandsFrame,
+    GlobalDemandFrame,
 )                                   
 from lazy_lab.runtime.state import (
     ExecutionConfig,
@@ -1065,3 +1070,67 @@ def test_compiled_primitive_starts_left_to_right_evaluation():
 
     assert frame.evaluated_arguments == ()
     assert machine.status is ExecutionStatus.RUNNING
+
+
+def test_primitive_forces_global_operand_without_memoization():
+    program = compile_source(
+        "answer = 40\n"
+        "main = answer + 2"
+    )
+    config = make_config(strategy=Strategy.CBV)
+
+    initial = create_initial_core_state(
+        program,
+        config,
+        session_id="primitive-global-operand",
+    )
+
+    current = initial
+    rules = []
+
+    for _ in range(80):
+        if isinstance(
+            current.machine_state.control,
+            ApplyPrimitive,
+        ):
+            break
+
+        transition = step(current, config)
+        rules.append(transition.rule_id)
+        current = transition.next_state
+    else:
+        pytest.fail("Primitive operands never became ready")
+
+    machine = current.machine_state
+
+    assert machine.control == ApplyPrimitive(
+        "+",
+        (
+            ImmediateInteger(40),
+            ImmediateInteger(2),
+        ),
+    )
+
+    assert rules.count("CORE_PRIM_REQUIRE_OPERAND_WHNF") == 2
+    assert rules.count("CORE_PRIM_NEXT_OPERAND") == 1
+    assert "CORE_FORCE_GLOBAL_RHS" in rules
+
+    # Both globals remain pending: no sharing updates yet.
+    for name in ("answer", "main"):
+        reference = machine.global_environment.lookup(name)
+
+        assert isinstance(
+            machine.heap.get(reference).value,
+            PendingGlobal,
+        )
+
+    # The pending main RHS still owns the enclosing
+    # global-demand continuation until the + is executed.
+    assert machine.stack.depth == 1
+    assert isinstance(
+        machine.stack.peek(),
+        GlobalDemandFrame,
+    )
+
+    assert initial.transition_index == 0
+    assert initial.machine_state.heap.current_slots == 0

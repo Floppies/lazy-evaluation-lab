@@ -17,7 +17,12 @@ from lazy_lab.engine.core_machine import (
     run_batch,
     step,
 )
-from lazy_lab.runtime.control import EvaluateCore, Return, Force
+from lazy_lab.runtime.control import (
+    EvaluateCore,
+    Return,
+    Force,
+    ApplyPrimitive,
+)
 from lazy_lab.runtime.environment import Environment, UnboundNameError
 from lazy_lab.runtime.heap import Heap, Indirection, Reserved
 from lazy_lab.runtime.references import (
@@ -611,3 +616,162 @@ def test_empty_primitive_does_not_advance():
     assert original.transition_index == 0
     assert original.machine_state.stack.depth == 0
     assert original.machine_state.heap.current_slots == 0
+
+
+def test_primitive_operands_are_forced_left_to_right():
+    original = make_state(
+        CorePrimOp(
+            "+",
+            (CoreInt(10), CoreInt(20)),
+        )
+    )
+    config = make_config()
+
+    current = original
+    rules = []
+
+    for _ in range(9):
+        transition = step(current, config)
+        rules.append(transition.rule_id)
+        current = transition.next_state
+
+    machine = current.machine_state
+
+    assert rules == [
+        "CORE_EVAL_PRIMITIVE_START",
+        "CORE_EVAL_INTEGER",
+        "CORE_PRIM_REQUIRE_OPERAND_WHNF",
+        "CORE_FORCE_IMMEDIATE",
+        "CORE_PRIM_NEXT_OPERAND",
+        "CORE_EVAL_INTEGER",
+        "CORE_PRIM_REQUIRE_OPERAND_WHNF",
+        "CORE_FORCE_IMMEDIATE",
+        "CORE_PRIM_OPERANDS_READY",
+    ]
+
+    assert machine.control == ApplyPrimitive(
+        "+",
+        (
+            ImmediateInteger(10),
+            ImmediateInteger(20),
+        ),
+    )
+
+    assert machine.stack.depth == 0
+    assert machine.heap.current_slots == 0
+    assert machine.evaluator_transition_count == 9
+
+    # The initial state remains unchanged.
+    assert original.transition_index == 0
+    assert original.machine_state.stack.depth == 0
+
+    # Actual primitive execution is added in B04.5.3.
+    with pytest.raises(UnsupportedTransitionError):
+        step(current, config)
+
+
+def test_primitive_next_operand_uses_original_environment():
+    global_env = Environment({
+        "x": ImmediateInteger(100),
+    })
+
+    local_env = global_env.extend({
+        "x": ImmediateInteger(10),
+    })
+
+    original = make_state(
+        CorePrimOp(
+            "+",
+            (CoreInt(1), CoreVar("x")),
+        )
+    )
+    original = replace(
+        original,
+        machine_state=replace(
+            original.machine_state,
+            global_environment=global_env,
+            local_environment=local_env,
+        ),
+    )
+
+    current = original
+    rules = []
+
+    for _ in range(5):
+        transition = step(current, make_config())
+        rules.append(transition.rule_id)
+        current = transition.next_state
+
+    machine = current.machine_state
+    frame = machine.stack.peek()
+
+    assert rules[-1] == "CORE_PRIM_NEXT_OPERAND"
+    assert machine.control == EvaluateCore(CoreVar("x"))
+    assert machine.local_environment is local_env
+
+    assert isinstance(frame, PrimitiveOperandsFrame)
+    assert frame.evaluated_arguments == (
+        ImmediateInteger(1),
+    )
+    assert frame.remaining_arguments == ()
+    assert frame.awaiting_whnf is False
+
+    assert frame.environment is local_env
+    assert frame.environment.lookup("x") == (
+        ImmediateInteger(10)
+    )
+
+
+def test_primitive_operand_follows_indirection():
+    heap = Heap()
+
+    reference = heap.allocate(
+        Indirection(ImmediateInteger(9)),
+        allocated_slots=1,
+    )
+
+    environment = Environment({
+        "x": reference,
+    })
+
+    original = make_state(
+        CorePrimOp(
+            "negate",
+            (CoreVar("x"),),
+        )
+    )
+    original = replace(
+        original,
+        machine_state=replace(
+            original.machine_state,
+            heap=heap,
+            global_environment=environment,
+            local_environment=environment,
+        ),
+    )
+
+    current = original
+
+    for _ in range(12):
+        if isinstance(
+            current.machine_state.control,
+            ApplyPrimitive,
+        ):
+            break
+
+        current = step(current, make_config()).next_state
+    else:
+        pytest.fail("Primitive operands never reached WHNF")
+
+    machine = current.machine_state
+
+    assert machine.control == ApplyPrimitive(
+        "negate",
+        (ImmediateInteger(9),),
+    )
+
+    # Forcing does not rewrite the indirection cell.
+    assert machine.heap.get(reference).value == (
+        Indirection(ImmediateInteger(9))
+    )
+    assert machine.stack.depth == 0

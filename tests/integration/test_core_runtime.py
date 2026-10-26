@@ -1230,3 +1230,109 @@ def test_primitives_reject_invalid_operand_types(source):
 
     assert initial.transition_index == 0
     assert initial.machine_state.heap.current_slots == 0
+
+
+@pytest.mark.parametrize("strategy", list(Strategy))
+@pytest.mark.parametrize(
+    "source,expected,selection_rule",
+    [
+        (
+            "loop = loop\n"
+            "main = if True then 42 else loop",
+            42,
+            "CORE_IF_SELECT_THEN",
+        ),
+        (
+            "loop = loop\n"
+            "main = if False then loop else 7",
+            7,
+            "CORE_IF_SELECT_ELSE",
+        ),
+    ],
+)
+def test_if_evaluates_only_selected_branch(
+    strategy,
+    source,
+    expected,
+    selection_rule,
+):
+    program = compile_source(source)
+    config = make_config(strategy=strategy)
+
+    initial = create_initial_core_state(
+        program,
+        config,
+        session_id="conditional-branch",
+    )
+
+    result = run_batch(initial, config, max_steps=100)
+    machine = result.state.machine_state
+
+    assert result.stop_reason is BatchStopReason.WHNF_PENDING
+    assert machine.control == Return(
+        ImmediateInteger(expected)
+    )
+    assert machine.stack.depth == 0
+
+    rules = [entry.rule_id for entry in result.trace]
+
+    assert selection_rule in rules
+    assert "CORE_IF_REQUIRE_CONDITION_WHNF" in rules
+
+    # The discarded recursive branch was never demanded.
+    loop_reference = machine.global_environment.lookup("loop")
+
+    assert isinstance(
+        machine.heap.get(loop_reference).value,
+        PendingGlobal,
+    )
+
+
+def test_if_with_primitive_condition_and_branch():
+    program = compile_source(
+        "main = if 2 > 1 then 40 + 2 else 0"
+    )
+
+    config = make_config(strategy=Strategy.CBV)
+
+    initial = create_initial_core_state(
+        program,
+        config,
+        session_id="conditional-primitive",
+    )
+
+    result = run_batch(initial, config, max_steps=150)
+    machine = result.state.machine_state
+
+    assert result.stop_reason is BatchStopReason.WHNF_PENDING
+    assert machine.control == Return(ImmediateInteger(42))
+
+    rules = [entry.rule_id for entry in result.trace]
+
+    assert rules.count("CORE_PRIM_EXECUTE") == 2
+    assert "CORE_IF_SELECT_THEN" in rules
+    assert "CORE_IF_SELECT_ELSE" not in rules
+
+
+def test_if_rejects_non_boolean_condition():
+    program = compile_source(
+        "main = if 1 then 2 else 3"
+    )
+
+    config = make_config(strategy=Strategy.CBV)
+
+    initial = create_initial_core_state(
+        program,
+        config,
+        session_id="invalid-if-condition",
+    )
+
+    with pytest.raises(
+        TypeError,
+        match="Boolean",
+    ):
+        run_batch(initial, config, max_steps=100)
+
+    assert initial.transition_index == 0
+    assert initial.machine_state.stack.depth == 0
+    assert initial.machine_state.heap.current_slots == 0

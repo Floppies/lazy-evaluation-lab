@@ -9,6 +9,7 @@ from lazy_lab.core.nodes import (
     CoreLam,
     CoreVar,
     CorePrimOp,
+    CoreIf,
 )
 from lazy_lab.engine.core_machine import (
     EvaluatorBudgetExhaustedError,
@@ -34,6 +35,7 @@ from lazy_lab.runtime.stack import (
     Stack,
     ApplyFunctionFrame,
     PrimitiveOperandsFrame,
+    IfFrame,
 )
 from lazy_lab.runtime.state import (
     ExecutionConfig,
@@ -820,3 +822,73 @@ def test_invalid_primitive_control_does_not_advance(
     assert original.transition_index == 0
     assert original.machine_state.stack.depth == 0
     assert original.machine_state.evaluator_transition_count == 0
+
+
+def test_if_evaluates_condition_before_branches():
+    expression = CoreIf(
+        CoreBool(True),
+        CoreInt(10),
+        CoreInt(20),
+    )
+
+    original = make_state(expression)
+    transition = step(original, make_config())
+    machine = transition.next_state.machine_state
+
+    assert transition.rule_id == "CORE_EVAL_IF_CONDITION"
+    assert machine.control == EvaluateCore(CoreBool(True))
+    assert machine.stack.depth == 1
+
+    frame = machine.stack.peek()
+
+    assert isinstance(frame, IfFrame)
+    assert frame.then_branch is expression.then_branch
+    assert frame.else_branch is expression.else_branch
+    assert frame.awaiting_whnf is False
+    assert frame.environment is original.machine_state.local_environment
+
+    assert original.machine_state.stack.depth == 0
+    assert original.transition_index == 0
+
+
+@pytest.mark.parametrize(
+    "condition,expected_branch,expected_rule",
+    [
+        (True, CoreInt(10), "CORE_IF_SELECT_THEN"),
+        (False, CoreInt(20), "CORE_IF_SELECT_ELSE"),
+    ],
+)
+def test_if_forces_condition_before_selecting_branch(
+    condition,
+    expected_branch,
+    expected_rule,
+):
+    expression = CoreIf(
+        CoreBool(condition),
+        CoreInt(10),
+        CoreInt(20),
+    )
+
+    current = make_state(expression)
+    config = make_config()
+    rules = []
+
+    for _ in range(5):
+        transition = step(current, config)
+        rules.append(transition.rule_id)
+        current = transition.next_state
+
+    machine = current.machine_state
+
+    assert rules == [
+        "CORE_EVAL_IF_CONDITION",
+        "CORE_EVAL_BOOLEAN",
+        "CORE_IF_REQUIRE_CONDITION_WHNF",
+        "CORE_FORCE_IMMEDIATE",
+        expected_rule,
+    ]
+
+    assert machine.control == EvaluateCore(expected_branch)
+    assert machine.stack.depth == 0
+    assert machine.evaluator_transition_count == 5
+

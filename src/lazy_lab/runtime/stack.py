@@ -36,6 +36,7 @@ class IfFrame(StackFrame):
     then_branch: CoreExpr
     else_branch: CoreExpr
     environment: Environment
+    awaiting_whnf: bool = False
 
 
 @dataclass(frozen=True, slots=True)

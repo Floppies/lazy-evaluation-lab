@@ -14,6 +14,7 @@ from lazy_lab.core.nodes import (
     CoreLam,
     CoreApp,
     CorePrimOp,
+    CoreIf,
 )
 from lazy_lab.semantics.predefined import PREDEFINED_IDENTIFIERS
 from lazy_lab.runtime.control import ( 
@@ -41,6 +42,7 @@ from lazy_lab.runtime.stack import (
     RestoreEnvironmentFrame,
     GlobalDemandFrame,
     PrimitiveOperandsFrame,
+    IfFrame,
 )
 from lazy_lab.runtime.predefined import PredefinedFunction
 from lazy_lab.runtime.state import (
@@ -199,6 +201,19 @@ def _dispatch_core_evaluation(
         next_control = EvaluateCore(first_argument)
         rule_id = "CORE_EVAL_PRIMITIVE_START"
 
+    elif isinstance(expression, CoreIf):
+        # Preserve both branches without evaluating them.
+        machine.stack.push(
+            IfFrame(
+                then_branch=expression.then_branch,
+                else_branch=expression.else_branch,
+                environment=machine.local_environment,
+            )
+        )
+
+        next_control = EvaluateCore(expression.condition)
+        rule_id = "CORE_EVAL_IF_CONDITION"
+
     else:
         raise UnsupportedTransitionError(
             f"Unsupported Core expression: "
@@ -287,7 +302,7 @@ def step(
             snapshot.machine_state,
             control,
         )
-        
+
     else:
         next_machine, rule_id = _dispatch_core_evaluation(
         snapshot.machine_state
@@ -677,8 +692,16 @@ def _advance_return(
                 control,
                 frame,
             )
+        
+        # 3. If evaluation.
+        if isinstance(frame, IfFrame):
+            return _resume_if_condition(
+                machine,
+                control,
+                frame,
+            )
 
-        # 3. Function position has returned.
+        # 4. Function position has returned.
         # Demand the function and prepare its argument.
         if isinstance(frame, ApplyFunctionFrame):
             return _resume_apply_function(
@@ -687,7 +710,7 @@ def _advance_return(
                 frame,
             )
 
-        # 4. Argument has returned.
+        # 5. Argument has returned.
         # Under CBV, demand WHNF and enter the closure body.
         if isinstance(frame, ApplyArgumentFrame):
             return _resume_apply_argument(
@@ -696,7 +719,7 @@ def _advance_return(
                 frame,
             )
 
-        # 5. Function body has returned.
+        # 6. Function body has returned.
         # Restore the caller's lexical environment.
         if isinstance(frame, RestoreEnvironmentFrame):
             return _resume_caller_environment(
@@ -710,7 +733,7 @@ def _advance_return(
             f"{type(frame).__name__}"
         )
 
-    # 6. No continuation remains: handle the root result.
+    # 7. No continuation remains: handle the root result.
     # A root reference to a pending object still requires WHNF.
     if isinstance(reference, HeapReference):
         value = machine.heap.get(reference).value
@@ -1160,4 +1183,61 @@ def _resume_primitive_operand(
             ),
         ),
         "CORE_PRIM_OPERANDS_READY",
+    )
+
+def _resume_if_condition(
+    machine: MachineState,
+    control: Return,
+    frame: IfFrame,
+) -> tuple[MachineState, str]:
+    """Demand a boolean condition and select exactly one branch."""
+    reference = control.reference
+
+    # First return: the condition produced a reference,
+    # which may still point to a pending computation.
+    if not frame.awaiting_whnf:
+        machine.stack.pop()
+        machine.stack.push(
+            replace(frame, awaiting_whnf=True)
+        )
+
+        return (
+            replace(
+                machine,
+                control=Force(reference),
+            ),
+            "CORE_IF_REQUIRE_CONDITION_WHNF",
+        )
+
+    # Second return: the WHNF demand must have completed.
+    # In the current subset, booleans are immediate values.
+    if not isinstance(reference, ImmediateBoolean):
+        raise TypeError(
+            "If condition must evaluate to a Boolean"
+        )
+
+    selected_branch = (
+        frame.then_branch
+        if reference.value
+        else frame.else_branch
+    )
+
+    rule_id = (
+        "CORE_IF_SELECT_THEN"
+        if reference.value
+        else "CORE_IF_SELECT_ELSE"
+    )
+
+    # The condition continuation is finished.
+    machine.stack.pop()
+
+    # Evaluate only the selected branch, using the lexical
+    # environment of the original conditional expression.
+    return (
+        replace(
+            machine,
+            local_environment=frame.environment,
+            control=EvaluateCore(selected_branch),
+        ),
+        rule_id,
     )

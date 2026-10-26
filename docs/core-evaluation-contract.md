@@ -1090,3 +1090,36 @@ strategy.
 
 Constructor equality, structural list comparison and other
 primitive data types are outside this initial implementation.
+
+### 12.5 Conditional Evaluation
+
+`CORE_EVAL_IF_CONDITION` evaluates a CoreIf expression by
+pushing an IfFrame and evaluating its condition.
+
+The frame retains both branches, the original lexical
+environment and the condition demand stage.
+
+The condition is strictly demanded to WHNF through
+`CORE_IF_REQUIRE_CONDITION_WHNF`.
+
+The demanded condition must be an ImmediateBoolean.
+Other runtime values produce a type error.
+
+After successful demand:
+
+- CORE_IF_SELECT_THEN evaluates only the then branch.
+- CORE_IF_SELECT_ELSE evaluates only the else branch.
+
+The unselected branch is never evaluated by the conditional.
+
+Both branches are retained as Core expressions until
+selection, rather than being evaluated in advance.
+
+The selected branch executes in the original lexical
+environment of the conditional.
+
+Conditional strictness applies to CBV, CBN and CBNeed.
+It is independent of function argument strictness.
+
+No heap allocation, sharing update or memoization is
+introduced by conditional selection itself.

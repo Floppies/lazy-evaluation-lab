@@ -1223,3 +1223,89 @@ CBV-specific rule.
 
 The reservation rule does not implement thunk allocation,
 sharing updates or blackhole detection.
+
+### 13.2 CBV Local Function Initialization
+
+Local bindings whose right-hand side is a `CoreLam` are
+initialized without evaluating their function bodies.
+
+`CORE_LETREC_INSTALL_FUNCTION` performs one function
+initialization transition.
+
+The evaluator:
+
+1. Retrieves the binding's reserved heap reference from
+   the current recursive environment.
+2. Verifies that the binding cell is still `Reserved`.
+3. Allocates a closure capturing only the required free
+   local references.
+4. Replaces the reserved cell with an `Indirection` to the
+   allocated closure.
+5. Advances the initialization index.
+
+Closures may capture references to other bindings in the
+same recursive group, including bindings that have not
+yet been initialized.
+
+Binding addresses remain stable throughout initialization.
+
+When every binding in the group has been initialized,
+`CORE_LETREC_ENTER_BODY` begins evaluating the let body
+in the recursive environment.
+
+The enclosing environment is restored through the
+previously installed `RestoreEnvironmentFrame` when the
+let expression finishes evaluating.
+
+This behavior applies to CBV. Non-strict local binding
+initialization is implemented separately.
+
+### 13.3 CBV Strict Value Initialization
+
+Local bindings whose RHS is not a `CoreLam` are
+initialized strictly in source order under CBV.
+
+The evaluator uses a `LocalValueInitializationFrame`
+to preserve the binding reference, recursive environment,
+and initialization continuation while evaluating a RHS.
+
+The initialization process consists of three operational
+rules:
+
+- `CORE_LETREC_EVAL_VALUE`: Begins evaluating the RHS
+  and pushes its initialization continuation.
+
+- `CORE_LETREC_REQUIRE_VALUE_WHNF`: Explicitly demands
+  the returned reference to WHNF through `Force`.
+
+- `CORE_LETREC_STORE_VALUE`: Stores an `Indirection`
+  from the reserved binding cell to the evaluated
+  reference and resumes the next initialization step.
+
+The binding cell must remain `Reserved` until its RHS
+has reached WHNF.
+
+The resulting reference may be an immediate integer,
+an immediate boolean, or a heap reference to a
+function value.
+
+The evaluator does not allocate an additional heap
+object for immediate values.
+
+Only one local RHS is initialized at a time.
+
+All names in the recursive group are lexically visible
+from the beginning, but visibility does not imply that
+their values have already been initialized.
+
+Demanding a binding that remains `Reserved` produces an
+explicit runtime initialization error.
+
+Function-valued RHSs follow the separate initialization
+rule defined in Section 13.2.
+
+Strict initialization does not introduce deferred thunks,
+memoization, or call-by-need update semantics.
+
+The stable binding-cell representation is specified
+in ADR-006.

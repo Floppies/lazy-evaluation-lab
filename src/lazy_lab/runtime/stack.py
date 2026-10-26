@@ -9,6 +9,7 @@ from lazy_lab.core.nodes import CoreExpr
 
 from .environment import Environment
 from .references import RuntimeRef, HeapReference
+from .control import InitializeLocalBindings
 
 
 class StackFrame:
@@ -60,6 +61,16 @@ class PrimitiveOperandsFrame(StackFrame):
     operator: str
     remaining_arguments: tuple[CoreExpr, ...]
     evaluated_arguments: tuple[RuntimeRef, ...]
+    environment: Environment
+    awaiting_whnf: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class LocalValueInitializationFrame(StackFrame):
+    """Resume local CBV initialization after demanding a RHS."""
+
+    binding_reference: HeapReference
+    continuation: InitializeLocalBindings
     environment: Environment
     awaiting_whnf: bool = False
 

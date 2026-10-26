@@ -1535,3 +1535,57 @@ def test_local_function_group_returns_closure_without_running_bodies():
     assert rules.count(RuleId.CORE_LETREC_INSTALL_FUNCTION) == 2
     assert RuleId.CORE_LETREC_ENTER_BODY in rules
     assert RuleId.CORE_RESTORE_CALLER_ENVIRONMENT in rules
+
+
+def test_cbv_local_values_execute_in_source_order():
+    program = compile_source(
+        "main = let { x = 10; y = x + 2 } in y"
+    )
+    config = make_config(strategy=Strategy.CBV)
+
+    initial = create_initial_core_state(
+        program,
+        config,
+        session_id="local-value-result",
+    )
+
+    result = run_batch(initial, config, max_steps=150)
+    machine = result.state.machine_state
+
+    assert result.stop_reason is BatchStopReason.WHNF_PENDING
+    assert machine.control == Return(ImmediateInteger(12))
+    assert machine.stack.depth == 0
+    assert machine.local_environment is machine.global_environment
+
+    rules = [entry.rule_id for entry in result.trace]
+
+    assert rules.count(RuleId.CORE_LETREC_EVAL_VALUE) == 2
+    assert rules.count(RuleId.CORE_LETREC_STORE_VALUE) == 2
+    assert RuleId.CORE_LETREC_ENTER_BODY in rules
+
+
+def test_cbv_letrec_initializes_functions_and_values():
+    program = compile_source(
+        "main = let { double x = x * 2; value = double 21 } in value"
+    )
+    config = make_config(strategy=Strategy.CBV)
+
+    initial = create_initial_core_state(
+        program,
+        config,
+        session_id="mixed-letrec",
+    )
+
+    result = run_batch(initial, config, max_steps=200)
+    machine = result.state.machine_state
+
+    assert result.stop_reason is BatchStopReason.WHNF_PENDING
+    assert machine.control == Return(ImmediateInteger(42))
+    assert machine.stack.depth == 0
+
+    rules = [entry.rule_id for entry in result.trace]
+
+    assert RuleId.CORE_LETREC_INSTALL_FUNCTION in rules
+    assert RuleId.CORE_LETREC_EVAL_VALUE in rules
+    assert RuleId.CORE_CBV_ENTER_BODY in rules
+    assert RuleId.CORE_LETREC_STORE_VALUE in rules

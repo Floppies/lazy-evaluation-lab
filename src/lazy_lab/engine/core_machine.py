@@ -45,6 +45,7 @@ from lazy_lab.runtime.stack import (
     GlobalDemandFrame,
     PrimitiveOperandsFrame,
     IfFrame,
+    LocalValueInitializationFrame,
 )
 from lazy_lab.runtime.predefined import PredefinedFunction
 from lazy_lab.runtime.state import (
@@ -579,6 +580,7 @@ def _advance_global_initialization(
         RuleId.CORE_INIT_ENTER_ENTRY,
     )
 
+
 def _advance_local_initialization(
     machine: MachineState,
     control: InitializeLocalBindings,
@@ -602,7 +604,7 @@ def _advance_local_initialization(
             "Invalid local initialization index"
         )
 
-    # All bindings were installed: evaluate the let body.
+    # Every RHS is initialized: execute the let body.
     if control.next_index == len(control.bindings):
         return (
             replace(
@@ -614,15 +616,7 @@ def _advance_local_initialization(
 
     binding = control.bindings[control.next_index]
 
-    # Non-function RHS initialization belongs to B04.6.3.
-    if not isinstance(binding.rhs, CoreLam):
-        raise UnsupportedTransitionError(
-            "Non-lambda local RHS initialization "
-            "is not implemented yet"
-        )
-
-    # Resolve the reserved cell directly in this scope,
-    # avoiding accidental fallback to an outer binding.
+    # Resolve only within the current recursive scope.
     reference = machine.local_environment.bindings.get(
         binding.name
     )
@@ -637,30 +631,53 @@ def _advance_local_initialization(
             "Local binding is already initialized"
         )
 
-    # Allocate the actual closure with exact capture capacity.
-    closure_reference = allocate_closure(
-        machine.heap,
-        binding.rhs,
-        machine.local_environment,
-        machine.global_environment,
-    )
+    # Function-valued RHS: allocate its closure without
+    # evaluating the function body.
+    if isinstance(binding.rhs, CoreLam):
+        closure_reference = allocate_closure(
+            machine.heap,
+            binding.rhs,
+            machine.local_environment,
+            machine.global_environment,
+        )
 
-    # Keep the original recursive binding address stable.
-    machine.heap.replace(
-        reference,
-        Indirection(closure_reference),
+        machine.heap.replace(
+            reference,
+            Indirection(closure_reference),
+        )
+
+        return (
+            replace(
+                machine,
+                control=replace(
+                    control,
+                    next_index=control.next_index + 1,
+                ),
+            ),
+            RuleId.CORE_LETREC_INSTALL_FUNCTION,
+        )
+
+    # Non-lambda RHS: evaluate it strictly and wait
+    # for WHNF before initializing its reserved cell.
+    machine.stack.push(
+        LocalValueInitializationFrame(
+            binding_reference=reference,
+            continuation=replace(
+                control,
+                next_index=control.next_index + 1,
+            ),
+            environment=machine.local_environment,
+        )
     )
 
     return (
         replace(
             machine,
-            control=replace(
-                control,
-                next_index=control.next_index + 1,
-            ),
+            control=EvaluateCore(binding.rhs),
         ),
-        RuleId.CORE_LETREC_INSTALL_FUNCTION,
+        RuleId.CORE_LETREC_EVAL_VALUE,
     )
+
 
 def _reference_is_whnf(
     machine: MachineState,
@@ -784,7 +801,15 @@ def _advance_return(
                 RuleId.CORE_GLOBAL_DEMAND_RETURN,
             )
 
-        # 2. Primitive operand evaluation.
+        # 2. Initializing ocal bindings
+        if isinstance(frame, LocalValueInitializationFrame):
+            return _resume_local_value(
+                machine,
+                control,
+                frame,
+            )
+
+        # 3. Primitive operand evaluation.
         if isinstance(frame, PrimitiveOperandsFrame):
             return _resume_primitive_operand(
                 machine,
@@ -792,7 +817,7 @@ def _advance_return(
                 frame,
             )
         
-        # 3. If evaluation.
+        # 4. If evaluation.
         if isinstance(frame, IfFrame):
             return _resume_if_condition(
                 machine,
@@ -800,7 +825,7 @@ def _advance_return(
                 frame,
             )
 
-        # 4. Function position has returned.
+        # 5. Function position has returned.
         # Demand the function and prepare its argument.
         if isinstance(frame, ApplyFunctionFrame):
             return _resume_apply_function(
@@ -809,7 +834,7 @@ def _advance_return(
                 frame,
             )
 
-        # 5. Argument has returned.
+        # 6. Argument has returned.
         # Under CBV, demand WHNF and enter the closure body.
         if isinstance(frame, ApplyArgumentFrame):
             return _resume_apply_argument(
@@ -818,7 +843,7 @@ def _advance_return(
                 frame,
             )
 
-        # 6. Function body has returned.
+        # 7. Function body has returned.
         # Restore the caller's lexical environment.
         if isinstance(frame, RestoreEnvironmentFrame):
             return _resume_caller_environment(
@@ -832,7 +857,7 @@ def _advance_return(
             f"{type(frame).__name__}"
         )
 
-    # 7. No continuation remains: handle the root result.
+    # 8. No continuation remains: handle the root result.
     # A root reference to a pending object still requires WHNF.
     if isinstance(reference, HeapReference):
         value = machine.heap.get(reference).value
@@ -1340,6 +1365,64 @@ def _resume_if_condition(
         ),
         rule_id,
     )
+
+def _resume_local_value(
+    machine: MachineState,
+    control: Return,
+    frame: LocalValueInitializationFrame,
+) -> tuple[MachineState, RuleId]:
+    """Complete strict initialization of one local RHS."""
+    reference = control.reference
+
+    # Stage 1: the RHS returned a reference.
+    # Its result must be demanded to WHNF.
+    if not frame.awaiting_whnf:
+        machine.stack.pop()
+        machine.stack.push(
+            replace(frame, awaiting_whnf=True)
+        )
+
+        return (
+            replace(
+                machine,
+                control=Force(reference),
+            ),
+            RuleId.CORE_LETREC_REQUIRE_VALUE_WHNF,
+        )
+
+    # Stage 2: WHNF demand has completed.
+    if not _reference_is_whnf(machine, reference):
+        raise InvalidMachineStateError(
+            "Local RHS did not reach WHNF"
+        )
+
+    # The binding must still be awaiting initialization.
+    binding_cell = machine.heap.get(
+        frame.binding_reference
+    )
+
+    if not isinstance(binding_cell.value, Reserved):
+        raise InvalidMachineStateError(
+            "Local binding was initialized more than once"
+        )
+
+    # Preserve the stable recursive binding address.
+    machine.heap.replace(
+        frame.binding_reference,
+        Indirection(reference),
+    )
+
+    machine.stack.pop()
+
+    return (
+        replace(
+            machine,
+            local_environment=frame.environment,
+            control=frame.continuation,
+        ),
+        RuleId.CORE_LETREC_STORE_VALUE,
+    )
+
 
 def _enter_local_letrec(
     machine: MachineState,

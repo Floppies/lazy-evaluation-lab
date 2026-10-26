@@ -16,7 +16,7 @@ from lazy_lab.runtime.environment import (
     UnboundNameError,
 )
 from lazy_lab.runtime.heap import Heap, Reserved, Indirection
-from lazy_lab.runtime.stack import RestoreEnvironmentFrame
+from lazy_lab.runtime.stack import RestoreEnvironmentFrame ,LocalValueInitializationFrame
 from lazy_lab.runtime.predefined import PredefinedFunction
 from lazy_lab.runtime.references import HeapReference, ImmediateInteger
 from lazy_lab.runtime.transitions import RuleId
@@ -33,6 +33,7 @@ from lazy_lab.runtime.state import (
 from lazy_lab.engine.core_machine import (
     UnsupportedTransitionError,
     create_initial_core_state,
+    InvalidMachineStateError
 )
 from lazy_lab.pipeline import compile_source
 from lazy_lab.runtime.control import (
@@ -892,3 +893,98 @@ def test_local_recursive_functions_use_stable_indirections():
     assert isinstance(reserved.heap.get(f_ref).value, Reserved)
     assert isinstance(reserved.heap.get(g_ref).value, Reserved)
     assert isinstance(first_machine.heap.get(g_ref).value, Reserved)
+
+
+def test_local_value_rhs_is_initialized_strictly():
+    program = compile_source(
+        "main = let { x = 10; y = x + 2 } in y"
+    )
+    config = make_config(strategy=Strategy.CBV)
+
+    state = create_initial_core_state(
+        program,
+        config,
+        session_id="local-strict-init",
+    )
+
+    for _ in range(30):
+        if isinstance(
+            state.machine_state.control,
+            InitializeLocalBindings,
+        ):
+            break
+        state = step(state, config).next_state
+    else:
+        pytest.fail("Local initialization was not reached")
+
+    reserved_state = state
+    reserved_machine = state.machine_state
+
+    x_ref = reserved_machine.local_environment.lookup("x")
+    y_ref = reserved_machine.local_environment.lookup("y")
+
+    assert isinstance(reserved_machine.heap.get(x_ref).value, Reserved)
+    assert isinstance(reserved_machine.heap.get(y_ref).value, Reserved)
+
+    # Start evaluating x = 10.
+    transition = step(state, config)
+    state = transition.next_state
+
+    assert transition.rule_id is RuleId.CORE_LETREC_EVAL_VALUE
+    assert state.machine_state.control == EvaluateCore(CoreInt(10))
+    assert isinstance(
+        state.machine_state.stack.peek(),
+        LocalValueInitializationFrame,
+    )
+
+    # Evaluate, demand and store the first RHS.
+    result = run_batch(state, config, max_steps=4)
+    machine = result.state.machine_state
+
+    assert [entry.rule_id for entry in result.trace] == [
+        RuleId.CORE_EVAL_INTEGER,
+        RuleId.CORE_LETREC_REQUIRE_VALUE_WHNF,
+        RuleId.CORE_FORCE_IMMEDIATE,
+        RuleId.CORE_LETREC_STORE_VALUE,
+    ]
+
+    assert isinstance(machine.control, InitializeLocalBindings)
+    assert machine.control.next_index == 1
+
+    x_cell = machine.heap.get(x_ref)
+    y_cell = machine.heap.get(y_ref)
+
+    assert x_cell.value == Indirection(ImmediateInteger(10))
+    assert isinstance(y_cell.value, Reserved)
+
+    # Previous snapshots must remain unchanged.
+    assert isinstance(
+        reserved_state.machine_state.heap.get(x_ref).value,
+        Reserved,
+    )
+    assert isinstance(
+        reserved_state.machine_state.heap.get(y_ref).value,
+        Reserved,
+    )
+
+
+def test_strict_local_forward_value_dependency_fails():
+    program = compile_source(
+        "main = let { x = y; y = 10 } in x"
+    )
+    config = make_config(strategy=Strategy.CBV)
+
+    initial = create_initial_core_state(
+        program,
+        config,
+        session_id="forward-value-dependency",
+    )
+
+    with pytest.raises(
+        InvalidMachineStateError,
+        match="uninitialized",
+    ):
+        run_batch(initial, config, max_steps=100)
+
+    assert initial.transition_index == 0
+    assert initial.machine_state.heap.current_slots == 0

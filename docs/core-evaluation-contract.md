@@ -1309,3 +1309,42 @@ memoization, or call-by-need update semantics.
 
 The stable binding-cell representation is specified
 in ADR-006.
+
+### 13.4 Recursive Initialization Errors
+
+Under CBV, local recursive binding groups are reserved
+simultaneously but initialized strictly in source order.
+
+Lexical visibility does not imply that a binding's value
+has already been initialized.
+
+Demanding a Reserved local binding during strict RHS
+initialization raises `UninitializedLocalBindingError`.
+
+This diagnostic identifies a premature demand on a local
+binding, including direct self-dependencies, forward value
+dependencies and strict recursive dependency chains.
+
+The diagnostic does not require general graph-cycle
+detection.
+
+Function-valued RHSs may capture references to
+uninitialized members of the same recursive group without
+evaluating their function bodies.
+
+A recursive function definition is therefore not itself
+an initialization error.
+
+Failed transitions must preserve the previous
+ExecutionState, including its heap, stack and environments.
+
+Nested `CoreLetRec` expressions establish independent lexical
+scopes. `RestoreEnvironmentFrame` restores the enclosing
+environment after a let body returns.
+
+These initialization errors are distinct from the blackhole
+and thunk-update semantics introduced for CBNeed in B05.
+
+Error classification concerns operational behavior. The
+chosen stable binding-cell representation is documented
+separately in ADR-006.

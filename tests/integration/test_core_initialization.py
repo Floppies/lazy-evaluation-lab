@@ -9,14 +9,18 @@ from lazy_lab.engine.core_machine import (
     step,
     run_batch,
     BatchStopReason,
-    EvaluatorBudgetExhaustedError
+    EvaluatorBudgetExhaustedError,
+    UninitializedLocalBindingError,
 )
 from lazy_lab.pipeline import compile_source
 from lazy_lab.runtime.environment import (
     UnboundNameError,
 )
 from lazy_lab.runtime.heap import Heap, Reserved, Indirection
-from lazy_lab.runtime.stack import RestoreEnvironmentFrame ,LocalValueInitializationFrame
+from lazy_lab.runtime.stack import (
+    RestoreEnvironmentFrame,
+    LocalValueInitializationFrame
+)
 from lazy_lab.runtime.predefined import PredefinedFunction
 from lazy_lab.runtime.references import HeapReference, ImmediateInteger
 from lazy_lab.runtime.transitions import RuleId
@@ -41,6 +45,7 @@ from lazy_lab.runtime.control import (
     EvaluateCore,
     Return,
     InitializeLocalBindings,
+    Force,
 )
 from lazy_lab.runtime.global_bindings import PendingGlobal
 from lazy_lab.runtime.predefined import PredefinedFunction
@@ -988,3 +993,172 @@ def test_strict_local_forward_value_dependency_fails():
 
     assert initial.transition_index == 0
     assert initial.machine_state.heap.current_slots == 0
+
+
+@pytest.mark.parametrize(
+    "source,uninitialized_name",
+    [
+        (
+            "main = let { x = y; y = 10 } in x",
+            "y",
+        ),
+        (
+            "main = let { x = x } in x",
+            "x",
+        ),
+        (
+            "main = let { x = y; y = x } in x",
+            "y",
+        ),
+        (
+            "main = let { x = f 1; f y = y } in x",
+            "f",
+        ),
+    ],
+)
+def test_cbv_rejects_premature_local_binding_demand(
+    source,
+    uninitialized_name,
+):
+    program = compile_source(source)
+    config = make_config(strategy=Strategy.CBV)
+
+    initial = create_initial_core_state(
+        program,
+        config,
+        session_id="local-initialization-error",
+    )
+
+    with pytest.raises(
+        UninitializedLocalBindingError,
+        match=rf"Local binding '{uninitialized_name}' is uninitialized",
+    ):
+        run_batch(initial, config, max_steps=100)
+
+    assert initial.transition_index == 0
+    assert initial.machine_state.heap.current_slots == 0
+    assert initial.machine_state.stack.depth == 0
+
+
+def test_failed_local_initialization_preserves_previous_snapshot():
+    program = compile_source(
+        "main = let { x = y; y = 10 } in x"
+    )
+    config = make_config(strategy=Strategy.CBV)
+
+    current = create_initial_core_state(
+        program,
+        config,
+        session_id="local-init-snapshot",
+    )
+
+    for _ in range(100):
+        control = current.machine_state.control
+
+        if (
+            isinstance(control, Force)
+            and isinstance(control.reference, HeapReference)
+            and isinstance(
+                current.machine_state.heap.get(
+                    control.reference
+                ).value,
+                Reserved,
+            )
+        ):
+            break
+
+        current = step(current, config).next_state
+    else:
+        pytest.fail("Uninitialized local demand was never reached")
+
+    machine = current.machine_state
+
+    state_id = current.state_id
+    transition_index = current.transition_index
+    stack_frames = machine.stack.frames
+    heap_cells = dict(machine.heap.cells)
+
+    assert any(
+        isinstance(frame, LocalValueInitializationFrame)
+        for frame in stack_frames
+    )
+
+    with pytest.raises(UninitializedLocalBindingError):
+        step(current, config)
+
+    assert current.state_id == state_id
+    assert current.transition_index == transition_index
+    assert machine.stack.frames == stack_frames
+    assert dict(machine.heap.cells) == heap_cells
+    assert isinstance(
+        machine.heap.get(control.reference).value,
+        Reserved,
+    )
+
+
+@pytest.mark.parametrize(
+    "source,expected",
+    [
+        (
+            "main = let { f x = g x; g y = y } in f 5",
+            5,
+        ),
+        (
+            "main = let { f x = f x } in 10",
+            10,
+        ),
+        (
+            "main = let { f x = x + 1; y = f 4 } in y",
+            5,
+        ),
+    ],
+)
+def test_cbv_function_recursion_does_not_require_eager_bodies(
+    source,
+    expected,
+):
+    program = compile_source(source)
+    config = make_config(strategy=Strategy.CBV)
+
+    initial = create_initial_core_state(
+        program,
+        config,
+        session_id="local-function-recursion",
+    )
+
+    result = run_batch(initial, config, max_steps=200)
+    machine = result.state.machine_state
+
+    assert result.stop_reason is BatchStopReason.WHNF_PENDING
+    assert machine.control == Return(
+        ImmediateInteger(expected)
+    )
+    assert machine.stack.depth == 0
+    assert machine.local_environment is machine.global_environment
+
+
+def test_nested_letrec_restores_outer_lexical_scope():
+    program = compile_source(
+        "main = let { x = 10 } in "
+        "(let { x = 20; y = x + 1 } in y) + x"
+    )
+    config = make_config(strategy=Strategy.CBV)
+
+    initial = create_initial_core_state(
+        program,
+        config,
+        session_id="nested-local-environments",
+    )
+
+    result = run_batch(initial, config, max_steps=200)
+    machine = result.state.machine_state
+
+    assert result.stop_reason is BatchStopReason.WHNF_PENDING
+    assert machine.control == Return(ImmediateInteger(31))
+    assert machine.stack.depth == 0
+    assert machine.local_environment is machine.global_environment
+
+    rules = [entry.rule_id for entry in result.trace]
+
+    assert rules.count(RuleId.CORE_LETREC_RESERVE_SCOPE) == 2
+    assert rules.count(RuleId.CORE_RESTORE_CALLER_ENVIRONMENT) >= 2

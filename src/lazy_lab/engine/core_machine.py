@@ -80,6 +80,10 @@ class UnsupportedTransitionError(NotImplementedError):
 class InvalidMachineStateError(RuntimeError):
     """The current state cannot be advanced."""
 
+    
+class UninitializedLocalBindingError(InvalidMachineStateError):
+    """A strict local RHS demanded a binding before initialization."""
+
 
 class EvaluatorBudgetExhaustedError(RuntimeError):
     """No evaluator transitions remain in the execution budget."""
@@ -751,6 +755,25 @@ def _advance_force(
         )
 
     if isinstance(value, Reserved):
+        # Identify a premature demand on a local recursive
+        # binding while strict initialization is active.
+        for frame in reversed(machine.stack.frames):
+            if not isinstance(
+                frame,
+                LocalValueInitializationFrame,
+            ):
+                continue
+
+            for name, binding_ref in frame.environment.bindings.items():
+                if binding_ref == reference:
+                    raise UninitializedLocalBindingError(
+                        f"Local binding {name!r} is uninitialized: "
+                        "strict evaluation demanded it before "
+                        "its RHS was installed"
+                    )
+
+        # A Reserved cell outside a recognized local
+        # initialization is still an invalid machine state.
         raise InvalidMachineStateError(
             "Cannot force an uninitialized heap cell"
         )

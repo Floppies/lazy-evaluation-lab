@@ -1123,3 +1123,63 @@ It is independent of function argument strictness.
 
 No heap allocation, sharing update or memoization is
 introduced by conditional selection itself.
+
+### 12.6 Stable Operational Rule Identifiers
+
+Operational transitions use the RuleId StrEnum.
+
+Rule identifiers describe completed machine transitions;
+they do not determine which transition is executed.
+
+The evaluator selects transitions from the current control,
+continuation stack, runtime values and evaluation strategy.
+
+Step returns a TransitionResult containing the RuleId.
+TraceEntry preserves the same identifier when tracing is enabled.
+
+RuleId values are stable strings to maintain compatibility
+with exported traces and future visualization components.
+
+TransitionKind remains a separate classification of the
+transition's responsibility.
+
+Adding a new operational rule requires extending RuleId
+and documenting its semantic meaning.
+
+A RuleId does not necessarily correspond to a source-level
+semantic reduction. This distinction will be addressed
+explicitly in B07 instrumentation.
+
+### 12.7 B04.5 Integration and Acceptance
+
+B04.5 completes the initial operational implementation
+of primitive expressions and conditionals.
+
+The evaluator supports:
+
+- Strict, left-to-right primitive operand evaluation.
+- Explicit WHNF demand for primitive operands.
+- Integer arithmetic and unary negation.
+- Integer ordering comparisons.
+- Equality and inequality on supported primitive values.
+- Explicit runtime type and arity errors.
+- Strict evaluation of conditional predicates.
+- Evaluation of exactly one conditional branch.
+- Preservation of lexical environments across continuations.
+
+Operational rules have stable identifiers represented by
+the RuleId StrEnum.
+
+Trace modes do not influence semantic execution.
+
+Interrupted executions retain their control, heap,
+environment and continuation stack, allowing evaluation
+to resume from an existing ExecutionState.
+
+Primitive evaluation and conditional selection do not
+introduce thunk memoization or sharing updates.
+
+B04.5 does not implement local recursive bindings,
+predefined seq application or canonical result observation.
+
+These responsibilities remain in subsequent milestones.

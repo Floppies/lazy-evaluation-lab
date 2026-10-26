@@ -42,7 +42,7 @@ from lazy_lab.runtime.state import (
     Strategy,
     TraceMode,
 )
-from lazy_lab.runtime.transitions import BatchStopReason
+from lazy_lab.runtime.transitions import BatchStopReason, RuleId
 from lazy_lab.core.nodes import (
     CoreLam,
     CoreInt,
@@ -55,6 +55,7 @@ from lazy_lab.runtime.closures import (
     allocate_closure,
 )
 from lazy_lab.runtime.global_bindings import PendingGlobal
+from lazy_lab.runtime.predefined import PredefinedFunction
 
 
 def make_config(
@@ -1336,3 +1337,163 @@ def test_if_rejects_non_boolean_condition():
     assert initial.transition_index == 0
     assert initial.machine_state.stack.depth == 0
     assert initial.machine_state.heap.current_slots == 0
+
+
+def test_primitive_conditional_trace_modes_are_equivalent():
+    program = compile_source(
+        "base = 6\n"
+        "main = if base >= 5 then base * 7 else 0"
+    )
+
+    results = {}
+
+    for mode in TraceMode:
+        config = make_config(
+            strategy=Strategy.CBV,
+            trace_mode=mode,
+        )
+
+        initial = create_initial_core_state(
+            program,
+            config,
+            session_id="trace-audit",
+        )
+
+        results[mode] = run_batch(
+            initial,
+            config,
+            max_steps=100,
+        )
+
+    full = results[TraceMode.FULL]
+    events = results[TraceMode.EVENTS]
+    metrics = results[TraceMode.METRICS_ONLY]
+
+    for result in results.values():
+        machine = result.state.machine_state
+
+        assert result.stop_reason is BatchStopReason.WHNF_PENDING
+        assert machine.control == Return(ImmediateInteger(42))
+        assert machine.stack.depth == 0
+        assert machine.local_environment is machine.global_environment
+
+    full_machine = full.state.machine_state
+
+    for result in (events, metrics):
+        machine = result.state.machine_state
+
+        assert (
+            result.state.transition_index
+            == full.state.transition_index
+        )
+        assert (
+            machine.evaluator_transition_count
+            == full_machine.evaluator_transition_count
+        )
+        assert machine.heap.current_slots == full_machine.heap.current_slots
+        assert machine.heap.next_object_id == full_machine.heap.next_object_id
+        assert machine.heap.cells.keys() == full_machine.heap.cells.keys()
+
+        # Independent runs create distinct identity-based heap payloads.
+        for object_id, cell in machine.heap.cells.items():
+            full_cell = full_machine.heap.cells[object_id]
+
+            assert cell.object_id == full_cell.object_id
+            assert cell.allocated_slots == full_cell.allocated_slots
+            assert type(cell.value) is type(full_cell.value)
+
+            if isinstance(cell.value, PredefinedFunction):
+                assert isinstance(full_cell.value, PredefinedFunction)
+                assert cell.value.name == full_cell.value.name
+            else:
+                assert isinstance(cell.value, PendingGlobal)
+                assert isinstance(full_cell.value, PendingGlobal)
+                # All runs use the same compiled, immutable Core program.
+                assert cell.value.expression is full_cell.value.expression
+
+    # Currently FULL and EVENTS record the same basic trace entries.
+    assert full.trace == events.trace
+    assert metrics.trace == ()
+
+    assert len(full.trace) == full.state.transition_index
+
+    assert all(
+        isinstance(entry.rule_id, RuleId)
+        for entry in full.trace
+    )
+
+    assert [
+        entry.previous_state_id
+        for entry in full.trace
+    ] == list(range(len(full.trace)))
+
+    assert [
+        entry.next_state_id
+        for entry in full.trace
+    ] == list(range(1, len(full.trace) + 1))
+
+
+def test_conditional_can_resume_after_evaluator_budget():
+    program = compile_source(
+        "main = if 2 < 3 then 42 else 0"
+    )
+
+    full_config = make_config(strategy=Strategy.CBV)
+
+    limited_config = replace(
+        full_config,
+        execution_step_limit=10,
+    )
+
+    initial = create_initial_core_state(
+        program,
+        limited_config,
+        session_id="conditional-resume",
+    )
+
+    # Stop in the middle of evaluating the condition.
+    partial = run_batch(
+        initial,
+        limited_config,
+        max_steps=100,
+    )
+
+    paused = partial.state
+    paused_machine = paused.machine_state
+
+    assert partial.stop_reason is BatchStopReason.EVALUATOR_BUDGET
+    assert paused_machine.evaluator_transition_count == 10
+    assert paused_machine.status is ExecutionStatus.RUNNING
+    assert paused_machine.stack.depth > 0
+
+    # Resume the same execution with a larger budget.
+    resumed = run_batch(
+        paused,
+        full_config,
+        max_steps=100,
+    )
+
+    assert resumed.stop_reason is BatchStopReason.WHNF_PENDING
+    assert resumed.state.machine_state.control == Return(
+        ImmediateInteger(42)
+    )
+    assert resumed.state.machine_state.stack.depth == 0
+
+    # Compare with an uninterrupted execution.
+    uninterrupted = run_batch(
+        initial,
+        full_config,
+        max_steps=100,
+    )
+
+    assert uninterrupted.stop_reason is BatchStopReason.WHNF_PENDING
+    assert (
+        resumed.state.transition_index
+        == uninterrupted.state.transition_index
+    )
+    assert partial.trace + resumed.trace == uninterrupted.trace
+
+    # Resuming must not mutate the paused snapshot.
+    assert paused.transition_index == 10
+    assert paused.machine_state.stack.depth > 0
+    assert initial.transition_index == 0

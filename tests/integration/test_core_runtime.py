@@ -2160,3 +2160,162 @@ def test_local_partial_seq_uses_binding_indirection():
 
     assert len(anchors) == 1
     assert anchors[0].allocated_slots == 1
+
+
+def test_cbv_seq_single_step_batches_match_full_execution():
+    program = compile_source(
+        "make x = seq (x + 1)\n"
+        "apply f x = f x\n"
+        "main = let { partial = make 9; alias = partial } "
+        "in apply (seq 0 alias) 42"
+    )
+    config = replace(
+        make_config(strategy=Strategy.CBV),
+        execution_step_limit=300,
+    )
+    initial = create_initial_core_state(
+        program, config, session_id="seq-batch-equivalence",
+    )
+    full = run_batch(initial, config, max_steps=300)
+
+    current = initial
+    collected_trace = []
+    for _ in range(config.execution_step_limit):
+        batch = run_batch(current, config, max_steps=1)
+        collected_trace.extend(batch.trace)
+        current = batch.state
+        if batch.stop_reason is BatchStopReason.WHNF_PENDING:
+            break
+        assert batch.stop_reason is BatchStopReason.BATCH_LIMIT
+    else:
+        pytest.fail("Chunked seq execution did not reach WHNF")
+
+    assert full.stop_reason is BatchStopReason.WHNF_PENDING
+    assert current.machine_state.control == full.state.machine_state.control
+    assert current.machine_state.control == Return(ImmediateInteger(42))
+    assert tuple(collected_trace) == full.trace
+    assert current.transition_index == full.state.transition_index
+    assert all(isinstance(entry.rule_id, RuleId) for entry in collected_trace)
+    rules = [entry.rule_id for entry in collected_trace]
+    assert rules.count(RuleId.CORE_PREDEFINED_PARTIAL_APPLY) == 2
+    assert rules.count(RuleId.CORE_SEQ_SATURATE) == 2
+    assert RuleId.CORE_FORCE_INDIRECTION in rules
+    assert RuleId.CORE_CBV_ENTER_BODY in rules
+
+    for machine in (current.machine_state, full.state.machine_state):
+        assert machine.stack.depth == 0
+        assert machine.local_environment is machine.global_environment
+        assert machine.evaluator_transition_count == len(full.trace)
+        assert machine.heap.current_slots == full.state.machine_state.heap.current_slots
+        assert machine.heap.next_object_id == full.state.machine_state.heap.next_object_id
+        assert all(
+            cell.allocated_slots == cell.value.required_slots
+            for cell in machine.heap.cells.values()
+        )
+
+
+def test_cbv_seq_transitions_preserve_snapshots_and_argument_identity():
+    program = compile_source(
+        r"main = let { x = 10; f = \y -> x + y; partial = seq f } "
+        "in partial f"
+    )
+    config = make_config(strategy=Strategy.CBV)
+    current = create_initial_core_state(
+        program, config, session_id="seq-snapshots",
+    )
+    snapshots = []
+    seen_rules = set()
+    for _ in range(config.execution_step_limit):
+        machine = current.machine_state
+        snapshots.append((
+            current, dict(machine.heap.cells), machine.heap.current_slots,
+            machine.heap.next_object_id, machine.stack.frames,
+        ))
+        if isinstance(machine.control, Return) and machine.stack.depth == 0:
+            reference = machine.control.reference
+            if isinstance(reference, HeapReference) and isinstance(
+                machine.heap.get(reference).value, Closure,
+            ):
+                break
+
+        transition = step(current, config)
+        successor = transition.next_state.machine_state
+        assert isinstance(transition.rule_id, RuleId)
+        if transition.rule_id in (
+            RuleId.CORE_PREDEFINED_PARTIAL_APPLY, RuleId.CORE_SEQ_SATURATE,
+        ):
+            seen_rules.add(transition.rule_id)
+            frame = machine.stack.peek()
+            assert isinstance(frame, ApplyArgumentFrame)
+            assert frame.awaiting_whnf
+            assert successor.stack.frames == machine.stack.frames[:-1]
+            assert successor.local_environment is frame.return_environment
+            if transition.rule_id is RuleId.CORE_SEQ_SATURATE:
+                assert successor.control.reference is machine.control.reference
+                assert dict(successor.heap.cells) == dict(machine.heap.cells)
+                assert successor.heap.current_slots == machine.heap.current_slots
+                assert successor.heap.next_object_id == machine.heap.next_object_id
+            else:
+                partial = successor.heap.get(successor.control.reference).value
+                assert isinstance(partial, PartialPredefinedFunction)
+                assert partial.applied_arguments[0] is machine.control.reference
+                assert successor.heap.current_slots == machine.heap.current_slots + 2
+        current = transition.next_state
+    else:
+        pytest.fail("Seq snapshot execution did not return a closure")
+
+    assert seen_rules == {
+        RuleId.CORE_PREDEFINED_PARTIAL_APPLY, RuleId.CORE_SEQ_SATURATE,
+    }
+    assert current.machine_state.local_environment is current.machine_state.global_environment
+    for state, cells, slots, next_id, frames in snapshots:
+        assert dict(state.machine_state.heap.cells) == cells
+        assert state.machine_state.heap.current_slots == slots
+        assert state.machine_state.heap.next_object_id == next_id
+        assert state.machine_state.stack.frames == frames
+
+
+def test_cbv_seq_trace_modes_preserve_closure_and_lexical_behavior():
+    program = compile_source(
+        "apply f x = f x\n"
+        r"main = let { x = 10; partial = (\x -> seq x) x; "
+        r"f = seq 0 (\y -> x + y) } "
+        "in let { x = 100 } in partial (apply f 2) + x"
+    )
+    results = {}
+    for mode in TraceMode:
+        config = replace(
+            make_config(strategy=Strategy.CBV, trace_mode=mode),
+            execution_step_limit=300,
+        )
+        initial = create_initial_core_state(
+            program, config, session_id="seq-trace-equivalence",
+        )
+        results[mode] = run_batch(initial, config, max_steps=300)
+
+    full = results[TraceMode.FULL]
+    for result in results.values():
+        machine = result.state.machine_state
+        assert result.stop_reason is BatchStopReason.WHNF_PENDING
+        assert machine.control == Return(ImmediateInteger(112))
+        assert machine.stack.depth == 0
+        assert machine.local_environment is machine.global_environment
+        assert result.state.transition_index == full.state.transition_index
+        assert machine.evaluator_transition_count == full.state.machine_state.evaluator_transition_count
+        assert machine.heap.current_slots == full.state.machine_state.heap.current_slots
+        assert machine.heap.next_object_id == full.state.machine_state.heap.next_object_id
+        assert [
+            (cell.object_id, type(cell.value), cell.allocated_slots)
+            for cell in machine.heap.cells.values()
+        ] == [
+            (cell.object_id, type(cell.value), cell.allocated_slots)
+            for cell in full.state.machine_state.heap.cells.values()
+        ]
+
+    assert full.trace == results[TraceMode.EVENTS].trace
+    assert results[TraceMode.METRICS_ONLY].trace == ()
+    rules = [entry.rule_id for entry in full.trace]
+    assert RuleId.CORE_PREDEFINED_PARTIAL_APPLY in rules
+    assert RuleId.CORE_SEQ_SATURATE in rules
+    assert RuleId.CORE_CBV_ENTER_BODY in rules
+    assert RuleId.CORE_RESTORE_CALLER_ENVIRONMENT in rules

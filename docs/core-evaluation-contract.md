@@ -1461,11 +1461,8 @@ function value.
 Partial applications do not evaluate the predefined
 function's saturated behavior.
 
-In B04.7.2, applying an additional argument that would
-saturate seq remains unsupported.
-
-Saturated application and its explicit demand rules are
-implemented in B04.7.3.
+Applying the second argument saturates seq through the
+CBV rule described in Section 14.3.
 
 CBN and CBNeed application are not implemented by these
 CBV-specific transitions.
@@ -1540,3 +1537,31 @@ The frontend does not introduce a dedicated `CoreSeq` node.
 
 These guarantees apply to the initial CBV evaluator.
 Non-strict application semantics belong to B05 and B11.
+
+### 14.5 B04.7 Integration and Acceptance
+
+B04.7 completes first-class predefined seq application under CBV
+using the existing application, Force and Return continuations.
+Both arguments reach WHNF through ordinary strict application;
+saturation returns the second reference without forcing the first
+argument again or allocating another heap object.
+
+Partial applications are function values in WHNF. They can be
+stored, returned, passed as arguments and applied through aliases
+and indirections. Runtime object dispatch preserves lexical
+shadowing and ordinary closure application.
+
+Integration tests cover single-step batch resumption, preservation
+of earlier heap and stack snapshots, caller-environment restoration,
+reference identity and declared abstract allocation sizes. FULL,
+EVENTS and METRICS_ONLY preserve semantic results and operational
+transition counts; FULL and EVENTS currently retain the same basic
+trace entries.
+
+Acceptance is limited to the current CBV runtime. Evaluation stops
+at the WHNF_PENDING observation boundary; canonical result
+observation belongs to B04.8. Non-strict seq rules, thunk updates,
+sharing and blackholes remain outside B04.7, as do constructor
+execution, advanced experimental metrics, replay and trace
+serialization. This integration review is not the final B04 audit
+or evidence of experimental validity.

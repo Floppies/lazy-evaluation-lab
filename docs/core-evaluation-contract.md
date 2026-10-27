@@ -1565,3 +1565,46 @@ sharing and blackholes remain outside B04.7, as do constructor
 execution, advanced experimental metrics, replay and trace
 serialization. This integration review is not the final B04 audit
 or evidence of experimental validity.
+
+## 15. Canonical Result Observation
+
+### 15.1 Passive WHNF Conversion
+
+Canonical observation separates runtime references from
+the values exposed as observable program results.
+
+The initial canonical value types are:
+
+- `CanonicalInteger`
+- `CanonicalBoolean`
+- `OpaqueFunction`
+
+Canonical values do not expose heap addresses, closure
+environments or evaluator-specific runtime structures.
+
+`OpaqueFunction` is not used to establish extensional
+equality between function values.
+
+`observe_whnf(heap, reference)` converts a reference that
+has already reached WHNF into a canonical representation.
+
+It is a passive operation that:
+
+- Does not mutate the heap.
+- Does not allocate runtime objects.
+- Does not execute Force or EvaluateCore.
+- Does not follow unresolved indirections.
+- Does not consume evaluator or result-consumer transitions.
+
+References to `Reserved`, `PendingGlobal` or `Indirection` objects
+must be resolved by the evaluator before canonical observation.
+
+Unsupported runtime objects must not silently produce
+fabricated canonical values.
+
+The canonical value schema will be extended with constructors
+when constructor evaluation becomes available in B06.
+
+This subsection defines only passive conversion.
+ResultPolicy handling, result-consumer transitions and terminal
+statuses belong to subsequent B04.8 subtasks.

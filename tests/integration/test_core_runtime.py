@@ -1972,3 +1972,191 @@ def test_cbv_seq_can_return_closure():
 
     # Returning the closure does not execute its body.
     assert RuleId.CORE_CBV_ENTER_BODY not in rules
+
+
+@pytest.mark.parametrize(
+    "source,expected",
+    [
+        (
+            "main = let { partial = seq 10 } in partial 20",
+            20,
+        ),
+        (
+            "partial = seq 5\nmain = partial 42",
+            42,
+        ),
+        (
+            "main = (\\f -> f 20) (seq 10)",
+            20,
+        ),
+        (
+            "main = (\\f -> f 10 20) seq",
+            20,
+        ),
+    ],
+)
+def test_seq_is_first_class_under_cbv(source, expected):
+    program = compile_source(source)
+
+    config = replace(
+        make_config(strategy=Strategy.CBV),
+        execution_step_limit=300,
+    )
+
+    initial = create_initial_core_state(
+        program,
+        config,
+        session_id="seq-first-class",
+    )
+
+    result = run_batch(initial, config, max_steps=300)
+    machine = result.state.machine_state
+
+    assert result.stop_reason is BatchStopReason.WHNF_PENDING
+    assert machine.control == Return(
+        ImmediateInteger(expected)
+    )
+    assert machine.stack.depth == 0
+    assert machine.local_environment is machine.global_environment
+
+    rules = [entry.rule_id for entry in result.trace]
+
+    assert RuleId.CORE_PREDEFINED_PARTIAL_APPLY in rules
+    assert RuleId.CORE_SEQ_SATURATE in rules
+
+
+@pytest.mark.parametrize(
+    "source,expected",
+    [
+        (
+            "seq x y = x + y\nmain = seq 10 20",
+            30,
+        ),
+        (
+            "main = let { seq x y = x } in seq 10 20",
+            10,
+        ),
+        (
+            "main = (\\seq -> seq 10 20) (\\x -> \\y -> y)",
+            20,
+        ),
+    ],
+)
+def test_user_defined_seq_shadows_predefined_function(
+    source,
+    expected,
+):
+    program = compile_source(source)
+
+    config = replace(
+        make_config(strategy=Strategy.CBV),
+        execution_step_limit=300,
+    )
+
+    initial = create_initial_core_state(
+        program,
+        config,
+        session_id="seq-shadowing",
+    )
+
+    result = run_batch(initial, config, max_steps=300)
+    machine = result.state.machine_state
+
+    assert result.stop_reason is BatchStopReason.WHNF_PENDING
+    assert machine.control == Return(
+        ImmediateInteger(expected)
+    )
+
+    rules = [entry.rule_id for entry in result.trace]
+
+    # These programs call ordinary user closures.
+    assert RuleId.CORE_SEQ_SATURATE not in rules
+    assert RuleId.CORE_PREDEFINED_PARTIAL_APPLY not in rules
+    assert RuleId.CORE_CBV_ENTER_BODY in rules
+
+
+def test_seq_result_can_be_applied_as_function():
+    program = compile_source(
+        r"main = (seq 10 (\x -> x + 1)) 8"
+    )
+
+    config = replace(
+        make_config(strategy=Strategy.CBV),
+        execution_step_limit=200,
+    )
+
+    initial = create_initial_core_state(
+        program,
+        config,
+        session_id="seq-returned-closure",
+    )
+
+    result = run_batch(initial, config, max_steps=200)
+    machine = result.state.machine_state
+
+    assert result.stop_reason is BatchStopReason.WHNF_PENDING
+    assert machine.control == Return(ImmediateInteger(9))
+    assert machine.stack.depth == 0
+
+    rules = [entry.rule_id for entry in result.trace]
+
+    assert RuleId.CORE_SEQ_SATURATE in rules
+    assert RuleId.CORE_CBV_ENTER_BODY in rules
+
+
+def test_local_partial_seq_uses_binding_indirection():
+    program = compile_source(
+        "main = let { partial = seq 10 } in partial 42"
+    )
+
+    config = make_config(strategy=Strategy.CBV)
+
+    initial = create_initial_core_state(
+        program,
+        config,
+        session_id="seq-local-indirection",
+    )
+
+    result = run_batch(initial, config, max_steps=100)
+    machine = result.state.machine_state
+
+    assert result.stop_reason is BatchStopReason.WHNF_PENDING
+    assert machine.control == Return(ImmediateInteger(42))
+
+    partial_cells = [
+        cell
+        for cell in machine.heap.cells.values()
+        if isinstance(
+            cell.value,
+            PartialPredefinedFunction,
+        )
+    ]
+
+    assert len(partial_cells) == 1
+
+    partial_cell = partial_cells[0]
+    partial = partial_cell.value
+
+    assert partial.name == "seq"
+    assert partial.applied_arguments == (
+        ImmediateInteger(10),
+    )
+    assert partial_cell.allocated_slots == 2
+
+    # A stable local binding cell points to the partial.
+    anchors = [
+        cell
+        for cell in machine.heap.cells.values()
+        if (
+            isinstance(cell.value, Indirection)
+            and isinstance(
+                cell.value.target,
+                HeapReference,
+            )
+            and cell.value.target.object_id
+            == partial_cell.object_id
+        )
+    ]
+
+    assert len(anchors) == 1
+    assert anchors[0].allocated_slots == 1

@@ -1509,3 +1509,34 @@ with their corresponding evaluator strategies.
 
 The sequence of operational transitions remains observable
 through the existing RuleId and trace infrastructure.
+
+### 14.4 First-Class Integration and Lexical Shadowing
+
+Predefined seq participates in ordinary `CoreApp evaluation`.
+
+The runtime supports:
+
+- Partial applications stored in global or local bindings.
+- Passing seq and its partial applications as arguments.
+- Applying partial functions through lexical references
+  and heap indirections.
+- Returning functions from saturated seq applications.
+- Applying a function returned by seq.
+
+Predefined function dispatch depends on the runtime heap
+object type rather than the source identifier's spelling.
+
+User-defined global bindings, local bindings and function
+parameters may shadow the predefined seq identifier.
+
+Shadowed definitions are evaluated as ordinary closures
+and must not execute `CORE_SEQ_SATURATE`.
+
+Local bindings containing partial predefined functions
+preserve their stable binding addresses and use the
+existing Indirection representation.
+
+The frontend does not introduce a dedicated `CoreSeq` node.
+
+These guarantees apply to the initial CBV evaluator.
+Non-strict application semantics belong to B05 and B11.

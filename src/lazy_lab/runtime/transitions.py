@@ -69,6 +69,7 @@ class RuleId(StrEnum):
 
     # Predefined functions
     CORE_PREDEFINED_PARTIAL_APPLY = "CORE_PREDEFINED_PARTIAL_APPLY"
+    CORE_SEQ_SATURATE = "CORE_SEQ_SATURATE"
 
 @dataclass(frozen=True, slots=True)
 class TransitionResult:

@@ -1154,18 +1154,14 @@ def _resume_apply_function(
         raise TypeError("Cannot apply a non-function value")
 
     function_value = machine.heap.get(reference).value
-
-    # Applying a partial predefined function would saturate seq.
-    # This will be implemented in B04.7.3.
-    if isinstance(function_value, PartialPredefinedFunction):
-        raise UnsupportedTransitionError(
-            "Saturated predefined function application "
-            "is not implemented yet"
-        )
-
+    
     if not isinstance(
         function_value,
-        (Closure, PredefinedFunction),
+        (
+            Closure,
+            PredefinedFunction,
+            PartialPredefinedFunction,
+        ),
     ):
         raise TypeError("Cannot apply a non-function value")
 
@@ -1227,6 +1223,39 @@ def _resume_apply_argument(
     function_value = machine.heap.get(
         function_reference
     ).value
+
+    if isinstance(function_value, PartialPredefinedFunction):
+        if (
+            function_value.name != "seq"
+            or function_value.remaining_arity != 1
+        ):
+            raise UnsupportedTransitionError(
+                "Unsupported saturated predefined function"
+            )
+
+        first_argument = function_value.applied_arguments[0]
+
+        # Under CBV, the first argument was already
+        # demanded to WHNF when the partial application
+        # was constructed.
+        if not _reference_is_whnf(machine, first_argument):
+            raise InvalidMachineStateError(
+                "CBV seq first argument is not in WHNF"
+            )
+
+        # The current argument has already been evaluated
+        # and forced by ApplyArgumentFrame.
+        # Saturated seq returns that second argument.
+        machine.stack.pop()
+
+        return (
+            replace(
+                machine,
+                local_environment=frame.return_environment,
+                control=Return(reference),
+            ),
+            RuleId.CORE_SEQ_SATURATE,
+        )
 
     if isinstance(function_value, PredefinedFunction):
         # B04.7.2 only supports the first, non-saturating

@@ -1435,7 +1435,7 @@ are defined in subsequent B04.7 sections.
 
 ### 14.2 CBV Partial Application of Predefined Functions
 
-Under CBV, predefined functions use the ordinary CoreApp
+Under CBV, predefined functions use the ordinary `CoreApp`
 evaluation path.
 
 The function position is demanded to WHNF before the
@@ -1445,9 +1445,9 @@ The argument is evaluated in the original call-site
 environment and explicitly demanded to WHNF.
 
 When applying an unapplied predefined function without
-saturating its arity, CORE_PREDEFINED_PARTIAL_APPLY:
+saturating its arity, `CORE_PREDEFINED_PARTIAL_APPLY`:
 
-1. Creates a PartialPredefinedFunction retaining the
+1. Creates a `PartialPredefinedFunction` retaining the
    evaluated argument reference.
 2. Allocates the partial application with its exact
    required abstract slot capacity.
@@ -1469,3 +1469,43 @@ implemented in B04.7.3.
 
 CBN and CBNeed application are not implemented by these
 CBV-specific transitions.
+
+### 14.3 Saturated seq Under CBV
+
+A saturated application of the predefined seq function
+takes two arguments and returns the reference to its
+second argument.
+
+Under CBV, ordinary application rules guarantee that
+both arguments reach WHNF before saturation completes.
+
+The first argument has already been demanded when the
+`PartialPredefinedFunction` was constructed.
+
+The second argument is demanded by the existing CBV
+`ApplyArgumentFrame` before the saturated rule executes.
+
+`CORE_SEQ_SATURATE`:
+
+1. Validates that the function is a supported saturated seq.
+2. Verifies that the stored first argument is in WHNF.
+3. Uses the already evaluated second argument reference.
+4. Removes the application continuation.
+5. Restores the caller's lexical environment.
+6. Returns the second argument reference.
+
+No additional forcing of the first argument occurs
+during CBV saturation.
+
+Saturation does not allocate new heap objects, evaluate
+a lambda body, or modify the captured first argument.
+
+This rule is specific to CBV. Under CBN and CBNeed,
+seq must explicitly demand its first argument at
+saturation because partial application does not force it.
+
+The non-strict operational rules will be implemented
+with their corresponding evaluator strategies.
+
+The sequence of operational transitions remains observable
+through the existing RuleId and trace infrastructure.

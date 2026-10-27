@@ -1829,23 +1829,146 @@ def test_cbv_seq_partial_application_is_strict():
     assert RuleId.CORE_PREDEFINED_PARTIAL_APPLY not in rules
 
 
-def test_saturated_seq_remains_unsupported_until_b0473():
+@pytest.mark.parametrize(
+    "source,expected",
+    [
+        ("main = seq 10 20", 20),
+        ("main = seq (2 + 3) (10 * 4)", 40),
+        ("main = seq False 42", 42),
+        ("main = seq 10 (seq 20 30)", 30),
+    ],
+)
+def test_cbv_saturated_seq_returns_second_argument(
+    source,
+    expected,
+):
+    program = compile_source(source)
+    config = replace(
+        make_config(strategy=Strategy.CBV),
+        execution_step_limit=200,
+    )
+
+    initial = create_initial_core_state(
+        program,
+        config,
+        session_id="seq-saturation",
+    )
+
+    result = run_batch(initial, config, max_steps=200)
+    machine = result.state.machine_state
+
+    assert result.stop_reason is BatchStopReason.WHNF_PENDING
+    assert machine.control == Return(
+        ImmediateInteger(expected)
+    )
+    assert machine.stack.depth == 0
+    assert machine.local_environment is machine.global_environment
+
+    rules = [entry.rule_id for entry in result.trace]
+
+    assert RuleId.CORE_SEQ_SATURATE in rules
+    assert RuleId.CORE_PREDEFINED_PARTIAL_APPLY in rules
+
+
+def test_cbv_seq_does_not_force_first_argument_twice():
     program = compile_source(
-        "main = seq 10 20"
+        "first = 10\n"
+        "main = seq first 20"
     )
     config = make_config(strategy=Strategy.CBV)
 
     initial = create_initial_core_state(
         program,
         config,
-        session_id="seq-saturation-boundary",
+        session_id="seq-no-double-force",
     )
 
-    with pytest.raises(
-        UnsupportedTransitionError,
-        match="Saturated predefined",
-    ):
-        run_batch(initial, config, max_steps=100)
+    result = run_batch(initial, config, max_steps=100)
+    machine = result.state.machine_state
 
-    assert initial.transition_index == 0
-    assert initial.machine_state.heap.current_slots == 0
+    assert result.stop_reason is BatchStopReason.WHNF_PENDING
+    assert machine.control == Return(ImmediateInteger(20))
+
+    rules = [entry.rule_id for entry in result.trace]
+
+    # main is demanded once, first is demanded once.
+    assert rules.count(RuleId.CORE_FORCE_GLOBAL_RHS) == 2
+
+    assert rules.count(
+        RuleId.CORE_PREDEFINED_PARTIAL_APPLY
+    ) == 1
+
+    assert rules.count(RuleId.CORE_SEQ_SATURATE) == 1
+
+    # Global RHSs remain pending because B04 does not
+    # implement updates or memoization.
+    first_ref = machine.global_environment.lookup("first")
+
+    assert isinstance(
+        machine.heap.get(first_ref).value,
+        PendingGlobal,
+    )
+
+
+def test_cbv_seq_strictly_evaluates_second_argument():
+    program = compile_source(
+        "loop = loop\n"
+        "main = seq 10 loop"
+    )
+
+    config = replace(
+        make_config(strategy=Strategy.CBV),
+        execution_step_limit=35,
+    )
+
+    initial = create_initial_core_state(
+        program,
+        config,
+        session_id="seq-second-strictness",
+    )
+
+    result = run_batch(initial, config, max_steps=100)
+
+    assert result.stop_reason is BatchStopReason.EVALUATOR_BUDGET
+
+    rules = [entry.rule_id for entry in result.trace]
+
+    assert RuleId.CORE_PREDEFINED_PARTIAL_APPLY in rules
+    assert RuleId.CORE_SEQ_SATURATE not in rules
+    assert RuleId.CORE_CBV_EVAL_ARGUMENT in rules
+
+
+def test_cbv_seq_can_return_closure():
+    program = compile_source(
+        r"main = seq 10 (\x -> x + 1)"
+    )
+
+    config = make_config(strategy=Strategy.CBV)
+
+    initial = create_initial_core_state(
+        program,
+        config,
+        session_id="seq-closure-result",
+    )
+
+    result = run_batch(initial, config, max_steps=100)
+    machine = result.state.machine_state
+
+    assert result.stop_reason is BatchStopReason.WHNF_PENDING
+
+    returned_ref = machine.control.reference
+
+    assert isinstance(returned_ref, HeapReference)
+    assert isinstance(
+        machine.heap.get(returned_ref).value,
+        Closure,
+    )
+
+    assert machine.stack.depth == 0
+
+    rules = [entry.rule_id for entry in result.trace]
+
+    assert RuleId.CORE_SEQ_SATURATE in rules
+
+    # Returning the closure does not execute its body.
+    assert RuleId.CORE_CBV_ENTER_BODY not in rules

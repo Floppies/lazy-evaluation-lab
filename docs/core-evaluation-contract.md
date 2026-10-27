@@ -1608,3 +1608,43 @@ when constructor evaluation becomes available in B06.
 This subsection defines only passive conversion.
 ResultPolicy handling, result-consumer transitions and terminal
 statuses belong to subsequent B04.8 subtasks.
+
+### 15.2 WHNF_ONLY Result Consumption
+
+A Core evaluation that reaches a root Return in WHNF is
+ready for result observation but is not yet `COMPLETED`.
+
+The initial result consumer supports an explicit
+`consume_whnf_result` transition under WHNF_ONLY.
+
+`RESULT_OBSERVE_WHNF`:
+
+1. Validates the requested result policy.
+2. Requires a `RUNNING` machine in `EVALUATION` phase.
+3. Requires `Return` with an empty continuation stack.
+4. Converts the returned reference using passive `observe_whnf`.
+5. Records the reference and resolved result mode in `ResultState`.
+6. Stores the canonical result separately from `MachineState`.
+7. Changes ExecutionStatus to `` COMPLETED .
+
+The transition has kind `RESULT_CONSUMER`.
+
+It increments `stateId` and `transitionIndex` but does not
+increment `evaluatorTransitionCount`.
+
+The original control, heap, stack and execution phase
+remain unchanged in the successor's machine state.
+
+The previous `ExecutionState` remains independently inspectable.
+
+Result consumption cannot evaluate expressions, force
+references, allocate heap objects or perform updates.
+
+A completed result cannot be observed again.
+
+Until the batch and controller integration is implemented,
+run_batch continues to stop at `WHNF_PENDING`. The caller
+explicitly invokes consume_whnf_result to finalize the result.
+
+`ASK_AT_WHNF` and `MATERIALIZE_COMPLETE_VALUE` are implemented
+in subsequent B04.8 subtasks.

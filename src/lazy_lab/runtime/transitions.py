@@ -71,6 +71,9 @@ class RuleId(StrEnum):
     CORE_PREDEFINED_PARTIAL_APPLY = "CORE_PREDEFINED_PARTIAL_APPLY"
     CORE_SEQ_SATURATE = "CORE_SEQ_SATURATE"
 
+    # Result observation
+    RESULT_OBSERVE_WHNF = "RESULT_OBSERVE_WHNF"
+
 @dataclass(frozen=True, slots=True)
 class TransitionResult:
     previous_state_id: int

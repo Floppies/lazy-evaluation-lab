@@ -1648,3 +1648,48 @@ explicitly invokes consume_whnf_result to finalize the result.
 
 `ASK_AT_WHNF` and `MATERIALIZE_COMPLETE_VALUE` are implemented
 in subsequent B04.8 subtasks.
+
+### 15.3 ASK_AT_WHNF Result Policy
+
+`ASK_AT_WHNF` defers the choice of result-observation mode
+until the evaluator reaches a root Return in WHNF.
+
+While awaiting selection:
+
+- `ExecutionStatus` remains `RUNNING`.
+- The current control and heap remain unchanged.
+- No evaluator or result-consumer transitions occur.
+- Repeated `run_batch` calls return `WHNF_PENDING` without progress.
+
+The controller may explicitly select one of:
+
+- `WHNF_ONLY`
+- `MATERIALIZE_COMPLETE_VALUE`
+
+`RESULT_SELECT_MODE` records this decision as a
+`RESULT_CONSUMER` transition.
+
+The transition:
+
+1. Requires a root `Return` already in WHNF.
+2. Records the result reference in `ResultState`.
+3. Stores the selected mode in `resolvedResultMode`.
+4. Preserves the original `ExecutionConfig`.
+5. Leaves the execution `RUNNING`.
+6. Does not increment `evaluatorTransitionCount`.
+
+Mode selection is immutable within a run.
+
+When `WHNF_ONLY` is selected, `RESULT_OBSERVE_WHNF`
+may complete the execution.
+
+When `MATERIALIZE_COMPLETE_VALUE` is selected,
+materialization remains pending until its consumer
+is executed.
+
+The selection transition increments stateId and
+transitionIndex but does not perform evaluation,
+forcing, heap allocation or result materialization.
+
+The unresolved `ASK_AT_WHNF` policy must not be used
+directly as an experimental observation outcome.

@@ -45,11 +45,6 @@ def consume_whnf_result(
             "Only Core result observation is supported"
         )
 
-    if config.result_policy is not ResultPolicy.WHNF_ONLY:
-        raise InvalidResultObservationError(
-            "WHNF_ONLY result policy is required"
-        )
-
     if (
         machine.status is not ExecutionStatus.RUNNING
         or machine.phase is not ExecutionPhase.EVALUATION
@@ -65,13 +60,39 @@ def consume_whnf_result(
         raise InvalidResultObservationError(
             "Result observation requires a root Return"
         )
-
-    if (
-        state.canonical_result is not None
-        or machine.result_state.resolved_result_mode is not None
-    ):
+    
+    if state.canonical_result is not None:
         raise InvalidResultObservationError(
             "Result has already been observed"
+        )
+
+    result_state = machine.result_state
+
+    if config.result_policy is ResultPolicy.WHNF_ONLY:
+        # Fixed policy: no previous mode selection is expected.
+        if (
+            result_state.resolved_result_mode is not None
+            or result_state.result_reference is not None
+        ):
+            raise InvalidResultObservationError(
+                "Unexpected previous result selection"
+            )
+
+    elif config.result_policy is ResultPolicy.ASK_AT_WHNF:
+        # Interactive policy: WHNF_ONLY must have been selected.
+        if (
+            result_state.resolved_result_mode
+            is not ResultPolicy.WHNF_ONLY
+            or result_state.result_reference
+            != machine.control.reference
+        ):
+            raise InvalidResultObservationError(
+                "WHNF_ONLY has not been selected"
+            )
+
+    else:
+        raise InvalidResultObservationError(
+            "WHNF_ONLY result mode is required"
         )
 
     reference = machine.control.reference
@@ -111,3 +132,92 @@ def consume_whnf_result(
         phase_before=machine.phase,
         phase_after=next_machine.phase,
     )
+
+def select_result_mode(
+    state: ExecutionState,
+    config: ExecutionConfig,
+    selected_mode: ResultPolicy,
+) -> TransitionResult:
+    """Record an explicit result-observation choice."""
+
+    machine = state.machine_state
+
+    if config.result_policy is not ResultPolicy.ASK_AT_WHNF:
+        raise InvalidResultObservationError(
+            "ASK_AT_WHNF policy is required"
+        )
+
+    if (
+        selected_mode
+        not in (
+            ResultPolicy.WHNF_ONLY,
+            ResultPolicy.MATERIALIZE_COMPLETE_VALUE,
+        )
+    ):
+        raise InvalidResultObservationError(
+            "Invalid resolved result mode"
+        )
+
+    if (
+        machine.machine_kind is not config.machine_kind
+        or machine.strategy is not config.strategy
+        or machine.machine_kind is not MachineKind.CORE
+    ):
+        raise InvalidResultObservationError(
+            "Invalid result observation configuration"
+        )
+
+    if (
+        machine.status is not ExecutionStatus.RUNNING
+        or machine.phase is not ExecutionPhase.EVALUATION
+        or not isinstance(machine.control, Return)
+        or machine.stack.depth != 0
+    ):
+        raise InvalidResultObservationError(
+            "Result is not ready for observation"
+        )
+
+    if (
+        state.canonical_result is not None
+        or machine.result_state.result_reference is not None
+        or machine.result_state.resolved_result_mode is not None
+    ):
+        raise InvalidResultObservationError(
+            "Result mode has already been selected"
+        )
+
+    reference = machine.control.reference
+
+    # Validate that the result has reached observable WHNF.
+    # This conversion is passive and its output is not stored yet.
+    observe_whnf(machine.heap, reference)
+
+    snapshot = state.snapshot()
+
+    result_state = replace(
+        snapshot.machine_state.result_state,
+        result_reference=reference,
+        resolved_result_mode=selected_mode,
+    )
+
+    next_machine = replace(
+        snapshot.machine_state,
+        result_state=result_state,
+    )
+
+    next_state = replace(
+        snapshot,
+        state_id=state.state_id + 1,
+        transition_index=state.transition_index + 1,
+        machine_state=next_machine,
+    )
+
+    return TransitionResult(
+        previous_state_id=state.state_id,
+        next_state=next_state,
+        rule_id=RuleId.RESULT_SELECT_MODE,
+        transition_kind=TransitionKind.RESULT_CONSUMER,
+        phase_before=machine.phase,
+        phase_after=next_machine.phase,
+    )
+

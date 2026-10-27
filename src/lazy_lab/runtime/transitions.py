@@ -73,6 +73,7 @@ class RuleId(StrEnum):
 
     # Result observation
     RESULT_OBSERVE_WHNF = "RESULT_OBSERVE_WHNF"
+    RESULT_SELECT_MODE = "RESULT_SELECT_MODE"
 
 @dataclass(frozen=True, slots=True)
 class TransitionResult:

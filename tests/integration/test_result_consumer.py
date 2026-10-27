@@ -8,6 +8,7 @@ from lazy_lab.engine.core_machine import (
 from lazy_lab.engine.result_consumer import (
     InvalidResultObservationError,
     consume_whnf_result,
+    select_result_mode,
 )
 from lazy_lab.pipeline import compile_source
 from lazy_lab.runtime.observation import (
@@ -191,3 +192,188 @@ def test_whnf_completion_produces_terminal_batch_status():
     assert after_completion.stop_reason is BatchStopReason.TERMINAL_STATUS
     assert after_completion.state is completed
     assert after_completion.trace == ()
+
+
+def test_ask_at_whnf_waits_without_transitions():
+    config = make_config(
+        policy=ResultPolicy.ASK_AT_WHNF
+    )
+
+    initial = create_initial_core_state(
+        compile_source("main = 42"),
+        config,
+        session_id="ask-waiting",
+    )
+
+    evaluated = run_batch(
+        initial,
+        config,
+        max_steps=100,
+    )
+
+    assert evaluated.stop_reason is BatchStopReason.WHNF_PENDING
+
+    waiting = evaluated.state
+
+    repeated = run_batch(
+        waiting,
+        config,
+        max_steps=100,
+    )
+
+    assert repeated.stop_reason is BatchStopReason.WHNF_PENDING
+    assert repeated.state is waiting
+    assert repeated.trace == ()
+
+    assert waiting.canonical_result is None
+    assert waiting.machine_state.status is ExecutionStatus.RUNNING
+    assert waiting.machine_state.result_state.resolved_result_mode is None
+
+
+def test_ask_at_whnf_can_select_whnf_only():
+    config = make_config(
+        policy=ResultPolicy.ASK_AT_WHNF
+    )
+
+    initial = create_initial_core_state(
+        compile_source("main = 42"),
+        config,
+        session_id="ask-select-whnf",
+    )
+
+    waiting = run_batch(
+        initial,
+        config,
+        max_steps=100,
+    ).state
+
+    selection = select_result_mode(
+        waiting,
+        config,
+        ResultPolicy.WHNF_ONLY,
+    )
+
+    selected = selection.next_state
+
+    assert selection.rule_id is RuleId.RESULT_SELECT_MODE
+    assert selection.transition_kind is TransitionKind.RESULT_CONSUMER
+
+    assert selected.machine_state.status is ExecutionStatus.RUNNING
+    assert selected.canonical_result is None
+    assert (
+        selected.machine_state.result_state.resolved_result_mode
+        is ResultPolicy.WHNF_ONLY
+    )
+
+    assert (
+        selected.machine_state.evaluator_transition_count
+        == waiting.machine_state.evaluator_transition_count
+    )
+
+    assert selected.transition_index == waiting.transition_index + 1
+
+    completion = consume_whnf_result(
+        selected,
+        config,
+    )
+
+    completed = completion.next_state
+
+    assert completed.canonical_result == CanonicalInteger(42)
+    assert completed.machine_state.status is ExecutionStatus.COMPLETED
+    assert completion.transition_kind is TransitionKind.RESULT_CONSUMER
+
+    assert (
+        completed.machine_state.evaluator_transition_count
+        == waiting.machine_state.evaluator_transition_count
+    )
+
+    assert config.result_policy is ResultPolicy.ASK_AT_WHNF
+    assert waiting.machine_state.result_state.resolved_result_mode is None
+
+
+def test_ask_at_whnf_can_select_materialization():
+    config = make_config(
+        policy=ResultPolicy.ASK_AT_WHNF
+    )
+
+    initial = create_initial_core_state(
+        compile_source("main = 42"),
+        config,
+        session_id="ask-materialize",
+    )
+
+    waiting = run_batch(
+        initial,
+        config,
+        max_steps=100,
+    ).state
+
+    selected = select_result_mode(
+        waiting,
+        config,
+        ResultPolicy.MATERIALIZE_COMPLETE_VALUE,
+    ).next_state
+
+    assert (
+        selected.machine_state.result_state.resolved_result_mode
+        is ResultPolicy.MATERIALIZE_COMPLETE_VALUE
+    )
+
+    assert selected.machine_state.status is ExecutionStatus.RUNNING
+    assert selected.canonical_result is None
+
+    # The materialization consumer is implemented in B04.8.4.
+    with pytest.raises(InvalidResultObservationError):
+        consume_whnf_result(selected, config)
+
+    assert selected.machine_state.control == waiting.machine_state.control
+    assert selected.machine_state.stack.depth == 0
+
+
+def test_ask_at_whnf_rejects_invalid_selection():
+    config = make_config(
+        policy=ResultPolicy.ASK_AT_WHNF
+    )
+
+    initial = create_initial_core_state(
+        compile_source("main = 42"),
+        config,
+        session_id="ask-invalid",
+    )
+
+    with pytest.raises(InvalidResultObservationError):
+        select_result_mode(
+            initial,
+            config,
+            ResultPolicy.WHNF_ONLY,
+        )
+
+    waiting = run_batch(
+        initial,
+        config,
+        max_steps=100,
+    ).state
+
+    with pytest.raises(InvalidResultObservationError):
+        select_result_mode(
+            waiting,
+            config,
+            ResultPolicy.ASK_AT_WHNF,
+        )
+
+    selected = select_result_mode(
+        waiting,
+        config,
+        ResultPolicy.WHNF_ONLY,
+    ).next_state
+
+    with pytest.raises(InvalidResultObservationError):
+        select_result_mode(
+            selected,
+            config,
+            ResultPolicy.MATERIALIZE_COMPLETE_VALUE,
+        )
+
+    assert initial.transition_index == 0
+    assert waiting.machine_state.result_state.resolved_result_mode is None

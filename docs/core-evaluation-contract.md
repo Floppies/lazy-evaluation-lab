@@ -1693,3 +1693,47 @@ forcing, heap allocation or result materialization.
 
 The unresolved `ASK_AT_WHNF` policy must not be used
 directly as an experimental observation outcome.
+
+### 15.4 Atomic Complete-Value Materialization
+
+`MATERIALIZE_COMPLETE_VALUE` requests the complete observable
+result rather than only its outermost WHNF representation.
+
+In the current B04 subset, supported results are limited
+to integers, booleans and opaque function values.
+
+These values do not require recursive traversal.
+
+`RESULT_MATERIALIZE_ATOMIC` completes such results using
+one `RESULT_CONSUMER` transition.
+
+It:
+
+1. Requires an already-WHNF root Return.
+2. Validates the configured or explicitly selected mode.
+3. Converts the reference into its canonical representation.
+4. Records the reference and effective result mode.
+5. Changes the phase to `RESULT_MATERIALIZATION`.
+6. Sets the execution status to `COMPLETED`.
+
+Atomic materialization does not perform additional
+evaluator transitions or heap allocations.
+
+It increments `stateId` and `transitionIndex` but does not
+increment `evaluatorTransitionCount`.
+
+The original `ExecutionState` remains unchanged.
+
+A materialized function is represented by `OpaqueFunction`.
+No attempt is made to inspect or compare function bodies.
+
+When constructors are introduced in B06, complete-value
+materialization will extend this consumer to recursively
+demand constructor fields.
+
+Such future demands may require evaluator transitions
+under `RESULT_MATERIALIZATION` and must respect both
+`executionStepLimit` and `resultNodeLimit`.
+
+The current atomic implementation does not claim
+recursive materialization support.

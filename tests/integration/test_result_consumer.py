@@ -9,6 +9,7 @@ from lazy_lab.engine.result_consumer import (
     InvalidResultObservationError,
     consume_whnf_result,
     select_result_mode,
+    consume_materialized_result,
 )
 from lazy_lab.pipeline import compile_source
 from lazy_lab.runtime.observation import (
@@ -23,6 +24,7 @@ from lazy_lab.runtime.state import (
     ResultPolicy,
     Strategy,
     TraceMode,
+    ExecutionPhase,
 )
 from lazy_lab.runtime.transitions import (
     BatchStopReason,
@@ -377,3 +379,205 @@ def test_ask_at_whnf_rejects_invalid_selection():
 
     assert initial.transition_index == 0
     assert waiting.machine_state.result_state.resolved_result_mode is None
+
+
+@pytest.mark.parametrize(
+    "source,expected",
+    [
+        ("main = 42", CanonicalInteger(42)),
+        ("main = True", CanonicalBoolean(True)),
+        ("main = 2 + 3", CanonicalInteger(5)),
+    ],
+)
+def test_materialize_atomic_result(source, expected):
+    config = make_config(
+        policy=ResultPolicy.MATERIALIZE_COMPLETE_VALUE
+    )
+
+    initial = create_initial_core_state(
+        compile_source(source),
+        config,
+        session_id="materialize-atomic",
+    )
+
+    evaluated = run_batch(initial, config, max_steps=100)
+
+    assert evaluated.stop_reason is BatchStopReason.WHNF_PENDING
+
+    previous = evaluated.state
+
+    transition = consume_materialized_result(
+        previous,
+        config,
+    )
+
+    completed = transition.next_state
+    machine = completed.machine_state
+
+    assert completed.canonical_result == expected
+    assert machine.status is ExecutionStatus.COMPLETED
+
+    assert (
+        machine.phase
+        is ExecutionPhase.RESULT_MATERIALIZATION
+    )
+
+    assert (
+        machine.result_state.resolved_result_mode
+        is ResultPolicy.MATERIALIZE_COMPLETE_VALUE
+    )
+
+    assert transition.rule_id is RuleId.RESULT_MATERIALIZE_ATOMIC
+    assert transition.transition_kind is TransitionKind.RESULT_CONSUMER
+
+    assert transition.phase_before is ExecutionPhase.EVALUATION
+    assert transition.phase_after is ExecutionPhase.RESULT_MATERIALIZATION
+
+    assert completed.transition_index == previous.transition_index + 1
+
+    assert (
+        machine.evaluator_transition_count
+        == previous.machine_state.evaluator_transition_count
+    )
+
+    assert previous.canonical_result is None
+    assert previous.machine_state.status is ExecutionStatus.RUNNING
+
+
+def test_ask_at_whnf_can_complete_materialization():
+    config = make_config(
+        policy=ResultPolicy.ASK_AT_WHNF
+    )
+
+    initial = create_initial_core_state(
+        compile_source("main = 10 * 4"),
+        config,
+        session_id="ask-complete-materialization",
+    )
+
+    waiting = run_batch(
+        initial,
+        config,
+        max_steps=100,
+    ).state
+
+    selected = select_result_mode(
+        waiting,
+        config,
+        ResultPolicy.MATERIALIZE_COMPLETE_VALUE,
+    ).next_state
+
+    completed = consume_materialized_result(
+        selected,
+        config,
+    ).next_state
+
+    assert completed.canonical_result == CanonicalInteger(40)
+    assert completed.machine_state.status is ExecutionStatus.COMPLETED
+
+    assert (
+        completed.machine_state.result_state.resolved_result_mode
+        is ResultPolicy.MATERIALIZE_COMPLETE_VALUE
+    )
+
+    # One administrative transition for selection and
+    # one for atomic materialization.
+    assert completed.transition_index == waiting.transition_index + 2
+
+    assert (
+        completed.machine_state.evaluator_transition_count
+        == waiting.machine_state.evaluator_transition_count
+    )
+
+    assert config.result_policy is ResultPolicy.ASK_AT_WHNF
+    assert waiting.canonical_result is None
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        r"main = \x -> x",
+        "main = seq",
+        "main = seq 10",
+    ],
+)
+def test_materialize_function_as_opaque(source):
+    config = make_config(
+        policy=ResultPolicy.MATERIALIZE_COMPLETE_VALUE
+    )
+
+    initial = create_initial_core_state(
+        compile_source(source),
+        config,
+        session_id="materialize-function",
+    )
+
+    evaluated = run_batch(
+        initial,
+        config,
+        max_steps=100,
+    )
+
+    completed = consume_materialized_result(
+        evaluated.state,
+        config,
+    ).next_state
+
+    assert isinstance(completed.canonical_result, OpaqueFunction)
+    assert completed.machine_state.status is ExecutionStatus.COMPLETED
+
+    assert (
+        completed.machine_state.heap.current_slots
+        == evaluated.state.machine_state.heap.current_slots
+    )
+
+
+def test_materialization_rejects_wrong_policy():
+    config = make_config(policy=ResultPolicy.WHNF_ONLY)
+
+    initial = create_initial_core_state(
+        compile_source("main = 42"),
+        config,
+        session_id="wrong-materialization-policy",
+    )
+
+    evaluated = run_batch(
+        initial,
+        config,
+        max_steps=100,
+    ).state
+
+    with pytest.raises(InvalidResultObservationError):
+        consume_materialized_result(evaluated, config)
+
+    assert evaluated.canonical_result is None
+    assert evaluated.machine_state.status is ExecutionStatus.RUNNING
+
+
+def test_materialization_cannot_complete_twice():
+    config = make_config(
+        policy=ResultPolicy.MATERIALIZE_COMPLETE_VALUE
+    )
+
+    initial = create_initial_core_state(
+        compile_source("main = 42"),
+        config,
+        session_id="duplicate-materialization",
+    )
+
+    evaluated = run_batch(
+        initial,
+        config,
+        max_steps=100,
+    ).state
+
+    completed = consume_materialized_result(
+        evaluated,
+        config,
+    ).next_state
+
+    with pytest.raises(InvalidResultObservationError):
+        consume_materialized_result(completed, config)
+
+    assert completed.canonical_result == CanonicalInteger(42)
+    assert evaluated.canonical_result is None

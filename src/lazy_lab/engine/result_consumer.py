@@ -221,3 +221,110 @@ def select_result_mode(
         phase_after=next_machine.phase,
     )
 
+
+def consume_materialized_result(
+    state: ExecutionState,
+    config: ExecutionConfig,
+) -> TransitionResult:
+    """Materialize an already-WHNF atomic or opaque result."""
+
+    machine = state.machine_state
+
+    if (
+        machine.machine_kind is not config.machine_kind
+        or machine.strategy is not config.strategy
+        or machine.machine_kind is not MachineKind.CORE
+    ):
+        raise InvalidResultObservationError(
+            "Invalid result observation configuration"
+        )
+
+    if (
+        machine.status is not ExecutionStatus.RUNNING
+        or machine.phase is not ExecutionPhase.EVALUATION
+    ):
+        raise InvalidResultObservationError(
+            "Materialization requires a running evaluation"
+        )
+
+    if (
+        not isinstance(machine.control, Return)
+        or machine.stack.depth != 0
+    ):
+        raise InvalidResultObservationError(
+            "Materialization requires a root Return"
+        )
+
+    if state.canonical_result is not None:
+        raise InvalidResultObservationError(
+            "Result has already been materialized"
+        )
+
+    reference = machine.control.reference
+    result_state = machine.result_state
+
+    if (
+        config.result_policy
+        is ResultPolicy.MATERIALIZE_COMPLETE_VALUE
+    ):
+        # Fixed policy: no previous selection is expected.
+        if (
+            result_state.resolved_result_mode is not None
+            or result_state.result_reference is not None
+        ):
+            raise InvalidResultObservationError(
+                "Unexpected previous result selection"
+            )
+
+    elif config.result_policy is ResultPolicy.ASK_AT_WHNF:
+        # Interactive policy: materialization was selected.
+        if (
+            result_state.resolved_result_mode
+            is not ResultPolicy.MATERIALIZE_COMPLETE_VALUE
+            or result_state.result_reference != reference
+        ):
+            raise InvalidResultObservationError(
+                "Materialization has not been selected"
+            )
+
+    else:
+        raise InvalidResultObservationError(
+            "MATERIALIZE_COMPLETE_VALUE policy is required"
+        )
+
+    # The current runtime supports only atomic or opaque
+    # WHNF results. No recursive traversal is necessary.
+    canonical = observe_whnf(machine.heap, reference)
+
+    # No additional evaluator work is performed.
+    snapshot = state.snapshot()
+
+    next_result_state = replace(
+        snapshot.machine_state.result_state,
+        result_reference=reference,
+        resolved_result_mode=ResultPolicy.MATERIALIZE_COMPLETE_VALUE,
+    )
+
+    next_machine = replace(
+        snapshot.machine_state,
+        status=ExecutionStatus.COMPLETED,
+        phase=ExecutionPhase.RESULT_MATERIALIZATION,
+        result_state=next_result_state,
+    )
+
+    next_state = replace(
+        snapshot,
+        state_id=state.state_id + 1,
+        transition_index=state.transition_index + 1,
+        machine_state=next_machine,
+        canonical_result=canonical,
+    )
+
+    return TransitionResult(
+        previous_state_id=state.state_id,
+        next_state=next_state,
+        rule_id=RuleId.RESULT_MATERIALIZE_ATOMIC,
+        transition_kind=TransitionKind.RESULT_CONSUMER,
+        phase_before=machine.phase,
+        phase_after=next_machine.phase,
+    )

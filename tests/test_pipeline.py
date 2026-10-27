@@ -3,6 +3,7 @@ import pytest
 from lazy_lab.pipeline import compile_source
 from lazy_lab.core import nodes as core
 from lazy_lab.semantics.name_resolution import NameResolutionError
+from lazy_lab.core.nodes import CoreProgram, CoreApp, CoreVar
 
 
 @pytest.mark.parametrize(
@@ -105,3 +106,18 @@ def test_compile_source_handles_deep_left_association():
 
     assert additions == count - 1
     assert expression == core.CoreVar("x")
+
+def test_globals_are_retained_in_source_order():
+    program = compile_source(
+        "main = choose 42 loop\n"
+        "choose x y = x\n"
+        "loop = loop"
+    )
+
+    assert isinstance(program, CoreProgram)
+    assert [binding.name for binding in program.bindings] == [
+        "main", "choose", "loop"
+    ]
+
+    assert isinstance(program.bindings[0].rhs, CoreApp)
+    assert program.bindings[2].rhs == CoreVar("loop")

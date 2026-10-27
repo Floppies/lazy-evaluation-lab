@@ -8,7 +8,8 @@ from dataclasses import dataclass
 from lazy_lab.core.nodes import CoreExpr
 
 from .environment import Environment
-from .references import RuntimeRef
+from .references import RuntimeRef, HeapReference
+from .control import InitializeLocalBindings
 
 
 class StackFrame:
@@ -21,11 +22,14 @@ class StackFrame:
 class ApplyFunctionFrame(StackFrame):
     argument: CoreExpr
     environment: Environment
+    awaiting_whnf: bool = False
 
 
 @dataclass(frozen=True, slots=True)
 class ApplyArgumentFrame(StackFrame):
     function: RuntimeRef
+    return_environment: Environment | None = None
+    awaiting_whnf: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -33,6 +37,42 @@ class IfFrame(StackFrame):
     then_branch: CoreExpr
     else_branch: CoreExpr
     environment: Environment
+    awaiting_whnf: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class GlobalDemandFrame(StackFrame):
+    """Resume the caller after evaluating a pending global RHS."""
+
+    return_environment: Environment
+    pending_reference: HeapReference
+    awaiting_whnf: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class RestoreEnvironmentFrame(StackFrame):
+    environment: Environment
+
+
+@dataclass(frozen=True, slots=True)
+class PrimitiveOperandsFrame(StackFrame):
+    """Track left-to-right strict primitive operand evaluation."""
+
+    operator: str
+    remaining_arguments: tuple[CoreExpr, ...]
+    evaluated_arguments: tuple[RuntimeRef, ...]
+    environment: Environment
+    awaiting_whnf: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class LocalValueInitializationFrame(StackFrame):
+    """Resume local CBV initialization after demanding a RHS."""
+
+    binding_reference: HeapReference
+    continuation: InitializeLocalBindings
+    environment: Environment
+    awaiting_whnf: bool = False
 
 
 class EmptyStackError(LookupError):

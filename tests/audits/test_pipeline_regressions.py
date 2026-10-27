@@ -9,7 +9,7 @@ from lazy_lab.runtime.control import EvaluateCore, Return
 from lazy_lab.runtime.environment import Environment
 from lazy_lab.runtime.heap import Heap
 from lazy_lab.runtime.references import ImmediateBoolean, ImmediateInteger
-from lazy_lab.runtime.stack import Stack
+from lazy_lab.runtime.stack import Stack, PrimitiveOperandsFrame
 from lazy_lab.runtime.state import (
     ExecutionConfig,
     ExecutionPhase,
@@ -94,30 +94,6 @@ def test_signed_core_literals_are_immediates_without_frontend_negation(value):
 
 
 @pytest.mark.parametrize("source", [
-    "main = -1",
-    "main = 1 + 2",
-    "x = 42\nmain = x",
-    "main = let { x = 1 } in x",
-    "main = if True then 1 else 2",
-    "main = []",
-    "main = [1]",
-    "main = (\\x -> x) 1",
-    "main = \\x -> x",
-    "f [] = 0\nf (h:t) = h\nmain = f []",
-])
-def test_b03_only_rejects_compiled_constructs_awaiting_later_milestones(source):
-    """Replace these milestone-specific expectations as B04-B06 grow."""
-    program = compile_source(source)
-    expression = next(binding.rhs for binding in program.bindings if binding.name == "main")
-    state, config = literal_demo(expression, Strategy.CBNEED, TraceMode.FULL)
-    with pytest.raises(UnsupportedTransitionError):
-        step(state, config)
-    assert state.state_id == state.transition_index == 0
-    assert state.machine_state.evaluator_transition_count == 0
-    assert state.machine_state.control.expression is expression
-
-
-@pytest.mark.parametrize("source", [
     "f x = 10\nf [] = unknown\nmain = 42",
     "f [] = 10\nf [] = unknown\nmain = 42",
     "main = if True then 42 else unknown",
@@ -127,11 +103,27 @@ def test_source_names_are_checked_even_when_literal_demo_would_ignore_them(sourc
         compile_source(source)
 
 
-def test_deep_compiled_core_is_rejected_without_recursive_formatting():
-    program = compile_source("main = " + " + ".join("1" for _ in range(2000)))
+def test_deep_compiled_primitive_starts_iteratively():
+    program = compile_source(
+        "main = " + " + ".join("1" for _ in range(2000))
+    )
+
     expression = program.bindings[0].rhs
-    state, config = literal_demo(expression, Strategy.CBNEED, TraceMode.FULL)
-    with pytest.raises(UnsupportedTransitionError, match="CorePrimOp"):
-        step(state, config)
-    assert state.machine_state.control.expression is expression
+    state, config = literal_demo(
+        expression,
+        Strategy.CBNEED,
+        TraceMode.FULL,
+    )
+
+    transition = step(state, config)
+    machine = transition.next_state.machine_state
+
+    assert transition.rule_id == "CORE_EVAL_PRIMITIVE_START"
+    assert isinstance(
+        machine.stack.peek(),
+        PrimitiveOperandsFrame,
+    )
+    assert isinstance(machine.control, EvaluateCore)
+
     assert state.transition_index == 0
+    assert state.machine_state.stack.depth == 0

@@ -2,7 +2,17 @@ from dataclasses import replace
 
 import pytest
 
-from lazy_lab.core.nodes import CoreApp, CoreBool, CoreInt
+from lazy_lab.core.nodes import (
+    CoreApp,
+    CoreBool,
+    CoreInt,
+    CoreLam,
+    CoreVar,
+    CorePrimOp,
+    CoreIf,
+    CoreLetRec,
+    CoreBinding,
+)
 from lazy_lab.engine.core_machine import (
     EvaluatorBudgetExhaustedError,
     InvalidMachineStateError,
@@ -10,14 +20,27 @@ from lazy_lab.engine.core_machine import (
     run_batch,
     step,
 )
-from lazy_lab.runtime.control import EvaluateCore, Return
-from lazy_lab.runtime.environment import Environment
-from lazy_lab.runtime.heap import Heap
+from lazy_lab.runtime.control import (
+    EvaluateCore,
+    Return,
+    Force,
+    ApplyPrimitive,
+    InitializeLocalBindings,
+)
+from lazy_lab.runtime.environment import Environment, UnboundNameError
+from lazy_lab.runtime.heap import Heap, Indirection, Reserved
 from lazy_lab.runtime.references import (
     ImmediateBoolean,
     ImmediateInteger,
+    HeapReference,
 )
-from lazy_lab.runtime.stack import Stack
+from lazy_lab.runtime.stack import (
+    Stack,
+    ApplyFunctionFrame,
+    PrimitiveOperandsFrame,
+    IfFrame,
+    RestoreEnvironmentFrame,
+)
 from lazy_lab.runtime.state import (
     ExecutionConfig,
     ExecutionPhase,
@@ -32,8 +55,10 @@ from lazy_lab.runtime.state import (
 from lazy_lab.runtime.transitions import (
     BatchStopReason,
     TransitionKind,
+    RuleId,
+    TraceEntry,
 )
-
+from lazy_lab.runtime.closures import Closure
 
 def make_config(
     trace_mode=TraceMode.FULL,
@@ -180,15 +205,6 @@ def test_step_budget_is_enforced():
     assert result.trace == ()
 
 
-def test_unsupported_expression_does_not_advance():
-    state = make_state(CoreApp(CoreInt(1), CoreInt(2)))
-
-    with pytest.raises(UnsupportedTransitionError):
-        step(state, make_config())
-
-    assert state.transition_index == 0
-
-
 def test_terminal_state_cannot_advance():
     state = make_state(CoreInt(42))
 
@@ -220,3 +236,881 @@ def test_second_literal_step_is_not_implemented():
 
     with pytest.raises(UnsupportedTransitionError):
         step(first.next_state, make_config())
+
+
+def test_lambda_transition_allocates_closure():
+    global_env = Environment({
+        "global_value": ImmediateInteger(100),
+    })
+
+    local_env = global_env.extend({
+        "x": ImmediateInteger(10),
+    })
+
+    expression = CoreLam(
+        "argument",
+        CoreVar("x"),
+    )
+
+    original = make_state(expression)
+    original = replace(
+        original,
+        machine_state=replace(
+            original.machine_state,
+            local_environment=local_env,
+            global_environment=global_env,
+        ),
+    )
+
+    transition = step(original, make_config())
+    machine = transition.next_state.machine_state
+
+    assert transition.rule_id == "CORE_EVAL_LAMBDA"
+    assert isinstance(machine.control, Return)
+
+    reference = machine.control.reference
+    closure = machine.heap.get(reference).value
+
+    assert isinstance(closure, Closure)
+    assert closure.lambda_expression is expression
+    assert closure.captured_locals.lookup("x") == (
+        ImmediateInteger(10)
+    )
+    assert closure.required_slots == 2
+
+    assert machine.heap.current_slots == 2
+    assert machine.evaluator_transition_count == 1
+
+    # The previous state must remain unchanged.
+    assert original.machine_state.heap.current_slots == 0
+    assert original.transition_index == 0
+
+
+def test_variable_transition_preserves_local_reference():
+    global_env = Environment({
+        "x": ImmediateInteger(100),
+    })
+
+    local_env = global_env.extend({
+        "x": ImmediateInteger(10),
+    })
+
+    original = make_state(CoreVar("x"))
+    original = replace(
+        original,
+        machine_state=replace(
+            original.machine_state,
+            local_environment=local_env,
+            global_environment=global_env,
+        ),
+    )
+
+    transition = step(original, make_config())
+    machine = transition.next_state.machine_state
+
+    assert transition.rule_id == "CORE_EVAL_VARIABLE"
+    assert machine.control == Return(ImmediateInteger(10))
+    assert machine.heap.current_slots == 0
+    assert machine.stack.depth == 0
+
+
+def test_variable_transition_rejects_unknown_name():
+    original = make_state(CoreVar("missing"))
+
+    with pytest.raises(UnboundNameError):
+        step(original, make_config())
+
+    assert original.transition_index == 0
+    assert original.machine_state.evaluator_transition_count == 0
+    assert original.machine_state.heap.current_slots == 0
+
+
+def test_core_application_pushes_function_continuation():
+    function = CoreLam("x", CoreVar("x"))
+    argument = CoreInt(5)
+    expression = CoreApp(function, argument)
+
+    original = make_state(expression)
+    config = make_config()
+
+    transition = step(original, config)
+    machine = transition.next_state.machine_state
+
+    assert transition.rule_id == "CORE_EVAL_APPLICATION"
+    assert machine.control == EvaluateCore(function)
+
+    assert machine.stack.depth == 1
+
+    frame = machine.stack.peek()
+
+    assert isinstance(frame, ApplyFunctionFrame)
+    assert frame.argument is argument
+    assert (
+        frame.environment
+        is original.machine_state.local_environment
+    )
+
+    # Only the function position was scheduled.
+    assert machine.heap.current_slots == 0
+
+    # The original execution state is unchanged.
+    assert original.machine_state.stack.depth == 0
+    assert original.transition_index == 0
+    assert original.machine_state.evaluator_transition_count == 0
+
+    assert transition.next_state.transition_index == 1
+    assert machine.evaluator_transition_count == 1
+
+
+def test_application_preserves_argument_call_site_environment():
+    global_env = Environment({
+        "x": ImmediateInteger(100),
+    })
+
+    local_env = global_env.extend({
+        "x": ImmediateInteger(10),
+    })
+
+    expression = CoreApp(
+        CoreLam("argument", CoreVar("argument")),
+        CoreVar("x"),
+    )
+
+    original = make_state(expression)
+    original = replace(
+        original,
+        machine_state=replace(
+            original.machine_state,
+            local_environment=local_env,
+            global_environment=global_env,
+        ),
+    )
+
+    transition = step(original, make_config())
+    frame = transition.next_state.machine_state.stack.peek()
+
+    assert isinstance(frame, ApplyFunctionFrame)
+    assert frame.argument == CoreVar("x")
+    assert frame.environment is local_env
+    assert frame.environment.lookup("x") == ImmediateInteger(10)
+    assert global_env.lookup("x") == ImmediateInteger(100)
+
+
+def test_nested_applications_preserve_continuation_order():
+    inner = CoreApp(
+        CoreVar("f"),
+        CoreInt(1),
+    )
+
+    outer = CoreApp(
+        inner,
+        CoreInt(2),
+    )
+
+    original = make_state(outer)
+    config = make_config()
+
+    first = step(original, config)
+    second = step(first.next_state, config)
+
+    machine = second.next_state.machine_state
+
+    assert machine.control == EvaluateCore(CoreVar("f"))
+    assert machine.stack.depth == 2
+
+    outer_frame, inner_frame = machine.stack.frames
+
+    assert isinstance(outer_frame, ApplyFunctionFrame)
+    assert isinstance(inner_frame, ApplyFunctionFrame)
+
+    assert outer_frame.argument == CoreInt(2)
+    assert inner_frame.argument == CoreInt(1)
+
+    # The inner application must be resumed first.
+    assert machine.stack.peek() is inner_frame
+
+    assert [
+        first.rule_id,
+        second.rule_id,
+    ] == [
+        "CORE_EVAL_APPLICATION",
+        "CORE_EVAL_APPLICATION",
+    ]
+
+    assert original.machine_state.stack.depth == 0
+    assert first.next_state.machine_state.stack.depth == 1
+    assert second.next_state.machine_state.stack.depth == 2
+
+
+def test_forcing_immediate_returns_same_reference():
+    original = make_state(CoreInt(0))
+    reference = ImmediateInteger(42)
+
+    original = replace(
+        original,
+        machine_state=replace(
+            original.machine_state,
+            control=Force(reference),
+        ),
+    )
+
+    transition = step(original, make_config())
+    machine = transition.next_state.machine_state
+
+    assert transition.rule_id == "CORE_FORCE_IMMEDIATE"
+    assert machine.control == Return(reference)
+    assert machine.heap.current_slots == 0
+    assert machine.stack.depth == 0
+    assert original.machine_state.control == Force(reference)
+
+
+def test_force_follows_indirection():
+    original = make_state(CoreInt(0))
+    heap = Heap()
+
+    reference = heap.allocate(
+        Indirection(ImmediateInteger(42)),
+        allocated_slots=1,
+    )
+
+    original = replace(
+        original,
+        machine_state=replace(
+            original.machine_state,
+            heap=heap,
+            control=Force(reference),
+        ),
+    )
+
+    transition = step(original, make_config())
+    machine = transition.next_state.machine_state
+
+    assert transition.rule_id == "CORE_FORCE_INDIRECTION"
+    assert machine.control == Force(ImmediateInteger(42))
+    assert isinstance(
+        machine.heap.get(reference).value,
+        Indirection,
+    )
+
+    assert original.machine_state.heap.current_slots == 1
+    assert original.transition_index == 0
+
+
+def test_force_rejects_uninitialized_cell():
+    original = make_state(CoreInt(0))
+    heap = Heap()
+
+    reference = heap.allocate(
+        Reserved(),
+        allocated_slots=1,
+    )
+
+    original = replace(
+        original,
+        machine_state=replace(
+            original.machine_state,
+            heap=heap,
+            control=Force(reference),
+        ),
+    )
+
+    with pytest.raises(
+        InvalidMachineStateError,
+        match="uninitialized",
+    ):
+        step(original, make_config())
+
+    assert isinstance(heap.get(reference).value, Reserved)
+    assert original.transition_index == 0
+
+
+def test_primitive_starts_with_first_operand():
+    expression = CorePrimOp(
+        "+",
+        (CoreInt(10), CoreInt(20)),
+    )
+
+    original = make_state(expression)
+    transition = step(original, make_config())
+    machine = transition.next_state.machine_state
+
+    assert transition.rule_id == "CORE_EVAL_PRIMITIVE_START"
+    assert machine.control == EvaluateCore(CoreInt(10))
+    assert machine.stack.depth == 1
+
+    frame = machine.stack.peek()
+
+    assert isinstance(frame, PrimitiveOperandsFrame)
+    assert frame.operator == "+"
+    assert frame.remaining_arguments == (CoreInt(20),)
+    assert frame.evaluated_arguments == ()
+    assert frame.awaiting_whnf is False
+
+    assert frame.environment is machine.local_environment
+    assert machine.heap.current_slots == 0
+
+    assert original.machine_state.stack.depth == 0
+    assert original.transition_index == 0
+    assert transition.next_state.transition_index == 1
+
+
+def test_primitive_frame_preserves_lexical_environment():
+    global_env = Environment({
+        "x": ImmediateInteger(100),
+    })
+
+    local_env = global_env.extend({
+        "x": ImmediateInteger(10),
+    })
+
+    expression = CorePrimOp(
+        "+",
+        (CoreVar("x"), CoreInt(2)),
+    )
+
+    original = make_state(expression)
+    original = replace(
+        original,
+        machine_state=replace(
+            original.machine_state,
+            local_environment=local_env,
+            global_environment=global_env,
+        ),
+    )
+
+    transition = step(original, make_config())
+    machine = transition.next_state.machine_state
+
+    frame = machine.stack.peek()
+
+    assert isinstance(frame, PrimitiveOperandsFrame)
+    assert frame.environment is local_env
+    assert frame.environment.lookup("x") == ImmediateInteger(10)
+    assert machine.control == EvaluateCore(CoreVar("x"))
+
+
+def test_unary_primitive_has_no_remaining_operands():
+    expression = CorePrimOp(
+        "negate",
+        (CoreInt(5),),
+    )
+
+    transition = step(
+        make_state(expression),
+        make_config(),
+    )
+
+    machine = transition.next_state.machine_state
+    frame = machine.stack.peek()
+
+    assert isinstance(frame, PrimitiveOperandsFrame)
+    assert frame.operator == "negate"
+    assert frame.remaining_arguments == ()
+    assert frame.evaluated_arguments == ()
+    assert machine.control == EvaluateCore(CoreInt(5))
+
+
+def test_empty_primitive_does_not_advance():
+    expression = CorePrimOp("+", ())
+
+    original = make_state(expression)
+
+    with pytest.raises(
+        InvalidMachineStateError,
+        match="at least one operand",
+    ):
+        step(original, make_config())
+
+    assert original.transition_index == 0
+    assert original.machine_state.stack.depth == 0
+    assert original.machine_state.heap.current_slots == 0
+
+
+def test_primitive_operands_are_forced_left_to_right():
+    original = make_state(
+        CorePrimOp(
+            "+",
+            (CoreInt(10), CoreInt(20)),
+        )
+    )
+    config = make_config()
+
+    current = original
+    rules = []
+
+    for _ in range(9):
+        transition = step(current, config)
+        rules.append(transition.rule_id)
+        current = transition.next_state
+
+    machine = current.machine_state
+
+    assert rules == [
+        "CORE_EVAL_PRIMITIVE_START",
+        "CORE_EVAL_INTEGER",
+        "CORE_PRIM_REQUIRE_OPERAND_WHNF",
+        "CORE_FORCE_IMMEDIATE",
+        "CORE_PRIM_NEXT_OPERAND",
+        "CORE_EVAL_INTEGER",
+        "CORE_PRIM_REQUIRE_OPERAND_WHNF",
+        "CORE_FORCE_IMMEDIATE",
+        "CORE_PRIM_OPERANDS_READY",
+    ]
+
+    assert machine.control == ApplyPrimitive(
+        "+",
+        (
+            ImmediateInteger(10),
+            ImmediateInteger(20),
+        ),
+    )
+
+    assert machine.stack.depth == 0
+    assert machine.heap.current_slots == 0
+    assert machine.evaluator_transition_count == 9
+
+    # The initial state remains unchanged.
+    assert original.transition_index == 0
+    assert original.machine_state.stack.depth == 0
+
+    transition = step(current, config)
+
+    assert transition.rule_id == "CORE_PRIM_EXECUTE"
+    assert transition.next_state.machine_state.control == Return(
+        ImmediateInteger(30)
+    )
+
+    assert transition.next_state.machine_state.stack.depth == 0
+    assert current.machine_state.control == ApplyPrimitive(
+        "+",
+        (
+            ImmediateInteger(10),
+            ImmediateInteger(20),
+        ),
+    )
+
+
+def test_primitive_next_operand_uses_original_environment():
+    global_env = Environment({
+        "x": ImmediateInteger(100),
+    })
+
+    local_env = global_env.extend({
+        "x": ImmediateInteger(10),
+    })
+
+    original = make_state(
+        CorePrimOp(
+            "+",
+            (CoreInt(1), CoreVar("x")),
+        )
+    )
+    original = replace(
+        original,
+        machine_state=replace(
+            original.machine_state,
+            global_environment=global_env,
+            local_environment=local_env,
+        ),
+    )
+
+    current = original
+    rules = []
+
+    for _ in range(5):
+        transition = step(current, make_config())
+        rules.append(transition.rule_id)
+        current = transition.next_state
+
+    machine = current.machine_state
+    frame = machine.stack.peek()
+
+    assert rules[-1] == "CORE_PRIM_NEXT_OPERAND"
+    assert machine.control == EvaluateCore(CoreVar("x"))
+    assert machine.local_environment is local_env
+
+    assert isinstance(frame, PrimitiveOperandsFrame)
+    assert frame.evaluated_arguments == (
+        ImmediateInteger(1),
+    )
+    assert frame.remaining_arguments == ()
+    assert frame.awaiting_whnf is False
+
+    assert frame.environment is local_env
+    assert frame.environment.lookup("x") == (
+        ImmediateInteger(10)
+    )
+
+
+def test_primitive_operand_follows_indirection():
+    heap = Heap()
+
+    reference = heap.allocate(
+        Indirection(ImmediateInteger(9)),
+        allocated_slots=1,
+    )
+
+    environment = Environment({
+        "x": reference,
+    })
+
+    original = make_state(
+        CorePrimOp(
+            "negate",
+            (CoreVar("x"),),
+        )
+    )
+    original = replace(
+        original,
+        machine_state=replace(
+            original.machine_state,
+            heap=heap,
+            global_environment=environment,
+            local_environment=environment,
+        ),
+    )
+
+    current = original
+
+    for _ in range(12):
+        if isinstance(
+            current.machine_state.control,
+            ApplyPrimitive,
+        ):
+            break
+
+        current = step(current, make_config()).next_state
+    else:
+        pytest.fail("Primitive operands never reached WHNF")
+
+    machine = current.machine_state
+
+    assert machine.control == ApplyPrimitive(
+        "negate",
+        (ImmediateInteger(9),),
+    )
+
+    # Forcing does not rewrite the indirection cell.
+    assert machine.heap.get(reference).value == (
+        Indirection(ImmediateInteger(9))
+    )
+    assert machine.stack.depth == 0
+
+
+@pytest.mark.parametrize(
+    "operator,arguments",
+    [
+        ("+", (ImmediateInteger(1),)),
+        ("negate", (
+            ImmediateInteger(1),
+            ImmediateInteger(2),
+        )),
+        ("unknown", (ImmediateInteger(1),)),
+    ],
+)
+def test_invalid_primitive_control_does_not_advance(
+    operator,
+    arguments,
+):
+    original = make_state(CoreInt(0))
+
+    original = replace(
+        original,
+        machine_state=replace(
+            original.machine_state,
+            control=ApplyPrimitive(operator, arguments),
+        ),
+    )
+
+    with pytest.raises(InvalidMachineStateError):
+        step(original, make_config())
+
+    assert original.transition_index == 0
+    assert original.machine_state.stack.depth == 0
+    assert original.machine_state.evaluator_transition_count == 0
+
+
+def test_if_evaluates_condition_before_branches():
+    expression = CoreIf(
+        CoreBool(True),
+        CoreInt(10),
+        CoreInt(20),
+    )
+
+    original = make_state(expression)
+    transition = step(original, make_config())
+    machine = transition.next_state.machine_state
+
+    assert transition.rule_id == "CORE_EVAL_IF_CONDITION"
+    assert machine.control == EvaluateCore(CoreBool(True))
+    assert machine.stack.depth == 1
+
+    frame = machine.stack.peek()
+
+    assert isinstance(frame, IfFrame)
+    assert frame.then_branch is expression.then_branch
+    assert frame.else_branch is expression.else_branch
+    assert frame.awaiting_whnf is False
+    assert frame.environment is original.machine_state.local_environment
+
+    assert original.machine_state.stack.depth == 0
+    assert original.transition_index == 0
+
+
+@pytest.mark.parametrize(
+    "condition,expected_branch,expected_rule",
+    [
+        (True, CoreInt(10), "CORE_IF_SELECT_THEN"),
+        (False, CoreInt(20), "CORE_IF_SELECT_ELSE"),
+    ],
+)
+def test_if_forces_condition_before_selecting_branch(
+    condition,
+    expected_branch,
+    expected_rule,
+):
+    expression = CoreIf(
+        CoreBool(condition),
+        CoreInt(10),
+        CoreInt(20),
+    )
+
+    current = make_state(expression)
+    config = make_config()
+    rules = []
+
+    for _ in range(5):
+        transition = step(current, config)
+        rules.append(transition.rule_id)
+        current = transition.next_state
+
+    machine = current.machine_state
+
+    assert rules == [
+        "CORE_EVAL_IF_CONDITION",
+        "CORE_EVAL_BOOLEAN",
+        "CORE_IF_REQUIRE_CONDITION_WHNF",
+        "CORE_FORCE_IMMEDIATE",
+        expected_rule,
+    ]
+
+    assert machine.control == EvaluateCore(expected_branch)
+    assert machine.stack.depth == 0
+    assert machine.evaluator_transition_count == 5
+
+
+def test_rule_ids_preserve_string_compatibility():
+    rule = RuleId.CORE_EVAL_INTEGER
+
+    assert rule.value == "CORE_EVAL_INTEGER"
+    assert rule == "CORE_EVAL_INTEGER"
+    assert str(rule) == "CORE_EVAL_INTEGER"
+    assert isinstance(rule, str)
+
+
+def test_transition_and_trace_use_rule_enum():
+    initial = make_state(CoreInt(42))
+    transition = step(initial, make_config())
+
+    assert transition.rule_id is RuleId.CORE_EVAL_INTEGER
+
+    entry = TraceEntry.from_transition(transition)
+
+    assert entry.rule_id is RuleId.CORE_EVAL_INTEGER
+    assert entry.rule_id is transition.rule_id
+    assert entry.next_state_id == transition.next_state.state_id
+
+
+def test_batch_preserves_typed_rule_identifiers():
+    initial = make_state(CoreInt(42))
+
+    result = run_batch(
+        initial,
+        make_config(),
+        max_steps=10,
+    )
+
+    assert len(result.trace) == 1
+    assert result.trace[0].rule_id is RuleId.CORE_EVAL_INTEGER
+
+    assert all(
+        isinstance(entry.rule_id, RuleId)
+        for entry in result.trace
+    )
+
+
+def test_cbv_letrec_reserves_all_bindings_before_initialization():
+    expression = CoreLetRec(
+        bindings=(
+            CoreBinding("x", CoreInt(10)),
+            CoreBinding("y", CoreVar("x")),
+        ),
+        body=CoreVar("y"),
+    )
+
+    original = make_state(expression)
+    original = replace(
+        original,
+        machine_state=replace(
+            original.machine_state,
+            strategy=Strategy.CBV,
+        ),
+    )
+    config = replace(make_config(), strategy=Strategy.CBV)
+
+    transition = step(original, config)
+    machine = transition.next_state.machine_state
+
+    assert transition.rule_id is RuleId.CORE_LETREC_RESERVE_SCOPE
+
+    assert machine.control == InitializeLocalBindings(
+        expression.bindings,
+        expression.body,
+    )
+
+    local_env = machine.local_environment
+
+    assert local_env.parent is original.machine_state.local_environment
+    assert set(local_env.bindings) == {"x", "y"}
+
+    x_ref = local_env.lookup("x")
+    y_ref = local_env.lookup("y")
+
+    assert isinstance(x_ref, HeapReference)
+    assert isinstance(y_ref, HeapReference)
+    assert x_ref != y_ref
+
+    assert isinstance(machine.heap.get(x_ref).value, Reserved)
+    assert isinstance(machine.heap.get(y_ref).value, Reserved)
+
+    assert machine.heap.current_slots == 2
+    assert machine.heap.next_object_id == 2
+
+    assert machine.stack.depth == 1
+    frame = machine.stack.peek()
+
+    assert isinstance(frame, RestoreEnvironmentFrame)
+    assert frame.environment is original.machine_state.local_environment
+
+    assert original.machine_state.heap.current_slots == 0
+    assert original.machine_state.stack.depth == 0
+    assert original.transition_index == 0
+
+
+def test_cbv_letrec_local_scope_shadows_globals():
+    global_env = Environment({
+        "x": ImmediateInteger(99),
+    })
+
+    expression = CoreLetRec(
+        bindings=(
+            CoreBinding("x", CoreInt(10)),
+        ),
+        body=CoreVar("x"),
+    )
+
+    original = make_state(expression)
+    original = replace(
+        original,
+        machine_state=replace(
+            original.machine_state,
+            strategy=Strategy.CBV,
+            global_environment=global_env,
+            local_environment=global_env,
+        ),
+    )
+
+    config = replace(make_config(), strategy=Strategy.CBV)
+
+    transition = step(original, config)
+    machine = transition.next_state.machine_state
+
+    local_x = machine.local_environment.lookup("x")
+
+    assert isinstance(local_x, HeapReference)
+    assert local_x != global_env.lookup("x")
+
+    assert global_env.lookup("x") == ImmediateInteger(99)
+
+    assert machine.local_environment.parent is global_env
+    assert isinstance(
+        machine.heap.get(local_x).value,
+        Reserved,
+    )
+
+
+def test_cbv_letrec_reserves_mutually_recursive_functions():
+    expression = CoreLetRec(
+        bindings=(
+            CoreBinding(
+                "f",
+                CoreLam("x", CoreVar("g")),
+            ),
+            CoreBinding(
+                "g",
+                CoreLam("y", CoreVar("f")),
+            ),
+        ),
+        body=CoreVar("f"),
+    )
+
+    original = make_state(expression)
+    original = replace(
+        original,
+        machine_state=replace(
+            original.machine_state,
+            strategy=Strategy.CBV,
+        ),
+    )
+
+    config = replace(make_config(), strategy=Strategy.CBV)
+
+    transition = step(original, config)
+    machine = transition.next_state.machine_state
+
+    f_ref = machine.local_environment.lookup("f")
+    g_ref = machine.local_environment.lookup("g")
+
+    assert f_ref != g_ref
+    assert isinstance(machine.heap.get(f_ref).value, Reserved)
+    assert isinstance(machine.heap.get(g_ref).value, Reserved)
+
+    assert machine.heap.current_slots == 2
+    assert machine.control.next_index == 0
+
+    # No function body or RHS has been evaluated.
+    assert not any(
+        isinstance(cell.value, Closure)
+        for cell in machine.heap.cells.values()
+    )
+
+
+@pytest.mark.parametrize(
+    "strategy",
+    [Strategy.CBN, Strategy.CBNEED],
+)
+def test_non_strict_letrec_is_not_implemented_yet(strategy):
+    expression = CoreLetRec(
+        (CoreBinding("x", CoreInt(10)),),
+        CoreVar("x"),
+    )
+
+    original = make_state(expression)
+    original = replace(
+        original,
+        machine_state=replace(
+            original.machine_state,
+            strategy=strategy,
+        ),
+    )
+    config = replace(make_config(), strategy=strategy)
+
+    with pytest.raises(
+        UnsupportedTransitionError,
+        match="Non-strict local bindings",
+    ):
+        step(original, config)
+
+    assert original.machine_state.heap.current_slots == 0
+    assert original.machine_state.stack.depth == 0
+    assert original.transition_index == 0

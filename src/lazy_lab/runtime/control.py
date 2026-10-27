@@ -30,8 +30,33 @@ class Force:
 class InitializeCoreBindings:
     bindings: tuple[CoreBinding, ...]
     next_index: int = 0
+    entry_expression: CoreExpr | None = None
+    scope_reserved: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class InitializeLocalBindings:
+    """Initialize a reserved local recursive binding group."""
+
+    bindings: tuple[CoreBinding, ...]
+    body: CoreExpr
+    next_index: int = 0
+
+
+@dataclass(frozen=True, slots=True)
+class ApplyPrimitive:
+    """Primitive whose operands have all reached WHNF."""
+
+    operator: str
+    arguments: tuple[RuntimeRef, ...]
 
 
 CoreControl: TypeAlias = (
-    EvaluateCore | Return | Force | InitializeCoreBindings
+    EvaluateCore
+    | Return
+    | Force
+    | InitializeCoreBindings
+    | InitializeLocalBindings
+    | ApplyPrimitive 
 )
+

@@ -3,7 +3,7 @@
 - **Status:** Accepted for static Surface-to-Core lowering
 - **Recorded:** 2026-10-19 (documents an earlier design decision)
 - **Scope:** Surface v0.1 top-level function equations
-- **Related:** [Language specification, §7](../language-specification.md), [Core IR](../core-ir.md), [B02.8 audit](../audits/b02.8-audit.md)
+- **Related:** [Language specification, §7](../specifications/language-specification.md), [Core IR](../core-ir.md), [B02.8 audit](../audits/b02.8-audit.md)
 
 ## Context
 

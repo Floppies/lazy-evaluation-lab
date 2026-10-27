@@ -148,7 +148,8 @@ def select_result_mode(
         )
 
     if (
-        selected_mode
+        not isinstance(selected_mode, ResultPolicy)
+        or selected_mode
         not in (
             ResultPolicy.WHNF_ONLY,
             ResultPolicy.MATERIALIZE_COMPLETE_VALUE,

@@ -336,7 +336,11 @@ def test_ask_at_whnf_can_select_materialization():
     assert selected.machine_state.stack.depth == 0
 
 
-def test_ask_at_whnf_rejects_invalid_selection():
+@pytest.mark.parametrize(
+    "invalid_mode",
+    [ResultPolicy.ASK_AT_WHNF, "WHNF_ONLY", "MATERIALIZE_COMPLETE_VALUE"],
+)
+def test_ask_at_whnf_rejects_invalid_selection(invalid_mode):
     config = make_config(
         policy=ResultPolicy.ASK_AT_WHNF
     )
@@ -364,7 +368,7 @@ def test_ask_at_whnf_rejects_invalid_selection():
         select_result_mode(
             waiting,
             config,
-            ResultPolicy.ASK_AT_WHNF,
+            invalid_mode,
         )
 
     selected = select_result_mode(
@@ -820,3 +824,157 @@ def test_atomic_materialization_respects_minimum_node_limit():
     assert result.stop_reason is BatchStopReason.TERMINAL_STATUS
     assert result.state.canonical_result == CanonicalInteger(42)
     assert result.state.machine_state.status is ExecutionStatus.COMPLETED
+
+
+@pytest.mark.parametrize(
+    "policy",
+    [ResultPolicy.WHNF_ONLY, ResultPolicy.MATERIALIZE_COMPLETE_VALUE],
+)
+@pytest.mark.parametrize(
+    "source,expected",
+    [
+        ("main = seq 0 (2 + 3)", CanonicalInteger(5)),
+        ("main = seq 0 False", CanonicalBoolean(False)),
+        ("main = seq 10", OpaqueFunction()),
+    ],
+)
+def test_session_trace_modes_consume_at_exact_evaluator_limit(
+    policy, source, expected,
+):
+    config = replace(make_config(policy=policy), result_node_limit=1)
+    initial = create_initial_core_state(
+        compile_source(source), config, session_id="session-trace-limits",
+    )
+    evaluated = run_batch(initial, config, max_steps=100)
+    assert evaluated.stop_reason is BatchStopReason.WHNF_PENDING
+    evaluator_steps = evaluated.state.machine_state.evaluator_transition_count
+
+    results = {}
+    for mode in TraceMode:
+        limited_config = replace(
+            config, trace_mode=mode, execution_step_limit=evaluator_steps,
+        )
+        paused = run_session_batch(
+            initial, limited_config, max_steps=evaluator_steps,
+        )
+        assert paused.stop_reason is BatchStopReason.BATCH_LIMIT
+        assert paused.state.transition_index == evaluator_steps
+        assert paused.state.canonical_result is None
+        before = paused.state.snapshot()
+
+        completed = run_session_batch(paused.state, limited_config, max_steps=1)
+        full = run_session_batch(
+            initial, limited_config, max_steps=evaluator_steps + 1,
+        )
+        assert paused.trace + completed.trace == full.trace
+        for result in (completed, full):
+            machine = result.state.machine_state
+            assert result.stop_reason is BatchStopReason.TERMINAL_STATUS
+            assert machine.status is ExecutionStatus.COMPLETED
+            if isinstance(expected, OpaqueFunction):
+                assert isinstance(result.state.canonical_result, OpaqueFunction)
+            else:
+                assert result.state.canonical_result == expected
+            assert result.state.state_id == evaluator_steps + 1
+            assert result.state.transition_index == evaluator_steps + 1
+            assert machine.evaluator_transition_count == evaluator_steps
+            assert machine.result_state.resolved_result_mode is policy
+            assert machine.stack.depth == 0
+            assert machine.heap.current_slots == before.machine_state.heap.current_slots
+            assert machine.heap.next_object_id == before.machine_state.heap.next_object_id
+
+        assert completed.state.machine_state.heap is not paused.state.machine_state.heap
+        assert dict(paused.state.machine_state.heap.cells) == dict(before.machine_state.heap.cells)
+        assert paused.state.machine_state.stack.frames == before.machine_state.stack.frames
+        assert paused.state.machine_state.status is ExecutionStatus.RUNNING
+        assert paused.state.machine_state.result_state.resolved_result_mode is None
+        assert paused.state.canonical_result is None
+        results[mode] = full
+
+    assert results[TraceMode.FULL].trace == results[TraceMode.EVENTS].trace
+    assert results[TraceMode.METRICS_ONLY].trace == ()
+    assert results[TraceMode.FULL].trace[-1].transition_kind is TransitionKind.RESULT_CONSUMER
+    assert initial.transition_index == 0
+    assert initial.machine_state.heap.current_slots == 0
+
+
+@pytest.mark.parametrize(
+    "selected_mode",
+    [ResultPolicy.WHNF_ONLY, ResultPolicy.MATERIALIZE_COMPLETE_VALUE],
+)
+def test_ask_single_step_batches_preserve_snapshots_and_terminal_state(selected_mode):
+    config = make_config(policy=ResultPolicy.ASK_AT_WHNF)
+    initial = create_initial_core_state(
+        compile_source("main = seq (2 + 3) True"),
+        config, session_id="ask-single-step",
+    )
+    full_waiting = run_session_batch(initial, config, max_steps=100)
+    full_selection = select_result_mode(full_waiting.state, config, selected_mode)
+    full_completed = run_session_batch(full_selection.next_state, config, max_steps=100)
+
+    current = initial
+    trace = []
+    for _ in range(config.execution_step_limit):
+        batch = run_session_batch(current, config, max_steps=1)
+        assert batch.state.transition_index - current.transition_index <= 1
+        current = batch.state
+        trace.extend(batch.trace)
+        if batch.stop_reason is BatchStopReason.WHNF_PENDING:
+            break
+        assert batch.stop_reason is BatchStopReason.BATCH_LIMIT
+    else:
+        pytest.fail("Single-step ASK session did not reach WHNF")
+
+    assert full_waiting.stop_reason is BatchStopReason.WHNF_PENDING
+    assert tuple(trace) == full_waiting.trace
+    waiting = current
+    waiting_snapshot = waiting.snapshot()
+    repeated = run_session_batch(waiting, config, max_steps=1)
+    assert repeated.stop_reason is BatchStopReason.WHNF_PENDING
+    assert repeated.state is waiting
+    assert repeated.trace == ()
+
+    selection = select_result_mode(waiting, config, selected_mode)
+    selected = selection.next_state
+    selected_snapshot = selected.snapshot()
+    trace.append(TraceEntry.from_transition(selection))
+    completed = run_session_batch(selected, config, max_steps=1)
+    trace.extend(completed.trace)
+    assert completed.stop_reason is BatchStopReason.TERMINAL_STATUS
+    assert completed.state.canonical_result == CanonicalBoolean(True)
+    assert completed.state.canonical_result == full_completed.state.canonical_result
+    assert tuple(trace) == (
+        full_waiting.trace
+        + (TraceEntry.from_transition(full_selection),)
+        + full_completed.trace
+    )
+    evaluator_steps = waiting.machine_state.evaluator_transition_count
+    assert selected.state_id == waiting.state_id + 1
+    assert selected.transition_index == waiting.transition_index + 1
+    assert selected.machine_state.evaluator_transition_count == evaluator_steps
+    assert completed.state.state_id == waiting.state_id + 2
+    assert completed.state.transition_index == evaluator_steps + 2
+    assert completed.state.machine_state.evaluator_transition_count == evaluator_steps
+    assert config.result_policy is ResultPolicy.ASK_AT_WHNF
+
+    terminal = run_session_batch(completed.state, config, max_steps=1)
+    assert terminal.stop_reason is BatchStopReason.TERMINAL_STATUS
+    assert terminal.state is completed.state
+    assert terminal.trace == ()
+    for operation in (consume_whnf_result, consume_materialized_result):
+        with pytest.raises(InvalidResultObservationError):
+            operation(completed.state, config)
+    with pytest.raises(InvalidResultObservationError):
+        select_result_mode(completed.state, config, selected_mode)
+
+    for previous, snapshot in (
+        (waiting, waiting_snapshot), (selected, selected_snapshot),
+    ):
+        assert previous.canonical_result is None
+        assert previous.machine_state.status is ExecutionStatus.RUNNING
+        assert previous.machine_state.control is snapshot.machine_state.control
+        assert previous.machine_state.result_state == snapshot.machine_state.result_state
+        assert dict(previous.machine_state.heap.cells) == dict(snapshot.machine_state.heap.cells)
+        assert previous.machine_state.stack.frames == snapshot.machine_state.stack.frames
+    assert waiting.machine_state.result_state.resolved_result_mode is None
+    assert selected.machine_state.result_state.resolved_result_mode is selected_mode

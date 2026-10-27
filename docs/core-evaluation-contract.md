@@ -1790,3 +1790,36 @@ canonical results and operational transitions.
 Result consumption does not modify earlier snapshots,
 allocate simulated heap objects or alter the evaluation
 strategy.
+
+### 15.6 B04.8 Integration and Acceptance
+
+B04.8 integrates passive canonical observation with the current
+Core CBV evaluator. Supported results are CanonicalInteger,
+CanonicalBoolean and OpaqueFunction; canonical values expose no
+runtime references or heap addresses. Unresolved references must
+reach WHNF through evaluator transitions before observation.
+
+WHNF_ONLY completes an already-WHNF result. ASK_AT_WHNF waits
+without transitions for an explicit, one-time ResultPolicy selection,
+preserving the original configuration. MATERIALIZE_COMPLETE_VALUE,
+whether fixed or selected, completes the currently supported atomic
+and opaque values; a result_node_limit of one is sufficient.
+
+Result-consumer transitions advance state_id and transition_index
+without advancing evaluator_transition_count. An already-WHNF result
+can therefore be consumed at an exhausted evaluator budget.
+run_batch remains evaluator-only; run_session_batch coordinates
+evaluation and observation within a total max_steps budget. Result
+consumption is deferred when that batch has no remaining capacity.
+
+Integration tests cover equivalent results, transition accounting
+and traces across large and single-step batches, including explicit
+ASK_AT_WHNF selection. FULL, EVENTS and METRICS_ONLY preserve semantic
+results and step accounting. Earlier snapshots and terminal states
+remain intact; completed results cannot be consumed again.
+
+Recursive constructor/list materialization, partial materialization
+and RESULT_LIMIT_REACHED handling remain for B06. This acceptance
+does not include non-strict evaluation, advanced metrics, replay or
+serialization, and is not the final B04 audit or evidence of
+experimental validity.

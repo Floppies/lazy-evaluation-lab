@@ -1737,3 +1737,56 @@ under `RESULT_MATERIALIZATION` and must respect both
 
 The current atomic implementation does not claim
 recursive materialization support.
+
+### 15.5 Session Batch Coordination and Limits
+
+`run_session_batch` coordinates Core evaluator execution
+and result-consumer transitions.
+
+The existing run_batch function remains evaluator-only
+and preserves its established WHNF_PENDING contract.
+
+The session coordinator:
+
+1. Executes a bounded evaluator batch.
+2. Detects the WHNF observation boundary.
+3. Waits if `ASK_AT_WHNF` has not been resolved.
+4. Otherwise invokes the selected result consumer,
+   provided the current batch has remaining capacity.
+5. Returns the resulting state, trace and stop reason.
+
+`max_steps` limits all transitions performed within one
+session batch, including result-consumer transitions.
+
+`executionStepLimit` counts only evaluator transitions.
+Administrative result-consumer transitions do not consume
+the evaluator budget.
+
+Batch usage is determined using `transitionIndex` differences,
+not the number of retained trace entries.
+
+This preserves correct accounting under `METRICS_ONLY`.
+
+An unresolved `ASK_AT_WHNF` selection produces `WHNF_PENDING`
+without additional transitions.
+
+If a batch reaches WHNF after exhausting its `max_steps`
+budget, result consumption is deferred to a later batch.
+
+For currently supported atomic and opaque values,
+complete-value materialization requires one canonical
+result node.
+
+The configured `resultNodeLimit` is therefore sufficient
+for these results, since its minimum valid value is one.
+
+Recursive materialization, partial materialization and
+`RESULT_LIMIT_REACHED` behavior remain pending until
+constructor support is implemented.
+
+Full and chunked executions must produce equivalent
+canonical results and operational transitions.
+
+Result consumption does not modify earlier snapshots,
+allocate simulated heap objects or alter the evaluation
+strategy.

@@ -1,6 +1,8 @@
 
 import pytest
 
+from dataclasses import replace
+
 from lazy_lab.engine.core_machine import (
     create_initial_core_state,
     run_batch,
@@ -30,8 +32,9 @@ from lazy_lab.runtime.transitions import (
     BatchStopReason,
     RuleId,
     TransitionKind,
+    TraceEntry,
 )
-
+from lazy_lab.engine.session_runner import run_session_batch
 
 def make_config(policy=ResultPolicy.WHNF_ONLY):
     return ExecutionConfig(
@@ -581,3 +584,239 @@ def test_materialization_cannot_complete_twice():
 
     assert completed.canonical_result == CanonicalInteger(42)
     assert evaluated.canonical_result is None
+
+
+def test_session_batch_matches_single_step_execution():
+    config = replace(
+        make_config(policy=ResultPolicy.WHNF_ONLY),
+        execution_step_limit=300,
+    )
+
+    initial = create_initial_core_state(
+        compile_source("main = seq (2 + 3) (10 * 4)"),
+        config,
+        session_id="session-batch-equivalence",
+    )
+
+    # Complete execution.
+    full = run_session_batch(
+        initial,
+        config,
+        max_steps=300,
+    )
+
+    # Same execution using one transition per batch.
+    current = initial
+    collected_trace = []
+
+    for _ in range(300):
+        batch = run_session_batch(
+            current,
+            config,
+            max_steps=1,
+        )
+
+        current = batch.state
+        collected_trace.extend(batch.trace)
+
+        if batch.stop_reason is BatchStopReason.TERMINAL_STATUS:
+            break
+
+        assert batch.stop_reason is BatchStopReason.BATCH_LIMIT
+    else:
+        pytest.fail("Chunked session did not complete")
+
+    assert current.canonical_result == CanonicalInteger(40)
+    assert current.canonical_result == full.state.canonical_result
+
+    assert current.machine_state.status is ExecutionStatus.COMPLETED
+    assert tuple(collected_trace) == full.trace
+
+    assert current.transition_index == full.state.transition_index
+    assert (
+        current.machine_state.evaluator_transition_count
+        == full.state.machine_state.evaluator_transition_count
+    )
+
+    assert (
+        current.machine_state.heap.current_slots
+        == full.state.machine_state.heap.current_slots
+    )
+
+    assert initial.transition_index == 0
+
+
+def test_session_batch_can_stop_before_result_consumption():
+    config = make_config(
+        policy=ResultPolicy.WHNF_ONLY
+    )
+
+    initial = create_initial_core_state(
+        compile_source("main = 42"),
+        config,
+        session_id="batch-boundary",
+    )
+
+    evaluated = run_batch(
+        initial,
+        config,
+        max_steps=100,
+    )
+
+    assert evaluated.stop_reason is BatchStopReason.WHNF_PENDING
+
+    evaluator_steps = (
+        evaluated.state.transition_index - initial.transition_index
+    )
+
+    # Consume exactly the evaluator's number of transitions.
+    partial = run_session_batch(
+        initial,
+        config,
+        max_steps=evaluator_steps,
+    )
+
+    assert partial.stop_reason is BatchStopReason.BATCH_LIMIT
+    assert partial.state.canonical_result is None
+    assert partial.state.machine_state.status is ExecutionStatus.RUNNING
+
+    # The next batch uses one administrative transition.
+    completed = run_session_batch(
+        partial.state,
+        config,
+        max_steps=1,
+    )
+
+    assert completed.stop_reason is BatchStopReason.TERMINAL_STATUS
+    assert completed.state.canonical_result == CanonicalInteger(42)
+
+    assert (
+        completed.state.machine_state.evaluator_transition_count
+        == partial.state.machine_state.evaluator_transition_count
+    )
+
+
+def test_session_batch_waits_for_result_selection():
+    config = make_config(
+        policy=ResultPolicy.ASK_AT_WHNF
+    )
+
+    initial = create_initial_core_state(
+        compile_source("main = 42"),
+        config,
+        session_id="session-ask",
+    )
+
+    waiting = run_session_batch(
+        initial,
+        config,
+        max_steps=100,
+    )
+
+    assert waiting.stop_reason is BatchStopReason.WHNF_PENDING
+
+    repeated = run_session_batch(
+        waiting.state,
+        config,
+        max_steps=100,
+    )
+
+    assert repeated.state is waiting.state
+    assert repeated.trace == ()
+    assert repeated.stop_reason is BatchStopReason.WHNF_PENDING
+
+    selection = select_result_mode(
+        waiting.state,
+        config,
+        ResultPolicy.WHNF_ONLY,
+    )
+
+    completed = run_session_batch(
+        selection.next_state,
+        config,
+        max_steps=1,
+    )
+
+    assert completed.stop_reason is BatchStopReason.TERMINAL_STATUS
+    assert completed.state.canonical_result == CanonicalInteger(42)
+
+    # Mode selection and completion are administrative.
+    assert (
+        completed.state.machine_state.evaluator_transition_count
+        == waiting.state.machine_state.evaluator_transition_count
+    )
+
+    assert (
+        completed.state.transition_index
+        == waiting.state.transition_index + 2
+    )
+
+
+def test_result_consumer_does_not_require_evaluator_budget():
+    config = make_config(
+        policy=ResultPolicy.WHNF_ONLY
+    )
+
+    initial = create_initial_core_state(
+        compile_source("main = 42"),
+        config,
+        session_id="consumer-budget",
+    )
+
+    evaluated = run_batch(
+        initial,
+        config,
+        max_steps=100,
+    ).state
+
+    used_evaluator_steps = (
+        evaluated.machine_state.evaluator_transition_count
+    )
+
+    limited_config = replace(
+        config,
+        execution_step_limit=used_evaluator_steps,
+    )
+
+    completed = run_session_batch(
+        evaluated,
+        limited_config,
+        max_steps=1,
+    )
+
+    assert completed.stop_reason is BatchStopReason.TERMINAL_STATUS
+
+    assert (
+        completed.state.machine_state.evaluator_transition_count
+        == used_evaluator_steps
+    )
+
+    assert (
+        completed.state.transition_index
+        == evaluated.transition_index + 1
+    )
+
+
+def test_atomic_materialization_respects_minimum_node_limit():
+    config = replace(
+        make_config(
+            policy=ResultPolicy.MATERIALIZE_COMPLETE_VALUE
+        ),
+        result_node_limit=1,
+    )
+
+    initial = create_initial_core_state(
+        compile_source("main = 42"),
+        config,
+        session_id="materialize-one-node",
+    )
+
+    result = run_session_batch(
+        initial,
+        config,
+        max_steps=100,
+    )
+
+    assert result.stop_reason is BatchStopReason.TERMINAL_STATUS
+    assert result.state.canonical_result == CanonicalInteger(42)
+    assert result.state.machine_state.status is ExecutionStatus.COMPLETED

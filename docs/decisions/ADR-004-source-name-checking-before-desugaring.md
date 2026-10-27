@@ -3,7 +3,7 @@
 - **Status:** Accepted; implemented in B02.9
 - **Recorded:** 2026-10-20
 - **Scope:** Surface v0.1 name diagnostics, compilation pipeline, Core name checking
-- **Related:** [Language specification, §9](../language-specification.md), [Name resolution](../name-resolution.md), [Core IR](../core-ir.md), [ADR-002 — Ordered pattern matching](ADR-002-pattern-matching.md), [B02.8 audit, F02](../audits/b02.8-audit.md)
+- **Related:** [Language specification, §9](../specifications/language-specification.md), [Name resolution](../name-resolution.md), [Core IR](../core-ir.md), [ADR-002 — Ordered pattern matching](ADR-002-pattern-matching.md), [B02.8 audit, F02](../audits/b02.8-audit.md)
 
 ## Context
 

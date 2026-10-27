@@ -1,7 +1,13 @@
 # Core Evaluation Contract
 
-**Status:** B04.1 draft  
-**Scope:** Core abstract machine, CBV, CBN and CBNeed.
+**Status:** B04 Core CBV evaluation and canonical observation implemented; audited with documented limitations.
+
+**Scope:** Implemented Core CBV subset; planned CBN and CBNeed contracts.
+
+This document retains the incremental B04 submilestone boundaries.
+Those boundaries describe the responsibility of each stage, not
+missing functionality in the completed B04 subset. See the
+[B04 audit](audits/b04-audit.md) for verification evidence and limitations.
 
 ## 1. Evaluation and Demand
 
@@ -26,7 +32,8 @@ Examples of WHNF include:
 - A partially applied primitive function.
 - A data constructor whose outermost form is known.
 
-Some of these forms are implemented in later milestones.
+Integers, booleans and function values are supported in B04.
+Executable constructors remain part of B06.
 
 WHNF is distinct from complete result materialization. Demand policies and constructor-field evaluation depend on the selected strategy.
 
@@ -44,7 +51,8 @@ A demand for WHNF may originate from:
 
 These contexts may require different continuation frames but share the abstract notion of WHNF demand.
 
-Their exact operational rules are defined in subsequent B04–B06 milestones.
+The implemented CBV rules are described below. Non-strict demand
+and constructor matching remain part of B05, B06 and B11.
 
 ## 4. Result Observation
 
@@ -58,7 +66,10 @@ When the root result is ready for observation, the result consumer applies the c
 
 Result observation must not silently alter the evaluation strategy.
 
-The B03 `WHNF_PENDING` batch stop reason is provisional and does not guarantee that the referenced value is already in WHNF.
+In B03, `WHNF_PENDING` was a provisional boundary without a WHNF
+guarantee. The current evaluator returns it only for a recognized
+WHNF reference in a root `Return` with an empty stack. It leaves
+the machine `RUNNING` until the result consumer completes observation.
 
 Canonical result observation and terminal-state transitions are completed in B04. Recursive materialization of lists requires B06 support.
 
@@ -144,8 +155,8 @@ to the result-observation boundary, not automatic completion.
 
 ### 6.5 Deferred Frames
 
-Additional continuation families are introduced with the
-operational rules that require them:
+The initial B04.1 continuation plan assigned support to the
+following operational milestones:
 
 - Primitive operands and conditionals: B04.5.
 - Recursive local initialization: B04.6.
@@ -154,8 +165,9 @@ operational rules that require them:
 - Thunk updates and sharing: B05.
 - Constructors and pattern matching: B06.
 
-No operational support for these deferred constructs is implied
-by this contract.
+The B04 entries are now implemented as described below; saturated
+seq uses the existing application continuations. Thunk updates,
+sharing, constructors and pattern matching remain deferred.
 
 
 ## 7. Evaluation Strategies and Binding Contracts
@@ -522,7 +534,7 @@ by the evaluator, it must operate on isolated successor-state
 storage.
 
 Pending global RHS representations and initialization
-transitions are implemented in subsequent B04.2 subtasks.
+transitions are described in Sections 9.5 and 9.6.
 
 ### 9.5 Installing Global RHS Representations
 
@@ -594,9 +606,9 @@ evaluated through the ordinary Core machine rules.
 For a program with N global bindings, initialization
 requires N + 2 machine transitions.
 
-The current milestone does not yet implement variable
-forcing or demand-driven evaluation of pending global
-RHS expressions.
+These B04.2 initialization rules do not themselves force variables
+or evaluate pending global RHS expressions. Demand-driven evaluation
+is implemented separately by the B04.4 rules in Section 11.7.
 
 ## 10. Free Variables and Closure Capture
 
@@ -635,7 +647,7 @@ Global and predefined bindings are resolved through the
 global lexical environment instead.
 
 Selective local capture and runtime closure allocation
-are completed in subsequent B04.3 subtasks.
+are implemented as described in Sections 10.3 and 10.4.
 
 ### 10.3 Selective Local Capture
 
@@ -760,13 +772,13 @@ closure allocation:
 - Independent execution-state snapshots.
 - Integration tests with compiled nested lambdas.
 
-This infrastructure does not yet implement operational
-function application.
+The B04.3 capture/allocation stage does not itself apply functions.
 
 Evaluation of `CoreLam` and `CoreApp`, continuation handling,
-and strategy-specific argument demand belong to B04.4.
+and CBV argument demand are implemented in B04.4 (Section 11).
 
-Local recursive binding initialization remains in B04.6.
+Local recursive binding initialization is implemented in B04.6
+(Section 13). Non-strict argument demand remains deferred.
 
 ## 11. Initial Core Expression Evaluation
 
@@ -822,14 +834,15 @@ Heap mutations take place on isolated successor storage.
 
 Variable lookup and lambda evaluation are supported.
 
-Function application, pending-global forcing, and continuation
-resumption are not yet implemented by these rules.
+Variable and lambda rules do not themselves apply functions,
+force pending globals or resume continuations. Those operations
+are implemented by the separate rules in Sections 11.5-11.8.
 
 A root `Return` referring to `PendingGlobal` must not be
 interpreted as a value already in WHNF.
 
-Canonical root observation and forcing are completed by
-subsequent B04 rules.
+WHNF forcing is implemented in Section 11.7; canonical root
+observation is implemented in Section 15.
 
 ### 11.5 Application Evaluation
 
@@ -870,8 +883,8 @@ A subsequent continuation rule must demand the function
 reference to WHNF if required and then proceed according
 to the selected evaluation strategy.
 
-Continuation consumption and WHNF forcing are introduced
-in subsequent B04.4 subtasks.
+Continuation consumption and WHNF forcing are implemented
+as described in Sections 11.7 and 11.8.
 
 A root result-observation boundary must not consume or
 discard pending application continuations.
@@ -905,8 +918,9 @@ performed by these rules.
 A root `Return(reference)` is not ready for result observation
 until the reference is recognized as WHNF.
 
-Function application continuations are not yet consumed by
-these demand rules. Their integration follows in B04.4.4.
+These demand rules preserve pending application continuations.
+Their consumption is implemented by the separate B04.4.4
+application rules in Section 11.8.
 
 Full CBNeed sharing, thunk updates and blackhole detection
 remain responsibilities of B05.
@@ -1179,10 +1193,10 @@ to resume from an existing ExecutionState.
 Primitive evaluation and conditional selection do not
 introduce thunk memoization or sharing updates.
 
-B04.5 does not implement local recursive bindings,
-predefined seq application or canonical result observation.
-
-These responsibilities remain in subsequent milestones.
+The B04.5 primitive/conditional stage does not itself implement
+local recursive bindings, predefined seq application or canonical
+result observation. These are implemented in B04.6-B04.8,
+respectively (Sections 13-15).
 
 ## 13. Local Recursive Bindings
 
@@ -1216,7 +1230,7 @@ objects to separately allocated results, including closures
 with captured references.
 
 Strict RHS initialization and recursive dependency handling
-are implemented in subsequent B04.6 subtasks.
+are implemented as described in Sections 13.2-13.4.
 
 CBN and CBNeed local bindings remain unsupported by this
 CBV-specific rule.
@@ -1605,9 +1619,9 @@ fabricated canonical values.
 The canonical value schema will be extended with constructors
 when constructor evaluation becomes available in B06.
 
-This subsection defines only passive conversion.
-ResultPolicy handling, result-consumer transitions and terminal
-statuses belong to subsequent B04.8 subtasks.
+This subsection defines only passive conversion. ResultPolicy
+handling, result-consumer transitions and completion are implemented
+separately as described in Sections 15.2-15.5.
 
 ### 15.2 WHNF_ONLY Result Consumption
 
@@ -1642,12 +1656,13 @@ references, allocate heap objects or perform updates.
 
 A completed result cannot be observed again.
 
-Until the batch and controller integration is implemented,
-run_batch continues to stop at `WHNF_PENDING`. The caller
-explicitly invokes consume_whnf_result to finalize the result.
+run_batch remains evaluator-only and stops at `WHNF_PENDING`.
+The caller may invoke consume_whnf_result explicitly, or use
+run_session_batch to coordinate evaluation and consumption
+as described in Section 15.5.
 
 `ASK_AT_WHNF` and `MATERIALIZE_COMPLETE_VALUE` are implemented
-in subsequent B04.8 subtasks.
+as described in Sections 15.3 and 15.4.
 
 ### 15.3 ASK_AT_WHNF Result Policy
 

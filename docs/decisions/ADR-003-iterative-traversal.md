@@ -3,7 +3,7 @@
 - **Status:** Accepted for B02.8 traversal and validation paths
 - **Recorded:** 2026-10-19
 - **Scope:** Surface validation, Surface-to-Core lowering, Core validation and future deep-tree tooling
-- **Related:** [Language specification](../language-specification.md), [B02.8 audit](../audits/b02.8-audit.md)
+- **Related:** [Language specification](../specifications/language-specification.md), [B02.8 audit](../audits/b02.8-audit.md)
 
 ## Context
 

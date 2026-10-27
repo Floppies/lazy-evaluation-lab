@@ -1,4 +1,4 @@
-"""Minimal small-step transitions for Core literals."""
+"""Small-step Core CBV evaluation with explicit WHNF demand and continuations."""
 
 from __future__ import annotations
 

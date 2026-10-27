@@ -1,6 +1,12 @@
 # Runtime Infrastructure — B03
 
-**Status:** B03 infrastructure only; not a complete evaluator.
+**Status at B03 completion:** Infrastructure only; not a complete evaluator.
+
+This guide retains the B03 infrastructure boundary. Descriptions of
+application, forcing and observation as deferred refer to that stage.
+For the implemented B04 Core CBV evaluator and canonical observation,
+see the [Core evaluation contract](core-evaluation-contract.md) and
+[B04 audit](audits/b04-audit.md).
 
 ## 1. Runtime References and Lexical Environments
 

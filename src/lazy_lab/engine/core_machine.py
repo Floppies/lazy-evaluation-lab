@@ -18,6 +18,10 @@ from lazy_lab.core.nodes import (
     CoreLetRec,
 )
 from lazy_lab.semantics.predefined import PREDEFINED_IDENTIFIERS
+from lazy_lab.runtime.predefined import (
+    PredefinedFunction,
+    PartialPredefinedFunction,
+)
 from lazy_lab.runtime.control import ( 
     EvaluateCore,
     Return,
@@ -701,7 +705,7 @@ def _reference_is_whnf(
 
     return isinstance(
         value,
-        (Closure, PredefinedFunction),
+        (Closure, PredefinedFunction, PartialPredefinedFunction),
     )
 
 def _advance_force(
@@ -731,7 +735,10 @@ def _advance_force(
             RuleId.CORE_FORCE_INDIRECTION,
         )
 
-    if isinstance(value, (Closure, PredefinedFunction)):
+    if isinstance(
+        value,
+        (Closure, PredefinedFunction, PartialPredefinedFunction)
+    ):
         return (
             replace(machine, control=Return(reference)),
             RuleId.CORE_FORCE_FUNCTION_WHNF,
@@ -1148,12 +1155,18 @@ def _resume_apply_function(
 
     function_value = machine.heap.get(reference).value
 
-    if isinstance(function_value, PredefinedFunction):
+    # Applying a partial predefined function would saturate seq.
+    # This will be implemented in B04.7.3.
+    if isinstance(function_value, PartialPredefinedFunction):
         raise UnsupportedTransitionError(
-            "Predefined function application is not implemented yet"
+            "Saturated predefined function application "
+            "is not implemented yet"
         )
 
-    if not isinstance(function_value, Closure):
+    if not isinstance(
+        function_value,
+        (Closure, PredefinedFunction),
+    ):
         raise TypeError("Cannot apply a non-function value")
 
     # The function is ready. CBV evaluates its argument
@@ -1215,6 +1228,36 @@ def _resume_apply_argument(
         function_reference
     ).value
 
+    if isinstance(function_value, PredefinedFunction):
+        # B04.7.2 only supports the first, non-saturating
+        # application of a predefined function.
+        if function_value.arity <= 1:
+            raise UnsupportedTransitionError(
+                "Saturated predefined function application "
+                "is not implemented yet"
+            )
+
+        partial = PartialPredefinedFunction(
+            name=function_value.name,
+            applied_arguments=(reference,),
+        )
+
+        partial_reference = machine.heap.allocate(
+            partial,
+            allocated_slots=partial.required_slots,
+        )
+
+        machine.stack.pop()
+
+        return (
+            replace(
+                machine,
+                local_environment=frame.return_environment,
+                control=Return(partial_reference),
+            ),
+            RuleId.CORE_PREDEFINED_PARTIAL_APPLY,
+        )
+    
     if not isinstance(function_value, Closure):
         raise InvalidMachineStateError(
             "Applied function is no longer a closure"

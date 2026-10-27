@@ -1432,3 +1432,40 @@ Saturated applications do not produce
 
 The operational rules for application and saturation
 are defined in subsequent B04.7 sections.
+
+### 14.2 CBV Partial Application of Predefined Functions
+
+Under CBV, predefined functions use the ordinary CoreApp
+evaluation path.
+
+The function position is demanded to WHNF before the
+argument is evaluated.
+
+The argument is evaluated in the original call-site
+environment and explicitly demanded to WHNF.
+
+When applying an unapplied predefined function without
+saturating its arity, CORE_PREDEFINED_PARTIAL_APPLY:
+
+1. Creates a PartialPredefinedFunction retaining the
+   evaluated argument reference.
+2. Allocates the partial application with its exact
+   required abstract slot capacity.
+3. Removes the argument continuation.
+4. Restores the caller's lexical environment.
+5. Returns the reference to the partial application.
+
+A partially applied predefined function is a valid WHNF
+function value.
+
+Partial applications do not evaluate the predefined
+function's saturated behavior.
+
+In B04.7.2, applying an additional argument that would
+saturate seq remains unsupported.
+
+Saturated application and its explicit demand rules are
+implemented in B04.7.3.
+
+CBN and CBNeed application are not implemented by these
+CBV-specific transitions.

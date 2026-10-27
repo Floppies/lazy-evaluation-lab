@@ -67,6 +67,8 @@ class RuleId(StrEnum):
     CORE_LETREC_REQUIRE_VALUE_WHNF = "CORE_LETREC_REQUIRE_VALUE_WHNF"
     CORE_LETREC_STORE_VALUE = "CORE_LETREC_STORE_VALUE"
 
+    # Predefined functions
+    CORE_PREDEFINED_PARTIAL_APPLY = "CORE_PREDEFINED_PARTIAL_APPLY"
 
 @dataclass(frozen=True, slots=True)
 class TransitionResult:

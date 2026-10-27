@@ -24,6 +24,7 @@ from lazy_lab.runtime.heap import Heap, Indirection, Reserved
 from lazy_lab.runtime.references import (
     ImmediateBoolean,
     ImmediateInteger,
+    HeapReference,
 )
 from lazy_lab.runtime.stack import (
     Stack,
@@ -59,7 +60,10 @@ from lazy_lab.runtime.closures import (
     allocate_closure,
 )
 from lazy_lab.runtime.global_bindings import PendingGlobal
-from lazy_lab.runtime.predefined import PredefinedFunction
+from lazy_lab.runtime.predefined import (
+    PredefinedFunction,
+    PartialPredefinedFunction,
+)
 
 
 def make_config(
@@ -1724,3 +1728,124 @@ def test_cbv_letrec_chunked_execution_matches_full_batch():
     assert right.local_environment is right.global_environment
 
     assert initial.transition_index == 0
+
+
+def test_cbv_seq_partial_application_reaches_whnf():
+    program = compile_source(
+        "main = seq (2 + 3)"
+    )
+    config = make_config(strategy=Strategy.CBV)
+
+    initial = create_initial_core_state(
+        program,
+        config,
+        session_id="seq-partial",
+    )
+
+    result = run_batch(initial, config, max_steps=100)
+    machine = result.state.machine_state
+
+    assert result.stop_reason is BatchStopReason.WHNF_PENDING
+    assert machine.stack.depth == 0
+    assert machine.local_environment is machine.global_environment
+
+    assert isinstance(machine.control, Return)
+
+    reference = machine.control.reference
+    assert isinstance(reference, HeapReference)
+
+    partial = machine.heap.get(reference).value
+
+    assert isinstance(partial, PartialPredefinedFunction)
+    assert partial.name == "seq"
+    assert partial.applied_arguments == (ImmediateInteger(5),)
+    assert partial.remaining_arity == 1
+
+    rules = [entry.rule_id for entry in result.trace]
+
+    assert RuleId.CORE_PREDEFINED_PARTIAL_APPLY in rules
+    assert RuleId.CORE_PRIM_EXECUTE in rules
+    assert RuleId.CORE_CBV_REQUIRE_ARGUMENT_WHNF in rules
+
+
+def test_cbv_seq_partial_application_accepts_closure():
+    program = compile_source(
+        r"main = seq (\x -> x)"
+    )
+    config = make_config(strategy=Strategy.CBV)
+
+    initial = create_initial_core_state(
+        program,
+        config,
+        session_id="seq-closure",
+    )
+
+    result = run_batch(initial, config, max_steps=100)
+    machine = result.state.machine_state
+
+    assert result.stop_reason is BatchStopReason.WHNF_PENDING
+
+    partial_ref = machine.control.reference
+    partial = machine.heap.get(partial_ref).value
+
+    assert isinstance(partial, PartialPredefinedFunction)
+
+    argument_ref = partial.applied_arguments[0]
+    assert isinstance(argument_ref, HeapReference)
+
+    assert isinstance(
+        machine.heap.get(argument_ref).value,
+        Closure,
+    )
+
+    assert partial.required_slots == 2
+    assert machine.stack.depth == 0
+
+
+def test_cbv_seq_partial_application_is_strict():
+    program = compile_source(
+        "loop = loop\n"
+        "main = seq loop"
+    )
+
+    config = replace(
+        make_config(strategy=Strategy.CBV),
+        execution_step_limit=35,
+    )
+
+    initial = create_initial_core_state(
+        program,
+        config,
+        session_id="seq-strict",
+    )
+
+    result = run_batch(initial, config, max_steps=100)
+
+    assert result.stop_reason is BatchStopReason.EVALUATOR_BUDGET
+
+    rules = [entry.rule_id for entry in result.trace]
+
+    assert RuleId.CORE_CBV_EVAL_ARGUMENT in rules
+    assert RuleId.CORE_PREDEFINED_PARTIAL_APPLY not in rules
+
+
+def test_saturated_seq_remains_unsupported_until_b0473():
+    program = compile_source(
+        "main = seq 10 20"
+    )
+    config = make_config(strategy=Strategy.CBV)
+
+    initial = create_initial_core_state(
+        program,
+        config,
+        session_id="seq-saturation-boundary",
+    )
+
+    with pytest.raises(
+        UnsupportedTransitionError,
+        match="Saturated predefined",
+    ):
+        run_batch(initial, config, max_steps=100)
+
+    assert initial.transition_index == 0
+    assert initial.machine_state.heap.current_slots == 0

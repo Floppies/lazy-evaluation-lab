@@ -465,8 +465,7 @@ eligible for future garbage collection.
 This representation avoids retaining oversized thunk
 allocations for as long as the updated anchor remains live.
 
-Exact payload allocation and slot-accounting rules are
-defined in B05.2. Garbage collection remains deferred to B12.
+Every CBNeed deferred computation uses a stable one-slot identity anchor and a separately allocated payload.
 
 #### Reentrant Demand
 
@@ -489,6 +488,76 @@ bindings must participate in memoizing evaluation.
 
 CBN does not inherit memoization from this contract.
 Its non-sharing behavior remains part of B11.
+
+#### B05.2.1 Structural Thunk Representation
+
+The Call-by-Need runtime introduces three immutable heap
+object representations:
+
+- `ThunkPayload` stores a deferred Core expression and a
+  standalone environment of captured local references.
+- `PendingThunk` is a one-slot identity anchor referring
+  to a thunk payload awaiting evaluation.
+- `EvaluatingThunk` is a one-slot identity anchor referring
+  to a payload whose evaluation is in progress.
+
+The abstract allocation cost of a ThunkPayload is one
+base slot plus one slot per captured local reference.
+
+The Core AST is retained by reference; its host memory is
+not counted node by node in the simulated heap.
+
+The anchor representations each require one abstract slot,
+independently of the payload size.
+
+Payloads and anchors are immutable. Their lifecycle will
+be implemented through controlled heap-cell replacement
+in subsequent B05 tasks.
+
+The structural existence of these classes does not imply
+operational Call-by-Need evaluation, memoization or
+blackhole detection.
+
+Selective capture, allocation helpers, forcing and
+sharing are implemented in later B05 subtasks.
+
+#### B05.2.2 Selective Thunk Capture
+
+Thunk payloads use the existing iterative Core free-variable
+analysis to determine their lexical dependencies.
+
+Capture selection is shared with function closures through
+the runtime capture-selection module.
+
+For each free variable, the runtime determines whether the
+binding is resolved in a local lexical scope above the
+global environment boundary.
+
+Only free local bindings are captured.
+
+Global and predefined bindings are resolved separately
+through the runtime global environment.
+
+Captured bindings preserve their original RuntimeRef
+identity. Capture does not force, dereference, copy, or
+evaluate referenced values.
+
+The resulting captured environment is standalone and
+contains no parent environment chain.
+
+When a thunk is evaluated, its saved local references
+will be layered over the global environment to reconstruct
+the correct lexical scope.
+
+Selection respects nested lambda parameters, recursive
+let bindings, shadowing, and Core case binders.
+
+Capture selection is deterministic and does not allocate
+simulated heap objects. Heap allocation belongs to B05.2.3.
+
+This structural support does not yet implement thunk
+forcing or memoization.
+
 
 ### 7.11 B05 Thunk Update Continuations
 

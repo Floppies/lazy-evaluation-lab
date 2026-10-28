@@ -10,6 +10,7 @@ from lazy_lab.core.nodes import CoreExpr
 from .environment import Environment
 from .heap import HeapObject
 from .references import HeapReference
+from .captures import select_free_local_names
 
 
 @dataclass(frozen=True, slots=True, eq=False)
@@ -77,3 +78,32 @@ class EvaluatingThunk(HeapObject):
     @property
     def required_slots(self) -> int:
         return 1
+
+
+def capture_thunk_payload(
+    expression: CoreExpr,
+    definition_environment: Environment,
+    global_environment: Environment,
+) -> ThunkPayload:
+    """Build a deferred payload with minimal local captures.
+
+    The expression is not evaluated or forced.
+
+    Global and predefined references remain available through
+    the global environment when evaluation starts.
+    """
+    free_local_names = select_free_local_names(
+        expression,
+        definition_environment,
+        global_environment,
+    )
+
+    captures = {
+        name: definition_environment.lookup(name)
+        for name in free_local_names
+    }
+
+    return ThunkPayload(
+        expression=expression,
+        captured_locals=Environment(captures),
+    )

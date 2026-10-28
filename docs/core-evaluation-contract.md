@@ -396,6 +396,88 @@ inherit CBNeed updates implicitly.
 Executable constructor inspection and recursive value
 materialization remain outside B05.
 
+### 7.10 B05 Call-by-Need Thunk Lifecycle
+
+This section specifies the semantic lifecycle of Call-by-Need
+thunks. Concrete runtime classes and transition rules are
+introduced incrementally during B05.
+
+#### Thunk States
+
+A deferred computation has three conceptual lifecycle states:
+
+- PENDING: The computation has not been entered.
+- EVALUATING: The computation is currently being evaluated.
+- UPDATED: The computation has reached WHNF and its result
+  is available for sharing.
+
+UPDATED need not be represented by a distinct thunk object.
+It may be represented by replacing the thunk's heap contents
+with an Indirection to the resulting runtime reference.
+
+#### First Demand
+
+The first demand of a PENDING thunk initiates evaluation in
+its captured lexical environment.
+
+The thunk becomes EVALUATING before its expression is
+evaluated. The machine must preserve the continuation needed
+to install the result when WHNF is reached.
+
+Merely looking up, passing, or capturing a thunk reference
+does not enter the thunk.
+
+#### Update and Sharing
+
+A successful evaluation updates the original thunk address
+to refer to its WHNF result.
+
+The update must preserve the original ObjectId and allocated
+slot capacity.
+
+Subsequent demands through the original reference must
+reuse the updated result without reevaluating the expression.
+
+A thunk must not be updated with an unresolved result that
+leads back to the same active computation.
+
+#### Heap Representation
+
+Thunk payloads are immutable.
+
+Lifecycle transitions replace heap-cell contents in an
+isolated successor state. They must never mutate payloads
+shared with previous execution snapshots.
+
+Recursive local bindings retain the stable one-slot anchors
+defined by ADR-006. Separately allocated thunk objects may
+be reached through these anchors when required by their
+allocation capacity.
+
+The concrete thunk slot-accounting policy is defined in B05.2.
+
+#### Reentrant Demand
+
+Demanding an EVALUATING thunk constitutes a blackhole
+condition.
+
+The operational detection and failure-reporting rules are
+implemented in B05.7.
+
+Exhausting an execution budget is not itself evidence of a
+blackhole or divergence.
+
+#### Strategy Compatibility
+
+The existing CBV evaluation and global initialization
+semantics must remain unchanged.
+
+Under CBNeed, global computations and local deferred
+bindings must participate in memoizing evaluation.
+
+CBN does not inherit memoization from this contract.
+Its non-sharing behavior remains part of B11.
+
 ## 8. Operational Invariants and Acceptance Criteria
 
 ### 8.1 Transition Invariants

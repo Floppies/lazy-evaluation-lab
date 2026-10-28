@@ -323,6 +323,79 @@ list-program execution.
 Dynamic strategy equivalence and experimental cost comparisons
 must be verified independently from these static contracts.
 
+### 7.9 B05 Call-by-Need Demand Contexts
+
+This section defines the demand behavior required by B05.
+It is an operational contract, not an implementation-status
+claim.
+
+#### Evaluation and WHNF Demand
+
+Evaluating a Core expression and demanding the resulting
+runtime reference to WHNF are distinct operations.
+
+`EvaluateCore(expression)` may produce a reference to a
+deferred computation without executing that computation.
+
+`Return(reference)` passes an existing runtime reference
+to the current continuation. It does not guarantee WHNF.
+
+`Force(reference)` requests WHNF and must preserve sharing
+when the reference designates a Call-by-Need thunk.
+
+#### Demand Contexts
+
+Under CBNeed, WHNF is required by:
+
+- Function position before application.
+- Strict primitive arithmetic and comparison operands.
+- Conditional predicates before branch selection.
+- The first argument of a saturated predefined `seq`.
+- Root result observation and other explicit observation
+  requests requiring WHNF.
+
+Ordinary function arguments are not evaluated solely
+because they are applied to a function.
+
+Local recursive bindings are established without strictly
+evaluating their right-hand sides.
+
+Global bindings remain demand-driven. Under CBNeed,
+demanded global computations must participate in
+memoizing evaluation.
+
+#### Non-Demand Operations
+
+The following operations must not independently force a
+deferred computation:
+
+- Resolving a variable to its runtime reference.
+- Capturing a reference in a closure.
+- Binding an ordinary function parameter.
+- Constructing a deferred local binding.
+- Creating a partial application of predefined `seq`.
+- Returning a reference to an enclosing continuation.
+
+These operations may be followed by an explicit demand
+introduced by the surrounding evaluation context.
+
+#### Strategy Independence
+
+Demand contexts are determined by the semantics of Core
+constructs and predefined functions, not by tracing,
+metrics, or result presentation.
+
+CBV retains strict argument evaluation and strict local
+value initialization.
+
+CBNeed introduces deferred evaluation and memoization.
+
+CBN remains a separate B11 implementation and must not
+inherit CBNeed updates implicitly.
+
+Executable constructor inspection and recursive value
+materialization remain outside B05.
+
 ## 8. Operational Invariants and Acceptance Criteria
 
 ### 8.1 Transition Invariants

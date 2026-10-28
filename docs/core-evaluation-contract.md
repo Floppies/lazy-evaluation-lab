@@ -454,7 +454,19 @@ defined by ADR-006. Separately allocated thunk objects may
 be reached through these anchors when required by their
 allocation capacity.
 
-The concrete thunk slot-accounting policy is defined in B05.2.
+Thunk identity may be stored in a stable one-slot anchor,
+while the expression and captured references are kept in
+a separately allocated payload object.
+
+After a successful update, the anchor contains an Indirection
+to the WHNF result. The payload may become unreachable and
+eligible for future garbage collection.
+
+This representation avoids retaining oversized thunk
+allocations for as long as the updated anchor remains live.
+
+Exact payload allocation and slot-accounting rules are
+defined in B05.2. Garbage collection remains deferred to B12.
 
 #### Reentrant Demand
 
@@ -477,6 +489,96 @@ bindings must participate in memoizing evaluation.
 
 CBN does not inherit memoization from this contract.
 Its non-sharing behavior remains part of B11.
+
+### 7.11 B05 Thunk Update Continuations
+
+#### UpdateFrame Responsibility
+
+Call-by-Need evaluation uses an explicit UpdateFrame to
+preserve the identity of a thunk undergoing evaluation.
+
+The frame retains:
+
+- The stable thunk reference to update.
+- The lexical environment to restore after completion.
+- The continuation stage distinguishing an initial RHS
+  return from a completed WHNF demand.
+
+The frame does not own or mutate the thunk payload.
+
+#### Entering a Thunk
+
+Forcing a PENDING thunk marks its identity cell as
+EVALUATING before starting its expression.
+
+The machine pushes an `UpdateFrame` and evaluates the RHS
+in the thunk's saved lexical environment.
+
+All changes occur in an isolated successor state.
+
+#### Return and WHNF Verification
+
+Returning from a thunk RHS does not imply that its
+reference is already in WHNF.
+
+If necessary, UpdateFrame requests explicit forcing and
+waits for the resulting WHNF reference.
+
+The thunk must not be updated before this requirement
+has been satisfied.
+
+#### Successful Update
+
+After reaching WHNF, the machine replaces the thunk's
+stable identity cell with an Indirection to the result.
+
+The original ObjectId and allocated capacity remain
+unchanged.
+
+The machine then removes UpdateFrame, restores the saved
+caller environment and returns the resulting reference.
+
+Nested thunk evaluations use ordinary LIFO continuation
+ordering and must preserve their enclosing frames.
+
+#### Globals and Aliases
+
+Under CBNeed, pending global RHS computations participate
+in the same memoizing update protocol.
+
+Existing CBV global demand behavior remains unchanged.
+
+An update targets the identity cell of the demanded thunk.
+Other aliases do not require eager rewriting or
+indirection-path compression.
+
+#### Blackholes and Execution Limits
+
+A demand of an already EVALUATING thunk is a reentrant
+demand and must be detected as a blackhole.
+
+The exact error/status integration is deferred to B05.7.
+
+A suspended execution with an active UpdateFrame remains
+resumable. Reaching the execution-step budget is not
+equivalent to detecting a blackhole.
+
+Failed transitions must not partially mutate their input
+ExecutionState.
+
+#### Implementation Boundaries
+
+Concrete UpdateFrame types, RuleIds and forcing transitions
+are introduced during B05.4.
+
+Heap updates and observable sharing are implemented in B05.5.
+
+Recursive local and global binding integration belongs to
+B05.6.
+
+Advanced metrics and garbage collection are deferred to
+B07 and B12 respectively.
+
 
 ## 8. Operational Invariants and Acceptance Criteria
 

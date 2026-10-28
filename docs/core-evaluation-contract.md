@@ -579,6 +579,60 @@ B05.6.
 Advanced metrics and garbage collection are deferred to
 B07 and B12 respectively.
 
+### 7.12 B05 Reference Programs and Acceptance
+
+The B05 implementation must preserve the operational contracts
+defined in Sections 7.9–7.11.
+
+#### Reference Scenarios
+
+The Call-by-Need regression suite must cover:
+
+- Unused function arguments are not evaluated.
+- Repeated demand of an argument shares its WHNF result.
+- Unused local recursive bindings remain unevaluated.
+- Mutually dependent local bindings resolve lexically.
+- Repeated demand of a global RHS shares its result.
+- Reentrant demand of an EVALUATING thunk detects a blackhole.
+- Partial application of seq does not demand its first argument.
+- Saturated seq demands its first argument to WHNF.
+- Interrupted thunk evaluation resumes deterministically.
+- Comparable terminating CBV and CBNeed programs produce
+  equivalent canonical observable results.
+
+#### Identity and Allocation
+
+Each deferred computation has a stable one-slot identity
+anchor and a separately allocated payload.
+
+The payload retains the expression and the necessary lexical
+references for evaluation.
+
+Thunk lifecycle changes replace immutable anchor contents
+without changing ObjectId or allocated slot capacity.
+
+After a successful update, the anchor contains an
+Indirection to the WHNF result. The former payload may
+become unreachable.
+
+Payload allocation and capture-slot accounting are specified
+during B05.2.
+
+#### Operational Verification
+
+Tests must verify more than final result equality.
+
+They must inspect appropriate RuleIds, thunk entry and update
+behavior, reference identity, heap invariants, preserved
+historical snapshots and resumed execution.
+
+The same thunk must not evaluate its RHS more than once
+after successful memoization.
+
+CBV regression tests must continue to pass.
+
+B05 does not claim complete constructor evaluation, CBN,
+garbage collection or comparable experimental metrics.
 
 ## 8. Operational Invariants and Acceptance Criteria
 

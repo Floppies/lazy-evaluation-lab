@@ -65,8 +65,8 @@ The descriptions follow the **Gantt B** plan and its milestone acceptance criter
 | B04.8 | Canonical Result Observation | Completed |
 | B05 | Call by Need and Sharing | In progress |
 | B05.1 | CBNeed Operational Contract | Completed |
-| B05.2 | Thunk Representation and Allocation | Closing review |
-| B05.3 | Lazy Function Application | Planned |
+| B05.2 | Thunk Representation and Allocation | Completed |
+| B05.3 | Lazy Function Application | In progress |
 | B05.4 | Forcing and Update Continuations | Planned |
 | B05.5 | Memoization and Sharing | Planned |
 | B05.6 | Global and Recursive Bindings | Planned |

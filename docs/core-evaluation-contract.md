@@ -1400,6 +1400,25 @@ Under CBNeed, ordinary closure application evaluates and
 demands the function position to WHNF before binding its
 argument.
 
+The function position must reach WHNF before any argument
+thunk is allocated.
+
+Function-position evaluation may involve lexical references,
+heap Indirections, and demand-driven global bindings.
+
+Once the function reference has reached WHNF, applying a
+non-callable value raises an explicit runtime error without
+allocating the argument thunk.
+
+If the function position refers to a pending CBNeed thunk,
+its value must be obtained through the thunk forcing protocol
+defined in Section 7.11.
+
+Operational forcing of PendingThunk is introduced in B05.4.
+Until that support is available, such a demand remains an
+explicitly unsupported execution path rather than a
+non-callable-value error.
+
 Once the function has been resolved to a Closure, the
 argument Core expression is not evaluated or forced.
 

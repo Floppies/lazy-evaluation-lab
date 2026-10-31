@@ -1,13 +1,16 @@
 
 """Integration tests for Call-by-Need closure application."""
 
+import pytest
+
 from lazy_lab.pipeline import compile_source
 from lazy_lab.engine.core_machine import (
     create_initial_core_state,
     run_batch,
     step,
+    UnsupportedTransitionError,
 )
-from lazy_lab.runtime.control import Return
+from lazy_lab.runtime.control import Return, Force
 from lazy_lab.runtime.heap import Indirection
 from lazy_lab.runtime.references import (
     HeapReference,
@@ -27,6 +30,12 @@ from lazy_lab.runtime.state import (
 from lazy_lab.runtime.thunks import PendingThunk, ThunkPayload
 from lazy_lab.runtime.transitions import BatchStopReason, RuleId
 from lazy_lab.runtime.closures import Closure
+from lazy_lab.core.nodes import (
+    CoreApp,
+    CoreBool,
+    CoreInt,
+    CorePrimOp,
+)
 
 
 def make_cbneed_config():
@@ -567,3 +576,161 @@ def test_curried_application_does_not_force_unused_arguments():
     assert len(pending_thunks) == 2
     assert machine.stack.depth == 0
     assert machine.local_environment is machine.global_environment
+
+
+def test_cbneed_applies_function_through_global_alias():
+    program = compile_source(
+        "constant x = 42\n"
+        "alias = constant\n"
+        "main = alias (1 + True)"
+    )
+    config = make_cbneed_config()
+
+    initial = create_initial_core_state(
+        program,
+        config,
+        session_id="cbneed-global-function-alias",
+    )
+
+    result = run_batch(initial, config, max_steps=100)
+
+    assert result.stop_reason is BatchStopReason.WHNF_PENDING
+    assert result.state.machine_state.control == Return(
+        ImmediateInteger(42)
+    )
+
+    rules = [entry.rule_id for entry in result.trace]
+
+    assert RuleId.CORE_APPLY_REQUIRE_FUNCTION_WHNF in rules
+    assert RuleId.CORE_FORCE_GLOBAL_RHS in rules
+    assert RuleId.CORE_CBNEED_ENTER_BODY in rules
+
+    # Only the function position was demanded.
+    assert RuleId.CORE_EVAL_PRIMITIVE_START not in rules
+    assert RuleId.CORE_PRIM_EXECUTE not in rules
+
+    assert result.state.machine_state.stack.depth == 0
+
+
+def test_cbneed_pending_function_position_requires_thunk_forcing():
+    program = compile_source(
+        r"main = (\f -> f (1 + True)) (\x -> 42)"
+    )
+    config = make_cbneed_config()
+
+    current = create_initial_core_state(
+        program,
+        config,
+        session_id="cbneed-pending-function-position",
+    )
+
+    for _ in range(100):
+        machine = current.machine_state
+        control = machine.control
+
+        if (
+            isinstance(control, Force)
+            and isinstance(control.reference, HeapReference)
+            and isinstance(
+                machine.heap.get(control.reference).value,
+                PendingThunk,
+            )
+        ):
+            break
+
+        current = step(current, config).next_state
+
+    else:
+        pytest.fail("No pending function thunk demand reached")
+
+    machine = current.machine_state
+    function_ref = machine.control.reference
+
+    assert isinstance(machine.stack.peek(), ApplyFunctionFrame)
+    assert machine.stack.peek().awaiting_whnf
+
+    # The function has not yet been entered.
+    assert isinstance(
+        machine.heap.get(function_ref).value,
+        PendingThunk,
+    )
+
+    previous_id = current.state_id
+    previous_slots = machine.heap.current_slots
+
+    # Temporary B05.4 boundary: not a non-function error.
+    with pytest.raises(
+        UnsupportedTransitionError,
+        match="PendingThunk",
+    ):
+        step(current, config)
+
+    # Rejected transitions do not mutate the input state.
+    assert current.state_id == previous_id
+    assert machine.heap.current_slots == previous_slots
+    assert isinstance(
+        machine.heap.get(function_ref).value,
+        PendingThunk,
+    )
+
+
+def test_cbneed_non_callable_fails_before_argument_allocation():
+    program = compile_source("")
+    config = make_cbneed_config()
+
+    expression = CoreApp(
+        CoreInt(42),
+        CorePrimOp(
+            "+",
+            (CoreInt(1), CoreBool(True)),
+        ),
+    )
+
+    initial = create_initial_core_state(
+        program,
+        config,
+        session_id="cbneed-invalid-function",
+        entry=expression,
+    )
+
+    current = initial
+    rules = []
+
+    for _ in range(80):
+        before_id = current.state_id
+        before_slots = current.machine_state.heap.current_slots
+
+        try:
+            transition = step(current, config)
+
+        except TypeError as exc:
+            assert "Cannot apply a non-function value" in str(exc)
+
+            # The failed transition did not mutate the input.
+            assert current.state_id == before_id
+            assert current.machine_state.heap.current_slots == (
+                before_slots
+            )
+            break
+
+        rules.append(transition.rule_id)
+        current = transition.next_state
+
+    else:
+        pytest.fail("Invalid application was not rejected")
+
+    heap_objects = [
+        cell.value
+        for cell in current.machine_state.heap.cells.values()
+    ]
+
+    assert not any(
+        isinstance(value, (PendingThunk, ThunkPayload))
+        for value in heap_objects
+    )
+
+    assert RuleId.CORE_EVAL_PRIMITIVE_START not in rules
+    assert RuleId.CORE_CBNEED_ENTER_BODY not in rules
+
+    assert initial.state_id == 0
+    assert initial.machine_state.heap.current_slots == 0

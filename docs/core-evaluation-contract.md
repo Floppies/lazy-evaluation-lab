@@ -558,6 +558,49 @@ simulated heap objects. Heap allocation belongs to B05.2.3.
 This structural support does not yet implement thunk
 forcing or memoization.
 
+#### B05.2.3 Thunk Heap Allocation
+
+Call-by-Need deferred computations use separate heap objects
+for their stable identity anchors and evaluation payloads.
+
+The `allocate_thunk` helper constructs the payload using
+selective local capture and installs a PendingThunk anchor.
+
+For fresh thunks, the runtime allocates the payload first
+and then a new one-slot anchor. The returned reference
+always identifies the anchor, never the payload.
+
+For recursive local bindings, the runtime may provide an
+existing one-slot Reserved anchor. The helper allocates the
+payload and replaces the Reserved contents with PendingThunk,
+preserving the anchor ObjectId and allocated capacity.
+
+The abstract allocation cost of a fresh thunk is:
+
+    2 + number_of_captured_local_references
+
+A preallocated one-slot anchor contributes one of these slots
+before initialization.
+
+Payloads are allocated with exactly their required capacity.
+Anchors always occupy exactly one abstract heap slot.
+
+Expected validation errors are detected before new heap
+allocations are performed.
+
+The helper operates on a caller-owned heap. During evaluation,
+the caller must use an isolated successor-state heap.
+
+No expression is evaluated, forced, or memoized during
+allocation.
+
+Previously initialized anchors cannot be initialized again.
+
+Global PendingGlobal conversion is handled separately in B05.6.
+
+Payload reclamation is deferred to the future garbage collector.
+Until then, unreachable payloads remain allocated in the
+simulated heap and are included in its slot accounting.
 
 ### 7.11 B05 Thunk Update Continuations
 

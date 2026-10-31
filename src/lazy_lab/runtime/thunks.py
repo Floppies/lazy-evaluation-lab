@@ -8,7 +8,7 @@ from dataclasses import dataclass, field
 from lazy_lab.core.nodes import CoreExpr
 
 from .environment import Environment
-from .heap import HeapObject
+from .heap import HeapObject, Heap, Reserved
 from .references import HeapReference
 from .captures import select_free_local_names
 
@@ -107,3 +107,68 @@ def capture_thunk_payload(
         expression=expression,
         captured_locals=Environment(captures),
     )
+
+def allocate_thunk(
+    heap: Heap,
+    expression: CoreExpr,
+    definition_environment: Environment,
+    global_environment: Environment,
+    *,
+    anchor_reference: HeapReference | None = None,
+) -> HeapReference:
+    """Allocate a deferred computation with a stable identity anchor.
+
+    If anchor_reference is None, allocate a fresh one-slot anchor.
+
+    Otherwise, initialize an existing one-slot Reserved anchor.
+    The payload is always allocated separately.
+
+    The caller must supply an owned heap or an isolated
+    successor-state heap.
+    """
+    if not isinstance(heap, Heap):
+        raise TypeError("Expected a Heap")
+
+    # Build and validate the payload before changing the heap.
+    payload = capture_thunk_payload(
+        expression,
+        definition_environment,
+        global_environment,
+    )
+
+    # Validate preallocated anchors before any allocation.
+    if anchor_reference is not None:
+        if not isinstance(anchor_reference, HeapReference):
+            raise TypeError(
+                "anchor_reference must be a HeapReference"
+            )
+
+        anchor_cell = heap.get(anchor_reference)
+
+        if not isinstance(anchor_cell.value, Reserved):
+            raise ValueError(
+                "Preallocated thunk anchor must be Reserved"
+            )
+
+        if anchor_cell.allocated_slots != 1:
+            raise ValueError(
+                "Preallocated thunk anchor must occupy one slot"
+            )
+
+    payload_reference = heap.allocate(
+        payload,
+        allocated_slots=payload.required_slots,
+    )
+
+    pending = PendingThunk(
+        payload_reference=payload_reference,
+    )
+
+    if anchor_reference is None:
+        return heap.allocate(
+            pending,
+            allocated_slots=pending.required_slots,
+        )
+
+    heap.replace(anchor_reference, pending)
+    return anchor_reference

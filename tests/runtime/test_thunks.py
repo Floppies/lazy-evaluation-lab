@@ -20,11 +20,13 @@ from lazy_lab.runtime.references import (
     ImmediateInteger,
     ObjectId,
 )
+from lazy_lab.runtime.heap import Heap, Reserved, Indirection
 from lazy_lab.runtime.thunks import (
     EvaluatingThunk,
     PendingThunk,
     ThunkPayload,
     capture_thunk_payload,
+    allocate_thunk,
 )
 
 
@@ -390,3 +392,207 @@ def test_thunk_capture_handles_deep_core_expression():
         local_ref
     )
     assert payload.required_slots == 2
+
+
+def test_allocate_fresh_thunk_creates_payload_and_anchor():
+    heap = Heap()
+    globals_env = Environment()
+    expression = CoreInt(42)
+
+    anchor_ref = allocate_thunk(
+        heap,
+        expression,
+        globals_env,
+        globals_env,
+    )
+
+    # Payload is allocated first, followed by the anchor.
+    assert anchor_ref == HeapReference(ObjectId(1))
+
+    anchor_cell = heap.get(anchor_ref)
+    assert isinstance(anchor_cell.value, PendingThunk)
+    assert anchor_cell.allocated_slots == 1
+
+    payload_ref = anchor_cell.value.payload_reference
+    payload_cell = heap.get(payload_ref)
+
+    assert payload_ref == HeapReference(ObjectId(0))
+    assert isinstance(payload_cell.value, ThunkPayload)
+    assert payload_cell.value.expression is expression
+    assert payload_cell.allocated_slots == 1
+
+    assert heap.current_slots == 2
+    assert heap.next_object_id == 2
+
+
+def test_allocate_thunk_counts_only_local_captures():
+    heap = Heap()
+    local_ref = heap.allocate(Reserved(), allocated_slots=1)
+
+    globals_env = Environment({
+        "global_value": ImmediateInteger(100),
+    })
+
+    local_env = globals_env.extend({
+        "x": local_ref,
+        "unused": ImmediateInteger(99),
+    })
+
+    expression = CorePrimOp(
+        "+",
+        (CoreVar("x"), CoreVar("global_value")),
+    )
+
+    anchor_ref = allocate_thunk(
+        heap,
+        expression,
+        local_env,
+        globals_env,
+    )
+
+    anchor = heap.get(anchor_ref).value
+    assert isinstance(anchor, PendingThunk)
+
+    payload_cell = heap.get(anchor.payload_reference)
+    payload = payload_cell.value
+
+    assert isinstance(payload, ThunkPayload)
+    assert set(payload.captured_locals.bindings) == {"x"}
+    assert payload.captured_locals.lookup("x") is local_ref
+
+    assert payload.required_slots == 2
+    assert payload_cell.allocated_slots == 2
+    assert heap.get(anchor_ref).allocated_slots == 1
+
+    # One existing slot + two payload slots + one anchor slot.
+    assert heap.current_slots == 4
+
+
+def test_initialize_preallocated_recursive_anchor():
+    heap = Heap()
+    anchor_ref = heap.allocate(Reserved(), allocated_slots=1)
+
+    globals_env = Environment()
+    recursive_env = globals_env.extend({
+        "x": anchor_ref,
+    })
+
+    returned_ref = allocate_thunk(
+        heap,
+        CoreVar("x"),
+        recursive_env,
+        globals_env,
+        anchor_reference=anchor_ref,
+    )
+
+    assert returned_ref is anchor_ref
+    assert returned_ref.object_id == ObjectId(0)
+
+    anchor_cell = heap.get(anchor_ref)
+    assert isinstance(anchor_cell.value, PendingThunk)
+    assert anchor_cell.allocated_slots == 1
+
+    payload_ref = anchor_cell.value.payload_reference
+    payload_cell = heap.get(payload_ref)
+
+    assert isinstance(payload_cell.value, ThunkPayload)
+    assert payload_cell.value.captured_locals.lookup("x") is (
+        anchor_ref
+    )
+
+    assert payload_cell.allocated_slots == 2
+    assert heap.current_slots == 3
+    assert heap.next_object_id == 2
+
+
+def test_invalid_capture_does_not_allocate():
+    heap = Heap()
+    globals_env = Environment()
+    local_env = globals_env.extend({})
+
+    with pytest.raises(UnboundNameError):
+        allocate_thunk(
+            heap,
+            CoreVar("missing"),
+            local_env,
+            globals_env,
+        )
+
+    assert heap.current_slots == 0
+    assert heap.next_object_id == 0
+
+
+def test_reject_non_reserved_preallocated_anchor():
+    heap = Heap()
+    globals_env = Environment()
+    anchor_ref = heap.allocate(
+        Indirection(ImmediateInteger(42)),
+        allocated_slots=1,
+    )
+
+    before_slots = heap.current_slots
+    before_id = heap.next_object_id
+
+    with pytest.raises(ValueError, match="Reserved"):
+        allocate_thunk(
+            heap,
+            CoreInt(7),
+            globals_env,
+            globals_env,
+            anchor_reference=anchor_ref,
+        )
+
+    assert heap.current_slots == before_slots
+    assert heap.next_object_id == before_id
+    assert isinstance(heap.get(anchor_ref).value, Indirection)
+
+
+def test_reject_oversized_preallocated_anchor():
+    heap = Heap()
+    globals_env = Environment()
+    anchor_ref = heap.allocate(
+        Reserved(),
+        allocated_slots=3,
+    )
+
+    with pytest.raises(ValueError, match="one slot"):
+        allocate_thunk(
+            heap,
+            CoreInt(7),
+            globals_env,
+            globals_env,
+            anchor_reference=anchor_ref,
+        )
+
+    assert isinstance(heap.get(anchor_ref).value, Reserved)
+    assert heap.current_slots == 3
+    assert heap.next_object_id == 1
+
+
+def test_preallocated_anchor_cannot_be_initialized_twice():
+    heap = Heap()
+    anchor_ref = heap.allocate(Reserved(), allocated_slots=1)
+    globals_env = Environment()
+
+    allocate_thunk(
+        heap,
+        CoreInt(10),
+        globals_env,
+        globals_env,
+        anchor_reference=anchor_ref,
+    )
+
+    previous_slots = heap.current_slots
+    previous_id = heap.next_object_id
+
+    with pytest.raises(ValueError, match="Reserved"):
+        allocate_thunk(
+            heap,
+            CoreInt(20),
+            globals_env,
+            globals_env,
+            anchor_reference=anchor_ref,
+        )
+
+    assert heap.current_slots == previous_slots
+    assert heap.next_object_id == previous_id

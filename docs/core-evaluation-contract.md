@@ -1425,6 +1425,25 @@ allocates the thunk on the isolated successor heap.
 The argument remains PENDING until an evaluation context
 explicitly demands its value.
 
+A deferred argument captures its free local references from
+the original call-site environment retained by
+ApplyFunctionFrame, before the callee's parameter binding
+is introduced.
+
+The callee's definition-site environment is used to execute
+its closure body, not to resolve free variables in the
+argument expression.
+
+Consequently, parameter shadowing in the callee does not
+change the lexical meaning of an argument. Captured references
+retain their original identity, including references to other
+pending thunks.
+
+Nested lazy applications may therefore construct thunks
+whose payloads refer to other thunks without forcing them.
+Global and predefined identifiers are resolved separately
+and are not copied into the captured-local environment.
+
 CBV continues to evaluate and force arguments strictly.
 
 Call-by-Name application remains part of B11.

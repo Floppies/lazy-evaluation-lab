@@ -323,7 +323,7 @@ list-program execution.
 Dynamic strategy equivalence and experimental cost comparisons
 must be verified independently from these static contracts.
 
-### 7.9 B05 Call-by-Need Demand Contexts
+### 7.9 Call-by-Need Demand Contexts
 
 This section defines the demand behavior required by B05.
 It is an operational contract, not an implementation-status
@@ -396,7 +396,7 @@ inherit CBNeed updates implicitly.
 Executable constructor inspection and recursive value
 materialization remain outside B05.
 
-### 7.10 B05 Call-by-Need Thunk Lifecycle
+### 7.10 Call-by-Need Thunk Lifecycle
 
 This section specifies the semantic lifecycle of Call-by-Need
 thunks. Concrete runtime classes and transition rules are
@@ -454,18 +454,18 @@ defined by ADR-006. Separately allocated thunk objects may
 be reached through these anchors when required by their
 allocation capacity.
 
-Thunk identity may be stored in a stable one-slot anchor,
-while the expression and captured references are kept in
-a separately allocated payload object.
+Every CBNeed deferred computation uses a stable one-slot identity anchor and a separately allocated payload.
+
+The anchor preserves the shared identity of the computation.
+The payload stores its Core expression and captured local
+references.
+
+Recursive local bindings may initialize an existing one-slot
+Reserved anchor, as established by ADR-006.
 
 After a successful update, the anchor contains an Indirection
-to the WHNF result. The payload may become unreachable and
-eligible for future garbage collection.
-
-This representation avoids retaining oversized thunk
-allocations for as long as the updated anchor remains live.
-
-Every CBNeed deferred computation uses a stable one-slot identity anchor and a separately allocated payload.
+to the WHNF result. The former payload may become unreachable
+and eligible for future garbage collection.
 
 #### Reentrant Demand
 
@@ -489,7 +489,7 @@ bindings must participate in memoizing evaluation.
 CBN does not inherit memoization from this contract.
 Its non-sharing behavior remains part of B11.
 
-#### B05.2.1 Structural Thunk Representation
+#### Structural Thunk Representation
 
 The Call-by-Need runtime introduces three immutable heap
 object representations:
@@ -521,7 +521,7 @@ blackhole detection.
 Selective capture, allocation helpers, forcing and
 sharing are implemented in later B05 subtasks.
 
-#### B05.2.2 Selective Thunk Capture
+#### Selective Thunk Capture
 
 Thunk payloads use the existing iterative Core free-variable
 analysis to determine their lexical dependencies.
@@ -558,7 +558,7 @@ simulated heap objects. Heap allocation belongs to B05.2.3.
 This structural support does not yet implement thunk
 forcing or memoization.
 
-#### B05.2.3 Thunk Heap Allocation
+#### Thunk Heap Allocation
 
 Call-by-Need deferred computations use separate heap objects
 for their stable identity anchors and evaluation payloads.
@@ -602,7 +602,7 @@ Payload reclamation is deferred to the future garbage collector.
 Until then, unreachable payloads remain allocated in the
 simulated heap and are included in its slot accounting.
 
-#### Thunk Identity and Snapshot Preservation
+##### Thunk Identity and Snapshot Preservation
 
 Multiple environment bindings may reference the same thunk
 anchor. Such aliases preserve shared identity without copying
@@ -636,7 +636,7 @@ No operational forcing, automatic lifecycle transition,
 indirection-path compression, or garbage collection is
 implemented by this structural contract.
 
-### 7.11 B05 Thunk Update Continuations
+### 7.11 Thunk Update Continuations
 
 #### UpdateFrame Responsibility
 
@@ -725,7 +725,7 @@ B05.6.
 Advanced metrics and garbage collection are deferred to
 B07 and B12 respectively.
 
-### 7.12 B05 Reference Programs and Acceptance
+### 7.12 Reference Programs and Acceptance
 
 The B05 implementation must preserve the operational contracts
 defined in Sections 7.9–7.11.

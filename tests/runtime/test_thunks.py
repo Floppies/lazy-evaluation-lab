@@ -596,3 +596,259 @@ def test_preallocated_anchor_cannot_be_initialized_twice():
 
     assert heap.current_slots == previous_slots
     assert heap.next_object_id == previous_id
+
+
+def test_thunk_lifecycle_preserves_historical_snapshots():
+    globals_env = Environment()
+    initial_heap = Heap()
+
+    anchor_ref = allocate_thunk(
+        initial_heap,
+        CoreInt(42),
+        globals_env,
+        globals_env,
+    )
+
+    initial_cell = initial_heap.get(anchor_ref)
+    pending = initial_cell.value
+
+    assert isinstance(pending, PendingThunk)
+    payload_ref = pending.payload_reference
+
+    # Transition to EVALUATING in an isolated heap.
+    evaluating_heap = initial_heap.clone()
+    evaluating_heap.replace(
+        anchor_ref,
+        EvaluatingThunk(payload_ref),
+    )
+
+    # Transition to UPDATED in another isolated heap.
+    updated_heap = evaluating_heap.clone()
+    updated_heap.replace(
+        anchor_ref,
+        Indirection(ImmediateInteger(42)),
+    )
+
+    assert isinstance(
+        initial_heap.get(anchor_ref).value,
+        PendingThunk,
+    )
+    assert isinstance(
+        evaluating_heap.get(anchor_ref).value,
+        EvaluatingThunk,
+    )
+    assert updated_heap.get(anchor_ref).value == (
+        Indirection(ImmediateInteger(42))
+    )
+
+    # Every snapshot retains the same stable address.
+    for heap in (
+        initial_heap,
+        evaluating_heap,
+        updated_heap,
+    ):
+        cell = heap.get(anchor_ref)
+
+        assert cell.object_id == anchor_ref.object_id
+        assert cell.allocated_slots == 1
+        assert heap.current_slots == 2
+        assert heap.next_object_id == 2
+
+    # Cloning shares immutable payload objects safely.
+    assert (
+        initial_heap.get(payload_ref)
+        is evaluating_heap.get(payload_ref)
+    )
+    assert (
+        evaluating_heap.get(payload_ref)
+        is updated_heap.get(payload_ref)
+    )
+
+    # Replacing one cell never changes an older snapshot.
+    assert initial_heap.get(anchor_ref) is initial_cell
+
+
+def test_multiple_local_bindings_share_thunk_identity():
+    globals_env = Environment()
+    initial_heap = Heap()
+
+    anchor_ref = allocate_thunk(
+        initial_heap,
+        CoreInt(21),
+        globals_env,
+        globals_env,
+    )
+
+    local_env = globals_env.extend({
+        "x": anchor_ref,
+        "y": anchor_ref,
+    })
+
+    assert local_env.lookup("x") is anchor_ref
+    assert local_env.lookup("y") is anchor_ref
+
+    updated_heap = initial_heap.clone()
+    updated_heap.replace(
+        anchor_ref,
+        Indirection(ImmediateInteger(21)),
+    )
+
+    x_cell = updated_heap.get(local_env.lookup("x"))
+    y_cell = updated_heap.get(local_env.lookup("y"))
+
+    assert x_cell is y_cell
+    assert x_cell.value == Indirection(
+        ImmediateInteger(21)
+    )
+
+    # The original snapshot still contains a pending thunk.
+    assert isinstance(
+        initial_heap.get(anchor_ref).value,
+        PendingThunk,
+    )
+
+
+def test_indirection_aliases_preserve_original_targets():
+    globals_env = Environment()
+    initial_heap = Heap()
+
+    anchor_ref = allocate_thunk(
+        initial_heap,
+        CoreInt(42),
+        globals_env,
+        globals_env,
+    )
+
+    first_alias = initial_heap.allocate(
+        Indirection(anchor_ref),
+        allocated_slots=1,
+    )
+
+    second_alias = initial_heap.allocate(
+        Indirection(first_alias),
+        allocated_slots=1,
+    )
+
+    updated_heap = initial_heap.clone()
+    updated_heap.replace(
+        anchor_ref,
+        Indirection(ImmediateInteger(42)),
+    )
+
+    # Updating the thunk must not rewrite its aliases.
+    assert updated_heap.get(first_alias).value == (
+        Indirection(anchor_ref)
+    )
+    assert updated_heap.get(second_alias).value == (
+        Indirection(first_alias)
+    )
+
+    assert updated_heap.get(anchor_ref).value == (
+        Indirection(ImmediateInteger(42))
+    )
+
+    # Historical data is still unchanged.
+    assert isinstance(
+        initial_heap.get(anchor_ref).value,
+        PendingThunk,
+    )
+
+
+def test_updated_anchor_retains_slots_until_gc():
+    globals_env = Environment()
+
+    local_env = globals_env.extend({
+        "x": ImmediateInteger(10),
+        "y": ImmediateInteger(20),
+        "z": ImmediateInteger(30),
+    })
+
+    expression = CorePrimOp(
+        "+",
+        (
+            CoreVar("x"),
+            CorePrimOp(
+                "+",
+                (CoreVar("y"), CoreVar("z")),
+            ),
+        ),
+    )
+
+    initial_heap = Heap()
+
+    anchor_ref = allocate_thunk(
+        initial_heap,
+        expression,
+        local_env,
+        globals_env,
+    )
+
+    pending = initial_heap.get(anchor_ref).value
+    assert isinstance(pending, PendingThunk)
+
+    payload_ref = pending.payload_reference
+    payload_cell = initial_heap.get(payload_ref)
+
+    assert isinstance(payload_cell.value, ThunkPayload)
+    assert payload_cell.allocated_slots == 4
+    assert initial_heap.get(anchor_ref).allocated_slots == 1
+
+    # Four payload slots plus one anchor slot.
+    assert initial_heap.current_slots == 5
+
+    updated_heap = initial_heap.clone()
+    updated_heap.replace(
+        anchor_ref,
+        Indirection(ImmediateInteger(60)),
+    )
+
+    assert updated_heap.current_slots == 5
+    assert updated_heap.next_object_id == 2
+
+    # The payload is still allocated, even though the
+    # updated anchor no longer points to it.
+    assert updated_heap.get(payload_ref) is payload_cell
+
+    # Historical snapshots retain the old anchor.
+    assert isinstance(
+        initial_heap.get(anchor_ref).value,
+        PendingThunk,
+    )
+
+
+def test_anchor_cannot_be_replaced_by_oversized_payload():
+    globals_env = Environment()
+
+    local_env = globals_env.extend({
+        "x": ImmediateInteger(10),
+    })
+
+    heap = Heap()
+
+    anchor_ref = allocate_thunk(
+        heap,
+        CoreVar("x"),
+        local_env,
+        globals_env,
+    )
+
+    pending = heap.get(anchor_ref).value
+    assert isinstance(pending, PendingThunk)
+
+    payload = heap.get(pending.payload_reference).value
+    assert isinstance(payload, ThunkPayload)
+    assert payload.required_slots == 2
+
+    successor = heap.clone()
+    original_cell = successor.get(anchor_ref)
+
+    with pytest.raises(
+        ValueError,
+        match="Replacement exceeds reserved allocation size",
+    ):
+        successor.replace(anchor_ref, payload)
+
+    assert successor.get(anchor_ref) is original_cell
+    assert successor.get(anchor_ref).allocated_slots == 1
+    assert successor.current_slots == heap.current_slots
+    assert successor.next_object_id == heap.next_object_id

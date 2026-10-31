@@ -602,6 +602,40 @@ Payload reclamation is deferred to the future garbage collector.
 Until then, unreachable payloads remain allocated in the
 simulated heap and are included in its slot accounting.
 
+#### Thunk Identity and Snapshot Preservation
+
+Multiple environment bindings may reference the same thunk
+anchor. Such aliases preserve shared identity without copying
+the deferred computation.
+
+Additional heap Indirections may also refer to a thunk anchor.
+Updating the anchor does not eagerly rewrite those Indirections
+or perform path compression.
+
+Thunk lifecycle changes are represented by replacing the
+anchor contents in an isolated successor heap:
+
+- PendingThunk: the deferred computation has not started.
+- EvaluatingThunk: the deferred computation is in progress.
+- Indirection: the computation has been updated to its WHNF
+  result.
+
+Each replacement preserves the anchor ObjectId and its
+one-slot allocation.
+
+Heap snapshots retain their historical cell contents. Since
+thunk payloads and anchors are immutable, successor snapshots
+may safely share unchanged heap objects.
+
+An updated anchor no longer references its former payload.
+However, the payload remains allocated until garbage collection
+reclaims it, provided it is unreachable from the roots that
+must be preserved.
+
+No operational forcing, automatic lifecycle transition,
+indirection-path compression, or garbage collection is
+implemented by this structural contract.
+
 ### 7.11 B05 Thunk Update Continuations
 
 #### UpdateFrame Responsibility

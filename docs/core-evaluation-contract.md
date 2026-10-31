@@ -1444,6 +1444,33 @@ whose payloads refer to other thunks without forcing them.
 Global and predefined identifiers are resolved separately
 and are not copied into the captured-local environment.
 
+When a CBNeed closure body evaluates to another lambda,
+the resulting Closure captures the required free local
+references from its definition-site environment.
+
+These captures may include references to pending argument
+thunks created by earlier applications.
+
+Restoring the caller's lexical environment does not
+invalidate or evaluate references retained by a returned
+Closure. The returned function remains in WHNF regardless
+of whether its captured thunks have been forced.
+
+Curried applications preserve the identity of captured
+thunk references across successive function applications.
+
+Each ordinary argument is deferred independently. A
+later argument is not evaluated merely because an earlier
+application returned a function.
+
+Only references required by a nested lambda are captured.
+Unused parameters are not retained by that lambda unless
+needed by its expression.
+
+Evaluating or observing a returned function does not
+force its captured thunks. Demanding a captured thunk
+remains the responsibility of the forcing rules in B05.4.
+
 CBV continues to evaluate and force arguments strictly.
 
 Call-by-Name application remains part of B11.

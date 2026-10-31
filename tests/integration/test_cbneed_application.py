@@ -26,6 +26,7 @@ from lazy_lab.runtime.state import (
 )
 from lazy_lab.runtime.thunks import PendingThunk, ThunkPayload
 from lazy_lab.runtime.transitions import BatchStopReason, RuleId
+from lazy_lab.runtime.closures import Closure
 
 
 def make_cbneed_config():
@@ -406,3 +407,163 @@ def test_nested_lazy_argument_captures_two_thunk_references():
     assert result.state.machine_state.control == Return(
         ImmediateInteger(42)
     )
+
+
+def test_returned_closure_preserves_pending_thunk_capture():
+    program = compile_source(
+        r"main = (\x -> \y -> x) (1 + True)"
+    )
+    config = make_cbneed_config()
+
+    initial = create_initial_core_state(
+        program,
+        config,
+        session_id="cbneed-returned-closure",
+    )
+
+    result = run_batch(
+        initial,
+        config,
+        max_steps=100,
+    )
+
+    assert result.stop_reason is BatchStopReason.WHNF_PENDING
+
+    machine = result.state.machine_state
+    assert isinstance(machine.control, Return)
+
+    closure_ref = machine.control.reference
+    assert isinstance(closure_ref, HeapReference)
+
+    closure = machine.heap.get(closure_ref).value
+    assert isinstance(closure, Closure)
+
+    # The returned closure captures the original thunk.
+    assert set(closure.captured_locals.bindings) == {"x"}
+
+    x_ref = closure.captured_locals.lookup("x")
+    assert isinstance(x_ref, HeapReference)
+
+    x_anchor = machine.heap.get(x_ref).value
+    assert isinstance(x_anchor, PendingThunk)
+
+    # The caller's environment has been restored.
+    assert machine.local_environment is machine.global_environment
+    assert machine.stack.depth == 0
+
+    # The invalid primitive argument was never evaluated.
+    rules = [entry.rule_id for entry in result.trace]
+    assert RuleId.CORE_EVAL_PRIMITIVE_START not in rules
+    assert RuleId.CORE_PRIM_EXECUTE not in rules
+
+
+def test_curried_application_preserves_original_capture():
+    program = compile_source(
+        r"main = (\x -> \y -> \z -> x) (1 + True) (2 + False)"
+    )
+    config = make_cbneed_config()
+
+    initial = create_initial_core_state(
+        program,
+        config,
+        session_id="cbneed-curried-returned-closure",
+    )
+
+    # First application binds x to a pending thunk.
+    _, first_state = advance_to_next_cbneed_body(
+        initial,
+        config,
+    )
+
+    x_ref = first_state.machine_state.local_environment.lookup(
+        "x"
+    )
+
+    # Second application binds y to another pending thunk.
+    _, second_state = advance_to_next_cbneed_body(
+        first_state,
+        config,
+    )
+
+    y_ref = second_state.machine_state.local_environment.lookup(
+        "y"
+    )
+
+    assert x_ref != y_ref
+
+    # The second lambda still has access to the original x.
+    assert (
+        second_state.machine_state.local_environment.lookup("x")
+        is x_ref
+    )
+
+    result = run_batch(
+        second_state,
+        config,
+        max_steps=100,
+    )
+
+    assert result.stop_reason is BatchStopReason.WHNF_PENDING
+
+    machine = result.state.machine_state
+    assert isinstance(machine.control, Return)
+
+    returned_ref = machine.control.reference
+    assert isinstance(returned_ref, HeapReference)
+
+    returned_closure = machine.heap.get(returned_ref).value
+    assert isinstance(returned_closure, Closure)
+
+    # The final \z -> x needs x but not y.
+    assert set(returned_closure.captured_locals.bindings) == {
+        "x"
+    }
+    assert returned_closure.captured_locals.lookup("x") is x_ref
+
+    assert isinstance(machine.heap.get(x_ref).value, PendingThunk)
+    assert isinstance(machine.heap.get(y_ref).value, PendingThunk)
+
+    assert machine.stack.depth == 0
+    assert machine.local_environment is machine.global_environment
+
+
+def test_curried_application_does_not_force_unused_arguments():
+    program = compile_source(
+        r"main = (\x -> \y -> 42) (1 + True) (2 + False)"
+    )
+    config = make_cbneed_config()
+
+    initial = create_initial_core_state(
+        program,
+        config,
+        session_id="cbneed-curried-unused-arguments",
+    )
+
+    result = run_batch(
+        initial,
+        config,
+        max_steps=100,
+    )
+
+    assert result.stop_reason is BatchStopReason.WHNF_PENDING
+    assert result.state.machine_state.control == Return(
+        ImmediateInteger(42)
+    )
+
+    rules = [entry.rule_id for entry in result.trace]
+
+    assert rules.count(RuleId.CORE_CBNEED_ENTER_BODY) == 2
+    assert RuleId.CORE_EVAL_PRIMITIVE_START not in rules
+    assert RuleId.CORE_PRIM_EXECUTE not in rules
+
+    machine = result.state.machine_state
+
+    pending_thunks = [
+        cell
+        for cell in machine.heap.cells.values()
+        if isinstance(cell.value, PendingThunk)
+    ]
+
+    assert len(pending_thunks) == 2
+    assert machine.stack.depth == 0
+    assert machine.local_environment is machine.global_environment

@@ -2,6 +2,7 @@
 """Integration tests for Call-by-Need closure application."""
 
 import pytest
+from dataclasses import replace
 
 from lazy_lab.pipeline import compile_source
 from lazy_lab.engine.core_machine import (
@@ -734,3 +735,165 @@ def test_cbneed_non_callable_fails_before_argument_allocation():
 
     assert initial.state_id == 0
     assert initial.machine_state.heap.current_slots == 0
+
+
+def test_cbneed_complete_and_single_step_batches_are_equivalent():
+    program = compile_source(
+        r"main = (\x -> \y -> 42) (1 + True) (2 + False)"
+    )
+    config = make_cbneed_config()
+
+    initial = create_initial_core_state(
+        program,
+        config,
+        session_id="cbneed-batch-equivalence",
+    )
+
+    # Uninterrupted execution.
+    full = run_batch(initial, config, max_steps=150)
+
+    # Resume the same program one transition at a time.
+    current = initial
+    chunked_rules = []
+
+    for _ in range(150):
+        batch = run_batch(
+            current,
+            config,
+            max_steps=1,
+        )
+
+        chunked_rules.extend(
+            entry.rule_id for entry in batch.trace
+        )
+        current = batch.state
+
+        if batch.stop_reason is BatchStopReason.WHNF_PENDING:
+            break
+    else:
+        raise AssertionError("Chunked execution did not finish")
+
+    assert full.stop_reason is BatchStopReason.WHNF_PENDING
+
+    full_machine = full.state.machine_state
+    chunked_machine = current.machine_state
+
+    expected_result = Return(ImmediateInteger(42))
+
+    assert full_machine.control == expected_result
+    assert chunked_machine.control == expected_result
+
+    full_rules = [
+        entry.rule_id for entry in full.trace
+    ]
+
+    assert full_rules == chunked_rules
+
+    assert full_rules.count(
+        RuleId.CORE_CBNEED_ENTER_BODY
+    ) == 2
+
+    assert RuleId.CORE_EVAL_PRIMITIVE_START not in full_rules
+    assert RuleId.CORE_CBV_EVAL_ARGUMENT not in full_rules
+
+    assert (
+        full_machine.evaluator_transition_count
+        == chunked_machine.evaluator_transition_count
+    )
+    assert full.state.transition_index == current.transition_index
+
+    assert (
+        full_machine.heap.current_slots
+        == chunked_machine.heap.current_slots
+    )
+    assert (
+        full_machine.heap.next_object_id
+        == chunked_machine.heap.next_object_id
+    )
+
+    # Compare structural allocation signatures.
+    # ThunkPayload intentionally does not use structural equality.
+    def heap_signature(machine):
+        return tuple(
+            (
+                cell.object_id,
+                type(cell.value).__name__,
+                cell.allocated_slots,
+            )
+            for cell in machine.heap.cells.values()
+        )
+
+    assert heap_signature(full_machine) == heap_signature(
+        chunked_machine
+    )
+
+    assert full_machine.stack.depth == 0
+    assert chunked_machine.stack.depth == 0
+
+    assert (
+        full_machine.local_environment
+        is full_machine.global_environment
+    )
+    assert (
+        chunked_machine.local_environment
+        is chunked_machine.global_environment
+    )
+
+    # Neither run may mutate the initial state.
+    assert initial.state_id == 0
+    assert initial.transition_index == 0
+    assert initial.machine_state.heap.current_slots == 0
+
+
+def test_cbneed_trace_modes_preserve_execution():
+    program = compile_source(
+        r"main = (\x -> \y -> 42) (1 + True) (2 + False)"
+    )
+
+    full_config = make_cbneed_config()
+    metrics_config = replace(
+        full_config,
+        trace_mode=TraceMode.METRICS_ONLY,
+    )
+
+    initial = create_initial_core_state(
+        program,
+        full_config,
+        session_id="cbneed-trace-mode-equivalence",
+    )
+
+    full = run_batch(
+        initial,
+        full_config,
+        max_steps=150,
+    )
+
+    metrics = run_batch(
+        initial,
+        metrics_config,
+        max_steps=150,
+    )
+
+    assert full.stop_reason == metrics.stop_reason
+    assert full.stop_reason is BatchStopReason.WHNF_PENDING
+
+    left = full.state.machine_state
+    right = metrics.state.machine_state
+
+    assert left.control == right.control
+    assert left.control == Return(ImmediateInteger(42))
+
+    assert (
+        left.evaluator_transition_count
+        == right.evaluator_transition_count
+    )
+    assert full.state.transition_index == metrics.state.transition_index
+
+    assert left.heap.current_slots == right.heap.current_slots
+    assert left.heap.next_object_id == right.heap.next_object_id
+
+    assert left.stack.depth == right.stack.depth == 0
+
+    # Trace retention must not affect machine execution.
+    assert len(full.trace) > 0
+    assert metrics.trace == ()

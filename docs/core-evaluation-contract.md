@@ -1394,111 +1394,77 @@ Such a failure must preserve the input ExecutionState
 without partially consuming or mutating its continuation
 stack, lexical environment or heap.
 
+
 ### 11.9 Call-by-Need Closure Application
 
-Under CBNeed, ordinary closure application evaluates and
-demands the function position to WHNF before binding its
-argument.
+Under CBNeed, function application evaluates and demands the
+function position to WHNF before allocating an argument thunk.
+This may involve lexical lookup, heap Indirections, or
+demand-driven global bindings.
 
-The function position must reach WHNF before any argument
-thunk is allocated.
+A non-callable value in WHNF raises an explicit runtime error
+before argument allocation. A pending thunk in function position
+must instead be forced to WHNF; this behavior is implemented
+in B05.4.
 
-Function-position evaluation may involve lexical references,
-heap Indirections, and demand-driven global bindings.
+#### Deferred Argument Binding
 
-Once the function reference has reached WHNF, applying a
-non-callable value raises an explicit runtime error without
-allocating the argument thunk.
+When the function resolves to a Closure, its argument expression
+is neither evaluated nor forced.
 
-If the function position refers to a pending CBNeed thunk,
-its value must be obtained through the thunk forcing protocol
-defined in Section 7.11.
+The evaluator allocates a thunk containing the argument Core
+expression and the free local references captured from its
+original call-site environment, retained by ApplyFunctionFrame.
 
-Operational forcing of PendingThunk is introduced in B05.4.
-Until that support is available, such a demand remains an
-explicitly unsupported execution path rather than a
-non-callable-value error.
+Captures preserve RuntimeRef identity, including references to
+other pending thunks. Global and predefined identifiers are
+resolved separately through the global environment.
 
-Once the function has been resolved to a Closure, the
-argument Core expression is not evaluated or forced.
+Capturing occurs before introducing the callee's parameter,
+ensuring that parameter shadowing does not alter the lexical
+meaning of the argument.
 
-Instead, the evaluator allocates a deferred thunk using
-the argument expression and its original lexical call-site
-environment.
+The thunk's stable one-slot anchor is bound to the parameter.
+The argument remains pending until explicitly demanded.
 
-The thunk retains only the required free local references.
-Its stable identity anchor is bound to the closure parameter.
+#### Closure Execution and Environment Restoration
 
-The function body executes in the closure's lexical
-environment, extended with the deferred argument binding.
+The closure body executes using its definition-site captured
+environment, extended with the deferred parameter binding and
+the global environment. It does not inherit unrelated local
+bindings from the caller.
 
-The caller environment is preserved by an explicit
-RestoreEnvironmentFrame and restored when the body returns.
+A RestoreEnvironmentFrame preserves the caller's lexical
+environment and restores it after the body returns.
 
-Entering the closure body is represented by the
-`CORE_CBNEED_ENTER_BODY` operational rule.
+CORE_CBNEED_ENTER_BODY performs thunk allocation, parameter
+binding, and body entry in an isolated successor ExecutionState,
+preserving previous snapshots.
 
-The transition preserves the original ExecutionState and
-allocates the thunk on the isolated successor heap.
+#### Returned Closures and Curried Applications
 
-The argument remains PENDING until an evaluation context
-explicitly demands its value.
+A closure returned from a function body captures only its
+required free local references, which may include pending
+argument thunks created by earlier applications.
 
-A deferred argument captures its free local references from
-the original call-site environment retained by
-ApplyFunctionFrame, before the callee's parameter binding
-is introduced.
+Restoring the caller's environment does not invalidate or
+force those references. A returned closure is in WHNF even
+when its captured thunks remain unevaluated.
 
-The callee's definition-site environment is used to execute
-its closure body, not to resolve free variables in the
-argument expression.
+Curried applications preserve captured reference identities
+and defer each ordinary argument independently.
 
-Consequently, parameter shadowing in the callee does not
-change the lexical meaning of an argument. Captured references
-retain their original identity, including references to other
-pending thunks.
+#### Strategy and Implementation Boundaries
 
-Nested lazy applications may therefore construct thunks
-whose payloads refer to other thunks without forcing them.
-Global and predefined identifiers are resolved separately
-and are not copied into the captured-local environment.
+CBV retains strict argument evaluation and WHNF demand.
+CBN application remains part of B11.
 
-When a CBNeed closure body evaluates to another lambda,
-the resulting Closure captures the required free local
-references from its definition-site environment.
-
-These captures may include references to pending argument
-thunks created by earlier applications.
-
-Restoring the caller's lexical environment does not
-invalidate or evaluate references retained by a returned
-Closure. The returned function remains in WHNF regardless
-of whether its captured thunks have been forced.
-
-Curried applications preserve the identity of captured
-thunk references across successive function applications.
-
-Each ordinary argument is deferred independently. A
-later argument is not evaluated merely because an earlier
-application returned a function.
-
-Only references required by a nested lambda are captured.
-Unused parameters are not retained by that lambda unless
-needed by its expression.
-
-Evaluating or observing a returned function does not
-force its captured thunks. Demanding a captured thunk
-remains the responsibility of the forcing rules in B05.4.
-
-CBV continues to evaluate and force arguments strictly.
-
-Call-by-Name application remains part of B11.
-
-Forcing a deferred argument, update continuations and
-memoization are implemented in B05.4 and B05.5.
+Thunk forcing and update continuations are implemented in B05.4;
+memoization and sharing are completed in B05.5.
 
 Non-strict predefined function application, including
-first-class seq, is implemented in B05.8.
+first-class seq, belongs to B05.8.
+
 
 ## 12. Primitive Operations and Conditionals
 

@@ -970,7 +970,7 @@ def test_cbv_rejects_application_of_non_function():
 
 @pytest.mark.parametrize(
     "strategy",
-    [Strategy.CBN, Strategy.CBNEED],
+    [Strategy.CBN],
 )
 def test_non_strict_application_remains_explicitly_unsupported(
     strategy,

@@ -1394,6 +1394,47 @@ Such a failure must preserve the input ExecutionState
 without partially consuming or mutating its continuation
 stack, lexical environment or heap.
 
+### 11.9 Call-by-Need Closure Application
+
+Under CBNeed, ordinary closure application evaluates and
+demands the function position to WHNF before binding its
+argument.
+
+Once the function has been resolved to a Closure, the
+argument Core expression is not evaluated or forced.
+
+Instead, the evaluator allocates a deferred thunk using
+the argument expression and its original lexical call-site
+environment.
+
+The thunk retains only the required free local references.
+Its stable identity anchor is bound to the closure parameter.
+
+The function body executes in the closure's lexical
+environment, extended with the deferred argument binding.
+
+The caller environment is preserved by an explicit
+RestoreEnvironmentFrame and restored when the body returns.
+
+Entering the closure body is represented by the
+`CORE_CBNEED_ENTER_BODY` operational rule.
+
+The transition preserves the original ExecutionState and
+allocates the thunk on the isolated successor heap.
+
+The argument remains PENDING until an evaluation context
+explicitly demands its value.
+
+CBV continues to evaluate and force arguments strictly.
+
+Call-by-Name application remains part of B11.
+
+Forcing a deferred argument, update continuations and
+memoization are implemented in B05.4 and B05.5.
+
+Non-strict predefined function application, including
+first-class seq, is implemented in B05.8.
+
 ## 12. Primitive Operations and Conditionals
 
 ### 12.1 Primitive Evaluation Initialization

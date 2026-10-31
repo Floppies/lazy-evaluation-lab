@@ -76,6 +76,8 @@ from lazy_lab.runtime.closures import (
     Closure,
 )
 from lazy_lab.runtime.global_bindings import PendingGlobal
+from lazy_lab.runtime.thunks import allocate_thunk
+
 
 class UnsupportedTransitionError(NotImplementedError):
     """The requested transition is not implemented yet."""
@@ -1145,7 +1147,7 @@ def _resume_apply_function(
             "Function demand returned without WHNF"
         )
 
-    if machine.strategy is not Strategy.CBV:
+    if machine.strategy is Strategy.CBN:
         raise UnsupportedTransitionError(
             "Non-strict application is not implemented yet"
         )
@@ -1154,7 +1156,7 @@ def _resume_apply_function(
         raise TypeError("Cannot apply a non-function value")
 
     function_value = machine.heap.get(reference).value
-    
+
     if not isinstance(
         function_value,
         (
@@ -1164,6 +1166,51 @@ def _resume_apply_function(
         ),
     ):
         raise TypeError("Cannot apply a non-function value")
+
+    if machine.strategy is Strategy.CBNEED:
+        # Non-strict predefined application belongs to B05.8.
+        # Do not accidentally apply CBV's strict argument rules.
+        if not isinstance(function_value, Closure):
+            raise UnsupportedTransitionError(
+                "CBNeed predefined application is deferred to B05.8"
+            )
+
+        # Capture the argument's original lexical call-site
+        # references without evaluating its Core expression.
+        argument_reference = allocate_thunk(
+            machine.heap,
+            frame.argument,
+            frame.environment,
+            machine.global_environment,
+        )
+
+        # The closure body uses the definition-site captures,
+        # the global environment and the new parameter binding.
+        call_environment = function_value.call_environment(
+            argument_reference,
+            machine.global_environment,
+        )
+
+        machine.stack.pop()
+        machine.stack.push(
+            RestoreEnvironmentFrame(frame.environment)
+        )
+
+        return (
+            replace(
+                machine,
+                local_environment=call_environment,
+                control=EvaluateCore(
+                    function_value.lambda_expression.body
+                ),
+            ),
+            RuleId.CORE_CBNEED_ENTER_BODY,
+        )
+
+    if machine.strategy is not Strategy.CBV:
+        raise UnsupportedTransitionError(
+            "Unsupported evaluation strategy for application"
+        )
 
     # The function is ready. CBV evaluates its argument
     # in the original call-site environment.

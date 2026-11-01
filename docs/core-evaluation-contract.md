@@ -661,6 +661,22 @@ The frame retains:
 
 The frame does not own or mutate the thunk payload.
 
+The flag is initially False while the thunk RHS is being
+evaluated. After the RHS returns a reference, the forcing
+continuation may replace the frame with an immutable copy
+whose awaiting_whnf flag is True while WHNF demand is pending.
+
+The frame preserves the original thunk identity across
+nested evaluation and does not store or mutate the thunk
+payload.
+
+Stack snapshots may share immutable UpdateFrame instances
+while retaining independent stack storage.
+
+The frame representation alone does not enter, force,
+update, or memoize a thunk. Those operations require
+separate machine transitions.
+
 #### Entering a Thunk
 
 Forcing a PENDING thunk marks its identity cell as

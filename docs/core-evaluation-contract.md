@@ -727,6 +727,21 @@ result at this stage is an invalid machine state.
 Nested forcing must preserve the suspended UpdateFrame and
 all outer continuation frames.
 
+When a thunk RHS returns a reference to another pending
+thunk, the outer UpdateFrame remains suspended with
+awaiting_whnf=True while the nested thunk is entered.
+
+The nested UpdateFrame is pushed above the outer frame.
+Both preserve their respective thunk anchors and lexical
+return environments.
+
+Nested demands follow LIFO continuation ordering. The
+outer update cannot complete until the nested demand has
+produced a verified WHNF result.
+
+Batch boundaries preserve the complete continuation stack
+and demand stages without restarting either computation.
+
 The subsequent update replaces the original anchor with an
 Indirection to the verified WHNF reference, as specified in
 Successful Update.

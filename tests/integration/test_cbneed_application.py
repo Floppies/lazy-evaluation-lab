@@ -26,6 +26,7 @@ from lazy_lab.runtime.stack import (
     ApplyFunctionFrame,
     RestoreEnvironmentFrame,
     UpdateFrame,
+    PrimitiveOperandsFrame,
 )
 from lazy_lab.runtime.state import (
     ExecutionConfig,
@@ -46,6 +47,7 @@ from lazy_lab.core.nodes import (
     CoreBool,
     CoreInt,
     CorePrimOp,
+    CoreVar,
 )
 
 
@@ -76,6 +78,30 @@ def advance_to_next_cbneed_body(state, config):
         current = transition.next_state
 
     raise AssertionError("No CBNeed closure-body entry found")
+
+
+def advance_to_second_thunk_entry(initial, config):
+    """Find two nested CBNeed thunk-entry transitions."""
+
+    current = initial
+    entries = []
+    rules = []
+
+    for _ in range(140):
+        transition = step(current, config)
+        rules.append(transition.rule_id)
+
+        if transition.rule_id is RuleId.CORE_FORCE_THUNK_ENTER:
+            entries.append(
+                (current, transition.next_state)
+            )
+
+            if len(entries) == 2:
+                return entries, tuple(rules)
+
+        current = transition.next_state
+
+    raise AssertionError("Two thunk entries were not reached")
 
 
 def test_unused_argument_is_not_evaluated():
@@ -1181,3 +1207,274 @@ def test_update_frame_rejects_unresolved_second_stage_result():
         EvaluatingThunk,
     )
     assert invalid_state.machine_state.stack.peek().awaiting_whnf
+
+
+def test_nested_thunk_forcing_preserves_update_frames():
+    program = compile_source(
+        r"main = (\x -> (\y -> y + 1) x) (20 + 1)"
+    )
+    config = make_cbneed_config()
+
+    initial = create_initial_core_state(
+        program,
+        config,
+        session_id="cbneed-nested-forcing",
+    )
+
+    entries, rules = advance_to_second_thunk_entry(
+        initial, config
+    )
+
+    (before_y, after_y), (before_x, after_x) = entries
+
+    # First thunk: y, whose RHS is the variable x.
+    y_machine = after_y.machine_state
+    y_frame = y_machine.stack.peek()
+
+    assert isinstance(y_frame, UpdateFrame)
+    assert y_frame.awaiting_whnf is False
+
+    y_ref = y_frame.thunk_reference
+    y_anchor = y_machine.heap.get(y_ref).value
+
+    assert isinstance(y_anchor, EvaluatingThunk)
+
+    y_payload = y_machine.heap.get(
+        y_anchor.payload_reference
+    ).value
+
+    assert isinstance(y_payload, ThunkPayload)
+    assert isinstance(y_payload.expression, CoreVar)
+    assert y_payload.expression.name == "x"
+
+    # The outer thunk captured the original x reference.
+    x_ref = y_payload.captured_locals.lookup("x")
+
+    # Before entering x, y is already waiting for WHNF.
+    waiting_machine = before_x.machine_state
+
+    assert waiting_machine.control == Force(x_ref)
+
+    suspended_y_frame = waiting_machine.stack.peek()
+
+    assert isinstance(suspended_y_frame, UpdateFrame)
+    assert suspended_y_frame.thunk_reference == y_ref
+    assert suspended_y_frame.awaiting_whnf is True
+
+    assert isinstance(
+        waiting_machine.heap.get(x_ref).value,
+        PendingThunk,
+    )
+
+    # Second thunk entry pushes a frame above y's frame.
+    x_machine = after_x.machine_state
+
+    assert x_machine.stack.depth == (
+        waiting_machine.stack.depth + 1
+    )
+
+    x_frame = x_machine.stack.frames[-1]
+    parent_frame = x_machine.stack.frames[-2]
+
+    assert isinstance(x_frame, UpdateFrame)
+    assert x_frame.thunk_reference == x_ref
+    assert x_frame.awaiting_whnf is False
+
+    assert parent_frame is suspended_y_frame
+    assert parent_frame.awaiting_whnf is True
+    assert parent_frame.thunk_reference == y_ref
+
+    assert isinstance(
+        x_machine.heap.get(x_ref).value,
+        EvaluatingThunk,
+    )
+    assert isinstance(
+        x_machine.heap.get(y_ref).value,
+        EvaluatingThunk,
+    )
+
+    # The primitive demand remains below both update frames.
+    assert isinstance(
+        x_machine.stack.frames[-3],
+        PrimitiveOperandsFrame,
+    )
+
+    assert rules.count(RuleId.CORE_FORCE_THUNK_ENTER) == 2
+    assert RuleId.CORE_THUNK_REQUIRE_WHNF in rules
+
+    # Entering x does not allocate additional heap objects.
+    assert x_machine.heap.current_slots == (
+        waiting_machine.heap.current_slots
+    )
+    assert x_machine.heap.next_object_id == (
+        waiting_machine.heap.next_object_id
+    )
+
+    # The prior state remains unchanged.
+    assert isinstance(
+        waiting_machine.heap.get(x_ref).value,
+        PendingThunk,
+    )
+    assert waiting_machine.stack.peek() is suspended_y_frame
+
+
+def test_nested_forcing_stops_before_premature_update():
+    program = compile_source(
+        r"main = (\x -> (\y -> y + 1) x) (20 + 1)"
+    )
+    config = make_cbneed_config()
+
+    initial = create_initial_core_state(
+        program,
+        config,
+        session_id="cbneed-nested-update-boundary",
+    )
+
+    entries, _ = advance_to_second_thunk_entry(
+        initial, config
+    )
+
+    current = entries[-1][1]
+
+    # Evaluate x's RHS and perform its explicit WHNF demand.
+    for _ in range(80):
+        machine = current.machine_state
+
+        if (
+            machine.control == Return(ImmediateInteger(21))
+            and isinstance(machine.stack.peek(), UpdateFrame)
+            and machine.stack.peek().awaiting_whnf
+        ):
+            break
+
+        current = step(current, config).next_state
+
+    else:
+        pytest.fail("Inner thunk did not reach WHNF")
+
+    machine = current.machine_state
+
+    x_frame = machine.stack.frames[-1]
+    y_frame = machine.stack.frames[-2]
+
+    assert isinstance(x_frame, UpdateFrame)
+    assert isinstance(y_frame, UpdateFrame)
+
+    assert x_frame.awaiting_whnf is True
+    assert y_frame.awaiting_whnf is True
+
+    x_ref = x_frame.thunk_reference
+    y_ref = y_frame.thunk_reference
+
+    assert x_ref != y_ref
+
+    # Neither thunk has been updated yet.
+    assert isinstance(
+        machine.heap.get(x_ref).value,
+        EvaluatingThunk,
+    )
+    assert isinstance(
+        machine.heap.get(y_ref).value,
+        EvaluatingThunk,
+    )
+
+    previous_id = current.state_id
+    previous_slots = machine.heap.current_slots
+    previous_depth = machine.stack.depth
+
+    with pytest.raises(
+        UnsupportedTransitionError,
+        match="update pending B05.5",
+    ):
+        step(current, config)
+
+    # The unsupported update does not mutate the input.
+    assert current.state_id == previous_id
+    assert machine.heap.current_slots == previous_slots
+    assert machine.stack.depth == previous_depth
+    assert machine.stack.peek() is x_frame
+
+
+def test_nested_forcing_is_equivalent_across_batches():
+    program = compile_source(
+        r"main = (\x -> (\y -> y + 1) x) (20 + 1)"
+    )
+    config = make_cbneed_config()
+
+    initial = create_initial_core_state(
+        program,
+        config,
+        session_id="cbneed-nested-batches",
+    )
+
+    entries, stepped_rules = advance_to_second_thunk_entry(
+        initial, config
+    )
+
+    stepped = entries[-1][1]
+    total_steps = stepped.transition_index
+
+    # One uninterrupted batch, stopping after second entry.
+    full = run_batch(
+        initial,
+        config,
+        max_steps=total_steps,
+    )
+
+    # Two batches with a suspension between them.
+    split = total_steps // 2
+
+    first = run_batch(
+        initial,
+        config,
+        max_steps=split,
+    )
+
+    second = run_batch(
+        first.state,
+        config,
+        max_steps=total_steps - split,
+    )
+
+    assert full.stop_reason is BatchStopReason.BATCH_LIMIT
+    assert second.stop_reason is BatchStopReason.BATCH_LIMIT
+
+    resumed_rules = tuple(
+        entry.rule_id
+        for entry in first.trace + second.trace
+    )
+
+    assert resumed_rules == stepped_rules
+
+    left = full.state.machine_state
+    right = second.state.machine_state
+
+    assert left.control == right.control
+    assert left.stack.depth == right.stack.depth
+
+    assert (
+        left.evaluator_transition_count
+        == right.evaluator_transition_count
+    )
+    assert left.heap.current_slots == right.heap.current_slots
+    assert left.heap.next_object_id == right.heap.next_object_id
+
+    # The nested update continuations retain their stages.
+    for offset in (-1, -2):
+        left_frame = left.stack.frames[offset]
+        right_frame = right.stack.frames[offset]
+
+        assert isinstance(left_frame, UpdateFrame)
+        assert isinstance(right_frame, UpdateFrame)
+        assert left_frame.thunk_reference == (
+            right_frame.thunk_reference
+        )
+        assert left_frame.awaiting_whnf == (
+            right_frame.awaiting_whnf
+        )
+
+    assert left.stack.frames[-1].awaiting_whnf is False
+    assert left.stack.frames[-2].awaiting_whnf is True
+
+    assert initial.transition_index == 0
+    assert initial.machine_state.heap.current_slots == 0

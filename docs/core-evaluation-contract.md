@@ -702,7 +702,7 @@ captured references.
 
 The UpdateFrame continuation handles the eventual RHS return
 and subsequent WHNF demand, as specified in the following
-subsections. Its operational handling is completed in B05.4.3.
+subsections.
 
 Blackhole detection for demands on EvaluatingThunk remains
 part of B05.7.

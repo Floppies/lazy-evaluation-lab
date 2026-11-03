@@ -10,6 +10,7 @@ from lazy_lab.engine.core_machine import (
     run_batch,
     step,
     UnsupportedTransitionError,
+    InvalidMachineStateError,
 )
 from lazy_lab.runtime.control import (
     Return,
@@ -1012,3 +1013,171 @@ def test_thunk_entry_restores_captured_lexical_scope():
 
     # Entry does not force a captured dependency.
     assert next_machine.control.expression is payload.expression
+
+
+def test_update_frame_demands_rhs_whnf_before_update():
+    program = compile_source(
+        r"main = (\f -> f (1 + True)) (\x -> 42)"
+    )
+    config = make_cbneed_config()
+
+    current = create_initial_core_state(
+        program,
+        config,
+        session_id="cbneed-update-whnf",
+    )
+
+    # Find the first RHS return handled by UpdateFrame.
+    for _ in range(100):
+        machine = current.machine_state
+
+        if (
+            isinstance(machine.control, Return)
+            and machine.stack.depth > 0
+            and isinstance(machine.stack.peek(), UpdateFrame)
+            and not machine.stack.peek().awaiting_whnf
+        ):
+            break
+
+        current = step(current, config).next_state
+
+    else:
+        pytest.fail("UpdateFrame RHS return was not reached")
+
+    before = current.machine_state
+    original_frame = before.stack.peek()
+    result_ref = before.control.reference
+
+    assert isinstance(result_ref, HeapReference)
+    assert isinstance(
+        before.heap.get(original_frame.thunk_reference).value,
+        EvaluatingThunk,
+    )
+
+    # Stage 1: request explicit WHNF demand.
+    transition = step(current, config)
+
+    assert transition.rule_id is RuleId.CORE_THUNK_REQUIRE_WHNF
+
+    awaiting_state = transition.next_state
+    awaiting = awaiting_state.machine_state
+
+    assert awaiting.control == Force(result_ref)
+    assert awaiting.stack.depth == before.stack.depth
+
+    awaiting_frame = awaiting.stack.peek()
+    assert isinstance(awaiting_frame, UpdateFrame)
+    assert awaiting_frame.awaiting_whnf is True
+    assert original_frame.awaiting_whnf is False
+
+    assert awaiting_frame.thunk_reference is (
+        original_frame.thunk_reference
+    )
+    assert awaiting_frame.return_environment is (
+        original_frame.return_environment
+    )
+
+    # Stage 2: forcing the closure returns its WHNF reference.
+    forced = step(awaiting_state, config)
+
+    assert forced.rule_id is RuleId.CORE_FORCE_FUNCTION_WHNF
+
+    verified_state = forced.next_state
+    verified = verified_state.machine_state
+
+    assert verified.control == Return(result_ref)
+    assert verified.stack.peek().awaiting_whnf is True
+
+    # B05.5 boundary: WHNF is ready, update is not implemented.
+    with pytest.raises(
+        UnsupportedTransitionError,
+        match="update pending B05.5",
+    ):
+        step(verified_state, config)
+
+    # No premature update or environment restoration.
+    assert isinstance(
+        verified.heap.get(original_frame.thunk_reference).value,
+        EvaluatingThunk,
+    )
+    assert verified.local_environment is (
+        before.local_environment
+    )
+    assert verified.stack.depth == before.stack.depth
+
+    # Historical states remain unchanged.
+    assert original_frame.awaiting_whnf is False
+    assert isinstance(
+        before.heap.get(original_frame.thunk_reference).value,
+        EvaluatingThunk,
+    )
+
+
+def test_update_frame_rejects_unresolved_second_stage_result():
+    program = compile_source(
+        r"main = (\f -> f 10) (\x -> 42)"
+    )
+    config = make_cbneed_config()
+
+    current = create_initial_core_state(
+        program,
+        config,
+        session_id="cbneed-invalid-update-return",
+    )
+
+    for _ in range(100):
+        machine = current.machine_state
+
+        if (
+            isinstance(machine.control, Return)
+            and machine.stack.depth > 0
+            and isinstance(machine.stack.peek(), UpdateFrame)
+            and not machine.stack.peek().awaiting_whnf
+        ):
+            break
+
+        current = step(current, config).next_state
+
+    else:
+        pytest.fail("UpdateFrame return not reached")
+
+    # Advance to the frame's WHNF-demand stage.
+    awaiting_state = step(current, config).next_state
+
+    assert isinstance(
+        awaiting_state.machine_state.control, Force
+    )
+    assert awaiting_state.machine_state.stack.peek().awaiting_whnf
+
+    # Construct an invalid continuation return:
+    # the original EvaluatingThunk anchor is not WHNF.
+    machine = awaiting_state.machine_state
+
+    invalid_machine = replace(
+        machine,
+        control=Return(
+            machine.stack.peek().thunk_reference
+        ),
+    )
+    invalid_state = replace(
+        awaiting_state,
+        machine_state=invalid_machine,
+    )
+
+    with pytest.raises(
+        InvalidMachineStateError,
+        match="Thunk demand resumed without WHNF",
+    ):
+        step(invalid_state, config)
+
+    # Failure must not mutate the supplied state.
+    assert invalid_state.machine_state.control == Return(
+        machine.stack.peek().thunk_reference
+    )
+    assert isinstance(
+        invalid_state.machine_state.heap.get(
+            machine.stack.peek().thunk_reference
+        ).value,
+        EvaluatingThunk,
+    )
+    assert invalid_state.machine_state.stack.peek().awaiting_whnf

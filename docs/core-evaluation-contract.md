@@ -707,17 +707,33 @@ subsections. Its operational handling is completed in B05.4.3.
 Blackhole detection for demands on EvaluatingThunk remains
 part of B05.7.
 
-
 #### Return and WHNF Verification
 
-Returning from a thunk RHS does not imply that its
-reference is already in WHNF.
+Returning from a thunk RHS does not guarantee that its
+result reference is in WHNF.
 
-If necessary, UpdateFrame requests explicit forcing and
-waits for the resulting WHNF reference.
+When UpdateFrame receives the initial RHS return
+(awaiting_whnf=False), CORE_THUNK_REQUIRE_WHNF replaces the
+frame with an immutable copy whose awaiting_whnf flag is True
+and changes the control to Force(result_reference).
 
-The thunk must not be updated before this requirement
-has been satisfied.
+The thunk anchor remains EvaluatingThunk during this demand.
+No memoizing update or environment restoration occurs.
+
+When the forced reference returns, UpdateFrame requires that
+the result be in WHNF before allowing an update. An unresolved
+result at this stage is an invalid machine state.
+
+Nested forcing must preserve the suspended UpdateFrame and
+all outer continuation frames.
+
+The subsequent update replaces the original anchor with an
+Indirection to the verified WHNF reference, as specified in
+Successful Update.
+
+Until that transition is implemented in B05.5, the machine
+reports the update boundary as explicitly unsupported without
+modifying the current ExecutionState.
 
 #### Successful Update
 

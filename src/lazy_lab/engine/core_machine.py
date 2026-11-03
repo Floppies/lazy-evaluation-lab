@@ -864,7 +864,15 @@ def _advance_return(
     if machine.stack.depth > 0:
         frame = machine.stack.peek()
 
-        # 1. Resume a pending global RHS evaluation.
+        # 1. Resume updating a frame.
+        if isinstance(frame, UpdateFrame):
+            return _resume_update_frame(
+                machine,
+                control,
+                frame,
+            )
+
+        # 2. Resume a pending global RHS evaluation.
         if isinstance(frame, GlobalDemandFrame):
             if not frame.awaiting_whnf:
                 machine.stack.pop()
@@ -896,7 +904,7 @@ def _advance_return(
                 RuleId.CORE_GLOBAL_DEMAND_RETURN,
             )
 
-        # 2. Initializing ocal bindings
+        # 3. Initializing ocal bindings
         if isinstance(frame, LocalValueInitializationFrame):
             return _resume_local_value(
                 machine,
@@ -904,7 +912,7 @@ def _advance_return(
                 frame,
             )
 
-        # 3. Primitive operand evaluation.
+        # 4. Primitive operand evaluation.
         if isinstance(frame, PrimitiveOperandsFrame):
             return _resume_primitive_operand(
                 machine,
@@ -912,7 +920,7 @@ def _advance_return(
                 frame,
             )
         
-        # 4. If evaluation.
+        # 5. If evaluation.
         if isinstance(frame, IfFrame):
             return _resume_if_condition(
                 machine,
@@ -920,7 +928,7 @@ def _advance_return(
                 frame,
             )
 
-        # 5. Function position has returned.
+        # 6. Function position has returned.
         # Demand the function and prepare its argument.
         if isinstance(frame, ApplyFunctionFrame):
             return _resume_apply_function(
@@ -929,7 +937,7 @@ def _advance_return(
                 frame,
             )
 
-        # 6. Argument has returned.
+        # 7. Argument has returned.
         # Under CBV, demand WHNF and enter the closure body.
         if isinstance(frame, ApplyArgumentFrame):
             return _resume_apply_argument(
@@ -938,7 +946,7 @@ def _advance_return(
                 frame,
             )
 
-        # 7. Function body has returned.
+        # 8. Function body has returned.
         # Restore the caller's lexical environment.
         if isinstance(frame, RestoreEnvironmentFrame):
             return _resume_caller_environment(
@@ -952,7 +960,7 @@ def _advance_return(
             f"{type(frame).__name__}"
         )
 
-    # 8. No continuation remains: handle the root result.
+    # 9. No continuation remains: handle the root result.
     # A root reference to a pending object still requires WHNF.
     if isinstance(reference, HeapReference):
         value = machine.heap.get(reference).value
@@ -1628,6 +1636,57 @@ def _resume_local_value(
         RuleId.CORE_LETREC_STORE_VALUE,
     )
 
+def _resume_update_frame(
+    machine: MachineState,
+    control: Return,
+    frame: UpdateFrame,
+) -> tuple[MachineState, RuleId]:
+    """Demand a thunk RHS result before its memoizing update."""
+
+    if machine.strategy is not Strategy.CBNEED:
+        raise InvalidMachineStateError(
+            "UpdateFrame requires Call-by-Need"
+        )
+
+    anchor_value = machine.heap.get(
+        frame.thunk_reference
+    ).value
+
+    if not isinstance(anchor_value, EvaluatingThunk):
+        raise InvalidMachineStateError(
+            "UpdateFrame requires an evaluating thunk anchor"
+        )
+
+    reference = control.reference
+
+    # Stage 1: the RHS returned a reference, which may not
+    # yet denote a WHNF value.
+    if not frame.awaiting_whnf:
+        machine.stack.pop()
+        machine.stack.push(
+            replace(frame, awaiting_whnf=True)
+        )
+
+        return (
+            replace(
+                machine,
+                control=Force(reference),
+            ),
+            RuleId.CORE_THUNK_REQUIRE_WHNF,
+        )
+
+    # Stage 2: Force has returned. Its result must be WHNF.
+    if not _reference_is_whnf(machine, reference):
+        raise InvalidMachineStateError(
+            "Thunk demand resumed without WHNF"
+        )
+
+    # B05.5 will replace the original anchor with an
+    # Indirection, then restore the caller environment.
+    # Do not pop this frame or return the result yet.
+    raise UnsupportedTransitionError(
+        "Thunk result is in WHNF; update pending B05.5"
+    )
 
 def _enter_local_letrec(
     machine: MachineState,

@@ -679,13 +679,34 @@ separate machine transitions.
 
 #### Entering a Thunk
 
-Forcing a PENDING thunk marks its identity cell as
-EVALUATING before starting its expression.
+Under CBNeed, `CORE_FORCE_THUNK_ENTER` handles Force(reference)
+when the reference identifies a PendingThunk.
 
-The machine pushes an `UpdateFrame` and evaluates the RHS
-in the thunk's saved lexical environment.
+The transition retrieves the separate immutable ThunkPayload
+and reconstructs the evaluation environment from its captured
+local references layered over the global environment.
 
-All changes occur in an isolated successor state.
+The caller's lexical environment is retained in an UpdateFrame,
+together with the original thunk anchor reference.
+
+The anchor is replaced with EvaluatingThunk, preserving its
+ObjectId, one-slot capacity, and payload reference.
+
+The machine pushes UpdateFrame and changes its control to
+EvaluateCore(payload.expression).
+
+These changes occur in one evaluator transition on an isolated
+successor ExecutionState. Thunk entry does not allocate new
+heap objects, evaluate the RHS, update the result, or force
+captured references.
+
+The UpdateFrame continuation handles the eventual RHS return
+and subsequent WHNF demand, as specified in the following
+subsections. Its operational handling is completed in B05.4.3.
+
+Blackhole detection for demands on EvaluatingThunk remains
+part of B05.7.
+
 
 #### Return and WHNF Verification
 

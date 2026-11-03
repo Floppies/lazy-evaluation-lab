@@ -11,7 +11,11 @@ from lazy_lab.engine.core_machine import (
     step,
     UnsupportedTransitionError,
 )
-from lazy_lab.runtime.control import Return, Force
+from lazy_lab.runtime.control import (
+    Return,
+    Force,
+    EvaluateCore,
+)
 from lazy_lab.runtime.heap import Indirection
 from lazy_lab.runtime.references import (
     HeapReference,
@@ -20,6 +24,7 @@ from lazy_lab.runtime.references import (
 from lazy_lab.runtime.stack import (
     ApplyFunctionFrame,
     RestoreEnvironmentFrame,
+    UpdateFrame,
 )
 from lazy_lab.runtime.state import (
     ExecutionConfig,
@@ -28,7 +33,11 @@ from lazy_lab.runtime.state import (
     Strategy,
     TraceMode,
 )
-from lazy_lab.runtime.thunks import PendingThunk, ThunkPayload
+from lazy_lab.runtime.thunks import (
+    PendingThunk,
+    ThunkPayload,
+    EvaluatingThunk,
+)
 from lazy_lab.runtime.transitions import BatchStopReason, RuleId
 from lazy_lab.runtime.closures import Closure
 from lazy_lab.core.nodes import (
@@ -647,32 +656,64 @@ def test_cbneed_pending_function_position_requires_thunk_forcing():
     machine = current.machine_state
     function_ref = machine.control.reference
 
-    assert isinstance(machine.stack.peek(), ApplyFunctionFrame)
+    
+    assert isinstance(
+        machine.stack.peek(),
+        ApplyFunctionFrame,
+    )
     assert machine.stack.peek().awaiting_whnf
 
-    # The function has not yet been entered.
-    assert isinstance(
-        machine.heap.get(function_ref).value,
-        PendingThunk,
-    )
+    pending = machine.heap.get(function_ref).value
+    assert isinstance(pending, PendingThunk)
 
-    previous_id = current.state_id
+    payload = machine.heap.get(
+        pending.payload_reference
+    ).value
+    assert isinstance(payload, ThunkPayload)
+
     previous_slots = machine.heap.current_slots
+    previous_next_id = machine.heap.next_object_id
+    previous_depth = machine.stack.depth
 
-    # Temporary B05.4 boundary: not a non-function error.
-    with pytest.raises(
-        UnsupportedTransitionError,
-        match="PendingThunk",
-    ):
-        step(current, config)
+    transition = step(current, config)
+    successor = transition.next_state
+    next_machine = successor.machine_state
 
-    # Rejected transitions do not mutate the input state.
-    assert current.state_id == previous_id
-    assert machine.heap.current_slots == previous_slots
+    assert transition.rule_id is RuleId.CORE_FORCE_THUNK_ENTER
+
+    # The original anchor has entered EVALUATING.
+    evaluating = next_machine.heap.get(function_ref).value
+
+    assert isinstance(evaluating, EvaluatingThunk)
+    assert evaluating.payload_reference == pending.payload_reference
+
+    # No new allocation occurs during thunk entry.
+    assert next_machine.heap.current_slots == previous_slots
+    assert next_machine.heap.next_object_id == previous_next_id
+
+    # The pending application remains below UpdateFrame.
+    assert next_machine.stack.depth == previous_depth + 1
+
+    frame = next_machine.stack.peek()
+    assert isinstance(frame, UpdateFrame)
+
+    assert frame.thunk_reference is function_ref
+    assert frame.return_environment is machine.local_environment
+    assert frame.awaiting_whnf is False
+
+    # Execution resumes with the deferred Core expression.
+    assert isinstance(next_machine.control, EvaluateCore)
+    assert next_machine.control.expression is payload.expression
+
+    # The previous ExecutionState remains unchanged.
+    assert current.state_id + 1 == successor.state_id
+    assert current.transition_index + 1 == successor.transition_index
+
     assert isinstance(
         machine.heap.get(function_ref).value,
         PendingThunk,
     )
+    assert machine.stack.depth == previous_depth
 
 
 def test_cbneed_non_callable_fails_before_argument_allocation():
@@ -897,3 +938,77 @@ def test_cbneed_trace_modes_preserve_execution():
     # Trace retention must not affect machine execution.
     assert len(full.trace) > 0
     assert metrics.trace == ()
+
+
+def test_thunk_entry_restores_captured_lexical_scope():
+    program = compile_source(
+        r"main = (\x -> (\f -> f (1 + True)) (\y -> x)) 30"
+    )
+    config = make_cbneed_config()
+
+    current = create_initial_core_state(
+        program,
+        config,
+        session_id="cbneed-thunk-entry-scope",
+    )
+
+    for _ in range(120):
+        machine = current.machine_state
+        control = machine.control
+
+        if (
+            isinstance(control, Force)
+            and isinstance(control.reference, HeapReference)
+            and isinstance(
+                machine.heap.get(control.reference).value,
+                PendingThunk,
+            )
+        ):
+            break
+
+        current = step(current, config).next_state
+
+    else:
+        pytest.fail("Pending function thunk demand not reached")
+
+    machine = current.machine_state
+    thunk_ref = machine.control.reference
+
+    pending = machine.heap.get(thunk_ref).value
+    payload = machine.heap.get(
+        pending.payload_reference
+    ).value
+
+    assert isinstance(payload, ThunkPayload)
+    assert set(payload.captured_locals.bindings) == {"x"}
+
+    captured_x = payload.captured_locals.lookup("x")
+
+    transition = step(current, config)
+    next_machine = transition.next_state.machine_state
+
+    assert transition.rule_id is RuleId.CORE_FORCE_THUNK_ENTER
+
+    # The thunk uses its captures over the global environment.
+    thunk_env = next_machine.local_environment
+
+    assert thunk_env.parent is next_machine.global_environment
+    assert set(thunk_env.bindings) == {"x"}
+    assert thunk_env.lookup("x") is captured_x
+
+    # The caller's local parameter f is not inherited.
+    assert "f" not in thunk_env.bindings
+
+    # The caller's complete environment is preserved instead.
+    update_frame = next_machine.stack.peek()
+
+    assert isinstance(update_frame, UpdateFrame)
+    assert update_frame.return_environment is machine.local_environment
+
+    assert isinstance(
+        next_machine.heap.get(captured_x).value,
+        PendingThunk,
+    )
+
+    # Entry does not force a captured dependency.
+    assert next_machine.control.expression is payload.expression

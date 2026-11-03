@@ -50,6 +50,7 @@ from lazy_lab.runtime.stack import (
     PrimitiveOperandsFrame,
     IfFrame,
     LocalValueInitializationFrame,
+    UpdateFrame,
 )
 from lazy_lab.runtime.predefined import PredefinedFunction
 from lazy_lab.runtime.state import (
@@ -76,7 +77,12 @@ from lazy_lab.runtime.closures import (
     Closure,
 )
 from lazy_lab.runtime.global_bindings import PendingGlobal
-from lazy_lab.runtime.thunks import allocate_thunk
+from lazy_lab.runtime.thunks import (
+    allocate_thunk,
+    ThunkPayload,
+    PendingThunk,
+    EvaluatingThunk,
+)
 
 
 class UnsupportedTransitionError(NotImplementedError):
@@ -744,6 +750,63 @@ def _advance_force(
         return (
             replace(machine, control=Return(reference)),
             RuleId.CORE_FORCE_FUNCTION_WHNF,
+        )
+
+    if isinstance(value, PendingThunk):
+        if machine.strategy is not Strategy.CBNEED:
+            raise UnsupportedTransitionError(
+                "Thunk forcing requires Call-by-Need"
+            )
+
+        # The anchor must retain its one-slot identity.
+        anchor_cell = machine.heap.get(reference)
+
+        if anchor_cell.allocated_slots != 1:
+            raise InvalidMachineStateError(
+                "Thunk anchor must occupy exactly one slot"
+            )
+
+        # Resolve and validate the separate immutable payload
+        # before changing the heap or continuation stack.
+        payload_cell = machine.heap.get(
+            value.payload_reference
+        )
+        payload = payload_cell.value
+
+        if not isinstance(payload, ThunkPayload):
+            raise InvalidMachineStateError(
+                "PendingThunk does not reference a ThunkPayload"
+            )
+
+        # Reconstruct the definition-site lexical environment.
+        # Captured locals shadow global and predefined names.
+        thunk_environment = machine.global_environment.extend(
+            payload.captured_locals.bindings
+        )
+
+        update_frame = UpdateFrame(
+            thunk_reference=reference,
+            return_environment=machine.local_environment,
+        )
+
+        # The original anchor changes state, not identity.
+        # This heap already belongs to an isolated successor.
+        machine.heap.replace(
+            reference,
+            EvaluatingThunk(
+                payload_reference=value.payload_reference,
+            ),
+        )
+
+        machine.stack.push(update_frame)
+
+        return (
+            replace(
+                machine,
+                local_environment=thunk_environment,
+                control=EvaluateCore(payload.expression),
+            ),
+            RuleId.CORE_FORCE_THUNK_ENTER,
         )
 
     if isinstance(value, PendingGlobal):

@@ -1048,28 +1048,21 @@ def test_update_frame_demands_rhs_whnf_before_update():
     assert verified.control == Return(result_ref)
     assert verified.stack.peek().awaiting_whnf is True
 
-    # B05.5 boundary: WHNF is ready, update is not implemented.
-    with pytest.raises(
-        UnsupportedTransitionError,
-        match="update pending B05.5",
-    ):
-        step(verified_state, config)
+    updated = step(verified_state, config)
 
-    # No premature update or environment restoration.
-    assert isinstance(
-        verified.heap.get(original_frame.thunk_reference).value,
-        EvaluatingThunk,
-    )
-    assert verified.local_environment is (
-        before.local_environment
-    )
-    assert verified.stack.depth == before.stack.depth
+    updated_state = updated.next_state
+    updated_machine = updated_state.machine_state
 
-    # Historical states remain unchanged.
-    assert original_frame.awaiting_whnf is False
-    assert isinstance(
-        before.heap.get(original_frame.thunk_reference).value,
-        EvaluatingThunk,
+    anchor = updated_machine.heap.get(
+        original_frame.thunk_reference
+    ).value
+
+    assert isinstance(anchor, Indirection)
+    assert anchor.target == result_ref
+
+    assert updated.rule_id is RuleId.CORE_THUNK_UPDATE_WHNF
+    assert updated_machine.local_environment is(
+        original_frame.return_environment
     )
 
 
@@ -1307,26 +1300,11 @@ def test_nested_forcing_stops_before_premature_update():
         machine.heap.get(x_ref).value,
         EvaluatingThunk,
     )
+
     assert isinstance(
-        machine.heap.get(y_ref).value,
-        EvaluatingThunk,
+        machine.stack.peek(),
+        UpdateFrame,
     )
-
-    previous_id = current.state_id
-    previous_slots = machine.heap.current_slots
-    previous_depth = machine.stack.depth
-
-    with pytest.raises(
-        UnsupportedTransitionError,
-        match="update pending B05.5",
-    ):
-        step(current, config)
-
-    # The unsupported update does not mutate the input.
-    assert current.state_id == previous_id
-    assert machine.heap.current_slots == previous_slots
-    assert machine.stack.depth == previous_depth
-    assert machine.stack.peek() is x_frame
 
 
 def test_nested_forcing_is_equivalent_across_batches():
@@ -1410,5 +1388,153 @@ def test_nested_forcing_is_equivalent_across_batches():
     assert left.stack.frames[-1].awaiting_whnf is False
     assert left.stack.frames[-2].awaiting_whnf is True
 
+    assert initial.transition_index == 0
+    assert initial.machine_state.heap.current_slots == 0
+
+
+def test_cbneed_updates_function_thunk_and_resumes_application():
+    program = compile_source(
+        r"main = (\f -> f (1 + True)) (\x -> 42)"
+    )
+    config = make_cbneed_config()
+
+    current = create_initial_core_state(
+        program,
+        config,
+        session_id="cbneed-function-update",
+    )
+
+    # Reach the completed WHNF demand of the function thunk.
+    for _ in range(150):
+        machine = current.machine_state
+
+        if (
+            isinstance(machine.control, Return)
+            and machine.stack.depth > 0
+            and isinstance(machine.stack.peek(), UpdateFrame)
+            and machine.stack.peek().awaiting_whnf
+        ):
+            result_ref = machine.control.reference
+
+            if (
+                isinstance(result_ref, HeapReference)
+                and isinstance(
+                    machine.heap.get(result_ref).value,
+                    Closure,
+                )
+            ):
+                break
+
+        current = step(current, config).next_state
+
+    else:
+        pytest.fail("Function thunk did not reach WHNF")
+
+    before = current.machine_state
+    frame = before.stack.peek()
+    thunk_ref = frame.thunk_reference
+    closure_ref = before.control.reference
+
+    assert isinstance(
+        before.heap.get(thunk_ref).value,
+        EvaluatingThunk,
+    )
+
+    previous_slots = before.heap.current_slots
+    previous_next_id = before.heap.next_object_id
+    previous_depth = before.stack.depth
+
+    transition = step(current, config)
+
+    assert transition.rule_id is RuleId.CORE_THUNK_UPDATE_WHNF
+
+    successor = transition.next_state
+    after = successor.machine_state
+
+    updated = after.heap.get(thunk_ref).value
+
+    assert isinstance(updated, Indirection)
+    assert updated.target == closure_ref
+
+    # Update does not allocate or release heap slots.
+    assert after.heap.current_slots == previous_slots
+    assert after.heap.next_object_id == previous_next_id
+
+    # UpdateFrame is consumed; the pending application remains.
+    assert after.stack.depth == previous_depth - 1
+    assert isinstance(after.stack.peek(), ApplyFunctionFrame)
+
+    assert after.local_environment is frame.return_environment
+    assert after.control == Return(closure_ref)
+
+    # Historical snapshot remains unchanged.
+    assert isinstance(
+        before.heap.get(thunk_ref).value,
+        EvaluatingThunk,
+    )
+    assert before.stack.depth == previous_depth
+
+    # The suspended application can now finish.
+    completed = run_batch(
+        successor,
+        config,
+        max_steps=100,
+    )
+
+    assert completed.stop_reason is BatchStopReason.WHNF_PENDING
+    assert completed.state.machine_state.control == Return(
+        ImmediateInteger(42)
+    )
+
+    # The unused argument is never evaluated.
+    rules = [entry.rule_id for entry in completed.trace]
+    assert RuleId.CORE_PRIM_EXECUTE not in rules
+
+
+def test_cbneed_immediate_thunk_update_completes_program():
+    program = compile_source(
+        r"main = (\x -> x + 1) 20"
+    )
+    config = make_cbneed_config()
+
+    initial = create_initial_core_state(
+        program,
+        config,
+        session_id="cbneed-immediate-update",
+    )
+
+    result = run_batch(
+        initial,
+        config,
+        max_steps=150,
+    )
+
+    assert result.stop_reason is BatchStopReason.WHNF_PENDING
+    assert result.state.machine_state.control == Return(
+        ImmediateInteger(21)
+    )
+
+    rules = [entry.rule_id for entry in result.trace]
+
+    assert rules.count(RuleId.CORE_FORCE_THUNK_ENTER) == 1
+    assert rules.count(RuleId.CORE_THUNK_REQUIRE_WHNF) == 1
+    assert rules.count(RuleId.CORE_THUNK_UPDATE_WHNF) == 1
+
+    machine = result.state.machine_state
+
+    updated_anchors = [
+        cell.value
+        for cell in machine.heap.cells.values()
+        if isinstance(cell.value, Indirection)
+    ]
+
+    assert any(
+        indirection.target == ImmediateInteger(20)
+        for indirection in updated_anchors
+    )
+
+    assert machine.stack.depth == 0
+
+    # Execution must not mutate the initial snapshot.
     assert initial.transition_index == 0
     assert initial.machine_state.heap.current_slots == 0

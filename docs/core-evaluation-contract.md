@@ -752,17 +752,31 @@ modifying the current ExecutionState.
 
 #### Successful Update
 
-After reaching WHNF, the machine replaces the thunk's
-stable identity cell with an Indirection to the result.
+CORE_THUNK_UPDATE_WHNF completes an UpdateFrame whose
+awaiting_whnf flag is True and whose returned reference
+has been verified to be in WHNF.
 
-The original ObjectId and allocated capacity remain
-unchanged.
+The transition replaces the original EvaluatingThunk anchor
+with Indirection(whnf_reference), preserving its ObjectId
+and one-slot allocated capacity.
 
-The machine then removes UpdateFrame, restores the saved
-caller environment and returns the resulting reference.
+The UpdateFrame is then removed, the caller's lexical
+environment is restored, and Return(whnf_reference) resumes
+the suspended continuation.
 
-Nested thunk evaluations use ordinary LIFO continuation
-ordering and must preserve their enclosing frames.
+The update does not allocate new heap objects or release
+the original thunk payload. Unreachable payload reclamation
+belongs to garbage collection.
+
+All changes occur in an isolated successor ExecutionState.
+Previous snapshots retain their original heap cells and
+continuation stack.
+
+Nested updates follow LIFO ordering. An enclosing UpdateFrame
+remains suspended until the inner demand has completed.
+
+Existing references to the original thunk anchor remain
+valid and resolve through the installed Indirection.
 
 #### Globals and Aliases
 

@@ -1681,12 +1681,30 @@ def _resume_update_frame(
             "Thunk demand resumed without WHNF"
         )
 
-    # B05.5 will replace the original anchor with an
-    # Indirection, then restore the caller environment.
-    # Do not pop this frame or return the result yet.
-    raise UnsupportedTransitionError(
-        "Thunk result is in WHNF; update pending B05.5"
+    # The RHS result has reached WHNF.
+    # Memoize it in the original stable thunk anchor.
+    if reference == frame.thunk_reference:
+        raise InvalidMachineStateError(
+            "Thunk cannot update to itself"
+        )
+
+    machine.heap.replace(
+        frame.thunk_reference,
+        Indirection(reference),
     )
+
+    # The update is complete. Resume the suspended caller.
+    machine.stack.pop()
+
+    return (
+        replace(
+            machine,
+            local_environment=frame.return_environment,
+            control=Return(reference),
+        ),
+        RuleId.CORE_THUNK_UPDATE_WHNF,
+    )
+
 
 def _enter_local_letrec(
     machine: MachineState,

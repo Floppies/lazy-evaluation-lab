@@ -746,10 +746,6 @@ The subsequent update replaces the original anchor with an
 Indirection to the verified WHNF reference, as specified in
 Successful Update.
 
-Until that transition is implemented in B05.5, the machine
-reports the update boundary as explicitly unsupported without
-modifying the current ExecutionState.
-
 #### Successful Update
 
 CORE_THUNK_UPDATE_WHNF completes an UpdateFrame whose
@@ -772,11 +768,18 @@ All changes occur in an isolated successor ExecutionState.
 Previous snapshots retain their original heap cells and
 continuation stack.
 
-Nested updates follow LIFO ordering. An enclosing UpdateFrame
-remains suspended until the inner demand has completed.
+Nested thunk updates complete in LIFO order. An inner
+UpdateFrame installs its result and restores its caller
+environment before the suspended outer UpdateFrame can
+complete its own update.
 
-Existing references to the original thunk anchor remain
-valid and resolve through the installed Indirection.
+An update targets only its original thunk anchor. Other
+anchors and aliases retain their identities.
+
+Force follows heap Indirection chains one reference per
+CORE_FORCE_INDIRECTION transition until WHNF is reached.
+This traversal does not allocate new objects, rewrite
+existing aliases, or compress indirection paths.
 
 #### Globals and Aliases
 

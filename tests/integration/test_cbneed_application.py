@@ -1065,6 +1065,8 @@ def test_update_frame_demands_rhs_whnf_before_update():
         original_frame.return_environment
     )
 
+    assert updated_machine.stack.depth == verified.stack.depth -1
+
 
 def test_update_frame_rejects_unresolved_second_stage_result():
     program = compile_source(
@@ -1245,7 +1247,7 @@ def test_nested_thunk_forcing_preserves_update_frames():
     assert waiting_machine.stack.peek() is suspended_y_frame
 
 
-def test_nested_forcing_stops_before_premature_update():
+def test_nested_forcing_preserves_outer_thunk_before_inner_update():
     program = compile_source(
         r"main = (\x -> (\y -> y + 1) x) (20 + 1)"
     )
@@ -1302,8 +1304,8 @@ def test_nested_forcing_stops_before_premature_update():
     )
 
     assert isinstance(
-        machine.stack.peek(),
-        UpdateFrame,
+        machine.heap.get(y_ref).value,
+        EvaluatingThunk,
     )
 
 
@@ -1538,3 +1540,198 @@ def test_cbneed_immediate_thunk_update_completes_program():
     # Execution must not mutate the initial snapshot.
     assert initial.transition_index == 0
     assert initial.machine_state.heap.current_slots == 0
+
+
+def test_nested_thunks_update_in_lifo_order():
+    program = compile_source(
+        r"main = (\x -> (\y -> y + 1) x) (20 + 1)"
+    )
+    config = make_cbneed_config()
+
+    initial = create_initial_core_state(
+        program,
+        config,
+        session_id="cbneed-nested-updates",
+    )
+
+    entries, _ = advance_to_second_thunk_entry(
+        initial, config
+    )
+    current = entries[-1][1]
+
+    machine = current.machine_state
+    x_frame = machine.stack.frames[-1]
+    y_frame = machine.stack.frames[-2]
+
+    assert isinstance(x_frame, UpdateFrame)
+    assert isinstance(y_frame, UpdateFrame)
+
+    x_ref = x_frame.thunk_reference
+    y_ref = y_frame.thunk_reference
+
+    assert x_frame.awaiting_whnf is False
+    assert y_frame.awaiting_whnf is True
+
+    # Advance until the inner thunk x is updated.
+    for _ in range(80):
+        transition = step(current, config)
+
+        if transition.rule_id is RuleId.CORE_THUNK_UPDATE_WHNF:
+            break
+
+        current = transition.next_state
+    else:
+        pytest.fail("Inner thunk update was not reached")
+
+    after_x_state = transition.next_state
+    after_x = after_x_state.machine_state
+
+    assert after_x.heap.get(x_ref).value == Indirection(
+        ImmediateInteger(21)
+    )
+
+    # The outer thunk must remain active.
+    assert isinstance(
+        after_x.heap.get(y_ref).value,
+        EvaluatingThunk,
+    )
+    assert isinstance(after_x.stack.peek(), UpdateFrame)
+    assert after_x.stack.peek().thunk_reference == y_ref
+    assert after_x.stack.peek().awaiting_whnf is True
+    assert after_x.control == Return(ImmediateInteger(21))
+
+    # The next update must belong to the outer thunk y.
+    second = step(after_x_state, config)
+
+    assert second.rule_id is RuleId.CORE_THUNK_UPDATE_WHNF
+
+    after_y = second.next_state.machine_state
+
+    assert after_y.heap.get(y_ref).value == Indirection(
+        ImmediateInteger(21)
+    )
+    assert after_y.heap.get(x_ref).value == Indirection(
+        ImmediateInteger(21)
+    )
+
+    # Neither update allocates or releases abstract heap slots.
+    assert (
+        after_x.heap.current_slots
+        == after_y.heap.current_slots
+    )
+    assert (
+        after_x.heap.next_object_id
+        == after_y.heap.next_object_id
+    )
+
+    # Continue the suspended primitive operation.
+    completed = run_batch(
+        second.next_state,
+        config,
+        max_steps=80,
+    )
+
+    assert completed.stop_reason is BatchStopReason.WHNF_PENDING
+    assert completed.state.machine_state.control == Return(
+        ImmediateInteger(22)
+    )
+    assert completed.state.machine_state.stack.depth == 0
+
+    # Existing references still designate the updated anchors.
+    final_heap = completed.state.machine_state.heap
+
+    assert final_heap.get(x_ref).value == Indirection(
+        ImmediateInteger(21)
+    )
+    assert final_heap.get(y_ref).value == Indirection(
+        ImmediateInteger(21)
+    )
+
+    # Historical snapshots retain their original lifecycle.
+    assert isinstance(
+        machine.heap.get(x_ref).value,
+        EvaluatingThunk,
+    )
+    assert isinstance(
+        machine.heap.get(y_ref).value,
+        EvaluatingThunk,
+    )
+
+
+def test_cbneed_follows_indirection_chain_without_compression():
+    config = make_cbneed_config()
+
+    initial = create_initial_core_state(
+        compile_source("main = 0"),
+        config,
+        session_id="cbneed-indirection-chain",
+    )
+
+    seed = run_batch(initial, config, max_steps=50)
+    assert seed.stop_reason is BatchStopReason.WHNF_PENDING
+
+    # Create an isolated state containing explicit aliases.
+    owned = seed.state.snapshot()
+    heap = owned.machine_state.heap
+
+    c_ref = heap.allocate(
+        Indirection(ImmediateInteger(42)),
+        allocated_slots=1,
+    )
+    b_ref = heap.allocate(
+        Indirection(c_ref),
+        allocated_slots=1,
+    )
+    a_ref = heap.allocate(
+        Indirection(b_ref),
+        allocated_slots=1,
+    )
+
+    force_state = replace(
+        owned,
+        machine_state=replace(
+            owned.machine_state,
+            control=Force(a_ref),
+        ),
+    )
+
+    slots_before = heap.current_slots
+    next_id_before = heap.next_object_id
+
+    result = run_batch(
+        force_state,
+        config,
+        max_steps=20,
+    )
+
+    assert result.stop_reason is BatchStopReason.WHNF_PENDING
+    assert result.state.machine_state.control == Return(
+        ImmediateInteger(42)
+    )
+
+    rules = [entry.rule_id for entry in result.trace]
+
+    assert rules == [
+        RuleId.CORE_FORCE_INDIRECTION,
+        RuleId.CORE_FORCE_INDIRECTION,
+        RuleId.CORE_FORCE_INDIRECTION,
+        RuleId.CORE_FORCE_IMMEDIATE,
+    ]
+
+    final_heap = result.state.machine_state.heap
+
+    # No path compression or eager rewriting.
+    assert final_heap.get(a_ref).value == Indirection(b_ref)
+    assert final_heap.get(b_ref).value == Indirection(c_ref)
+    assert final_heap.get(c_ref).value == Indirection(
+        ImmediateInteger(42)
+    )
+
+    assert final_heap.current_slots == slots_before
+    assert final_heap.next_object_id == next_id_before
+
+    # The state used to initiate forcing is unchanged.
+    assert force_state.machine_state.control == Force(a_ref)
+    assert force_state.machine_state.heap.get(a_ref).value == (
+        Indirection(b_ref)
+    )

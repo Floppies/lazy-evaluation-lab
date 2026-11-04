@@ -68,8 +68,8 @@ The descriptions follow the **Gantt B** plan and its milestone acceptance criter
 | B05.2 | Thunk Representation and Allocation | Completed |
 | B05.3 | Lazy Function Application | Completed |
 | B05.4 | Forcing and Update Continuations | Completed |
-| B05.5 | Memoization and Sharing | In progress |
-| B05.6 | Global and Recursive Bindings | Planned |
+| B05.5 | Memoization and Sharing | Completed |
+| B05.6 | Global and Recursive Bindings | In Progress |
 | B05.7 | Blackhole Detection | Planned |
 | B05.8 | Non-Strict seq Evaluation | Planned |
 | B05.9 | Observation, Batching and Tracing | Planned |

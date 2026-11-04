@@ -2,7 +2,7 @@
 
 **Status:** B04 Core CBV evaluation and canonical observation implemented; audited with documented limitations.
 
-**Scope:** Implemented Core CBV subset; planned CBN and CBNeed contracts.
+**Scope:** Implemented Core CBV subset and CBNeed contracts; planned CBN.
 
 This document retains the incremental B04 submilestone boundaries.
 Those boundaries describe the responsibility of each stage, not

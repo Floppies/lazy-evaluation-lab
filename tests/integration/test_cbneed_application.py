@@ -1735,3 +1735,167 @@ def test_cbneed_follows_indirection_chain_without_compression():
     assert force_state.machine_state.heap.get(a_ref).value == (
         Indirection(b_ref)
     )
+
+
+def test_cbneed_repeated_argument_demand_shares_result():
+    program = compile_source(
+        r"main = (\x -> x + x) (20 + 1)"
+    )
+    config = make_cbneed_config()
+
+    initial = create_initial_core_state(
+        program,
+        config,
+        session_id="cbneed-repeated-argument-sharing",
+    )
+
+    _, body_state = advance_to_next_cbneed_body(
+        initial, config
+    )
+
+    body_machine = body_state.machine_state
+    x_ref = body_machine.local_environment.lookup("x")
+
+    pending = body_machine.heap.get(x_ref).value
+    assert isinstance(pending, PendingThunk)
+
+    payload_ref = pending.payload_reference
+    original_payload = body_machine.heap.get(
+        payload_ref
+    ).value
+    assert isinstance(original_payload, ThunkPayload)
+
+    result = run_batch(
+        body_state,
+        config,
+        max_steps=120,
+    )
+
+    assert result.stop_reason is BatchStopReason.WHNF_PENDING
+
+    machine = result.state.machine_state
+
+    assert machine.control == Return(ImmediateInteger(42))
+    assert machine.stack.depth == 0
+
+    # The original anchor now points to the shared result.
+    updated = machine.heap.get(x_ref).value
+
+    assert isinstance(updated, Indirection)
+    assert updated.target == ImmediateInteger(21)
+
+    rules = [entry.rule_id for entry in result.trace]
+
+    # The RHS was entered and updated exactly once.
+    assert rules.count(RuleId.CORE_FORCE_THUNK_ENTER) == 1
+    assert rules.count(RuleId.CORE_THUNK_UPDATE_WHNF) == 1
+
+    # The second demand follows the existing indirection.
+    assert rules.count(RuleId.CORE_FORCE_INDIRECTION) == 1
+
+    # Two primitive additions:
+    #   20 + 1 -> 21
+    #   21 + 21 -> 42
+    #
+    # There must not be a third addition.
+    assert rules.count(RuleId.CORE_PRIM_EXECUTE) == 2
+
+    # Updating the thunk does not destroy its old payload.
+    assert machine.heap.get(payload_ref).value is original_payload
+
+    # The state before forcing still contains the pending thunk.
+    assert isinstance(
+        body_machine.heap.get(x_ref).value,
+        PendingThunk,
+    )
+
+
+def test_cbneed_shares_captured_thunks_across_closure_calls():
+    program = compile_source(
+        r"main = (\x -> (\f -> f 10 + f 20) (\y -> x)) (20 + 1)"
+    )
+    config = make_cbneed_config()
+
+    initial = create_initial_core_state(
+        program,
+        config,
+        session_id="cbneed-captured-sharing",
+    )
+
+    # Outer application creates x.
+    _, after_x = advance_to_next_cbneed_body(
+        initial, config
+    )
+    x_ref = after_x.machine_state.local_environment.lookup("x")
+
+    # Inner application creates f, capturing x.
+    _, after_f = advance_to_next_cbneed_body(
+        after_x, config
+    )
+    f_ref = after_f.machine_state.local_environment.lookup("f")
+
+    f_pending = after_f.machine_state.heap.get(f_ref).value
+
+    assert isinstance(f_pending, PendingThunk)
+
+    f_payload = after_f.machine_state.heap.get(
+        f_pending.payload_reference
+    ).value
+
+    assert isinstance(f_payload, ThunkPayload)
+    assert set(f_payload.captured_locals.bindings) == {"x"}
+    assert f_payload.captured_locals.lookup("x") is x_ref
+
+    result = run_batch(
+        after_f,
+        config,
+        max_steps=140,
+    )
+
+    assert result.stop_reason is BatchStopReason.WHNF_PENDING
+
+    machine = result.state.machine_state
+
+    assert machine.control == Return(ImmediateInteger(42))
+    assert machine.stack.depth == 0
+
+    rules = [entry.rule_id for entry in result.trace]
+
+    # Exactly two thunks are demanded:
+    # the function thunk f and the captured value thunk x.
+    assert rules.count(RuleId.CORE_FORCE_THUNK_ENTER) == 2
+    assert rules.count(RuleId.CORE_THUNK_UPDATE_WHNF) == 2
+
+    # The deferred function expression creates its closure once.
+    assert rules.count(RuleId.CORE_EVAL_LAMBDA) == 1
+
+    # The same closure body is entered for both applications.
+    assert rules.count(RuleId.CORE_CBNEED_ENTER_BODY) == 2
+
+    # Repeated demands reuse the existing results.
+    assert rules.count(RuleId.CORE_FORCE_INDIRECTION) == 2
+
+    # One addition in x's RHS and one in the outer expression.
+    assert rules.count(RuleId.CORE_PRIM_EXECUTE) == 2
+
+    x_updated = machine.heap.get(x_ref).value
+    f_updated = machine.heap.get(f_ref).value
+
+    assert isinstance(x_updated, Indirection)
+    assert isinstance(f_updated, Indirection)
+
+    assert x_updated.target == ImmediateInteger(21)
+    assert isinstance(f_updated.target, HeapReference)
+    assert isinstance(
+        machine.heap.get(f_updated.target).value,
+        Closure,
+    )
+
+    # The two unused parameters must remain deferred.
+    pending_anchors = [
+        cell.value
+        for cell in machine.heap.cells.values()
+        if isinstance(cell.value, PendingThunk)
+    ]
+
+    assert len(pending_anchors) == 2

@@ -1899,3 +1899,195 @@ def test_cbneed_shares_captured_thunks_across_closure_calls():
     ]
 
     assert len(pending_anchors) == 2
+
+
+def test_cbneed_sharing_is_deterministic_across_batches():
+    program = compile_source(
+        r"main = (\x -> x + x) (20 + 1)"
+    )
+    config = make_cbneed_config()
+
+    initial = create_initial_core_state(
+        program,
+        config,
+        session_id="cbneed-sharing-batch-determinism",
+    )
+
+    # Uninterrupted execution.
+    full = run_batch(
+        initial,
+        config,
+        max_steps=140,
+    )
+
+    # Resume the same initial state one transition at a time.
+    current = initial
+    chunked_rules = []
+
+    for _ in range(140):
+        batch = run_batch(
+            current,
+            config,
+            max_steps=1,
+        )
+
+        chunked_rules.extend(
+            entry.rule_id for entry in batch.trace
+        )
+        current = batch.state
+
+        if batch.stop_reason is BatchStopReason.WHNF_PENDING:
+            break
+    else:
+        pytest.fail("Chunked CBNeed evaluation did not finish")
+
+    assert full.stop_reason is BatchStopReason.WHNF_PENDING
+
+    full_rules = tuple(
+        entry.rule_id for entry in full.trace
+    )
+
+    assert full_rules == tuple(chunked_rules)
+
+    left = full.state.machine_state
+    right = current.machine_state
+
+    assert left.control == right.control
+    assert left.control == Return(ImmediateInteger(42))
+
+    assert left.stack.depth == right.stack.depth == 0
+
+    assert (
+        left.evaluator_transition_count
+        == right.evaluator_transition_count
+    )
+    assert full.state.transition_index == current.transition_index
+
+    assert left.heap.current_slots == right.heap.current_slots
+    assert left.heap.next_object_id == right.heap.next_object_id
+
+    # Compare stable allocation and update structure.
+    def heap_signature(machine):
+        return tuple(
+            (
+                object_id,
+                cell.allocated_slots,
+                type(cell.value).__name__,
+                (
+                    cell.value.target
+                    if isinstance(cell.value, Indirection)
+                    else None
+                ),
+            )
+            for object_id, cell in machine.heap.cells.items()
+        )
+
+    assert heap_signature(left) == heap_signature(right)
+
+    assert full_rules.count(RuleId.CORE_FORCE_THUNK_ENTER) == 1
+    assert full_rules.count(RuleId.CORE_THUNK_UPDATE_WHNF) == 1
+    assert full_rules.count(RuleId.CORE_FORCE_INDIRECTION) == 1
+
+    assert initial.transition_index == 0
+    assert initial.machine_state.heap.current_slots == 0
+
+
+def test_nested_updates_can_resume_from_same_snapshot():
+    program = compile_source(
+        r"main = (\x -> (\y -> y + 1) x) (20 + 1)"
+    )
+    config = make_cbneed_config()
+
+    initial = create_initial_core_state(
+        program,
+        config,
+        session_id="cbneed-resumable-nested-updates",
+    )
+
+    entries, _ = advance_to_second_thunk_entry(
+        initial, config
+    )
+
+    checkpoint = entries[-1][1]
+    checkpoint_machine = checkpoint.machine_state
+
+    x_frame = checkpoint_machine.stack.frames[-1]
+    y_frame = checkpoint_machine.stack.frames[-2]
+
+    assert isinstance(x_frame, UpdateFrame)
+    assert isinstance(y_frame, UpdateFrame)
+
+    x_ref = x_frame.thunk_reference
+    y_ref = y_frame.thunk_reference
+
+    assert isinstance(
+        checkpoint_machine.heap.get(x_ref).value,
+        EvaluatingThunk,
+    )
+    assert isinstance(
+        checkpoint_machine.heap.get(y_ref).value,
+        EvaluatingThunk,
+    )
+
+    original_depth = checkpoint_machine.stack.depth
+    original_slots = checkpoint_machine.heap.current_slots
+    original_index = checkpoint.transition_index
+
+    # Both executions resume independently from the same state.
+    first = run_batch(checkpoint, config, max_steps=100)
+    second = run_batch(checkpoint, config, max_steps=100)
+
+    assert first.stop_reason is BatchStopReason.WHNF_PENDING
+    assert second.stop_reason is BatchStopReason.WHNF_PENDING
+
+    assert first.trace == second.trace
+
+    left = first.state.machine_state
+    right = second.state.machine_state
+
+    assert left.control == right.control
+    assert left.control == Return(ImmediateInteger(22))
+
+    assert left.stack.depth == right.stack.depth == 0
+
+    assert (
+        left.evaluator_transition_count
+        == right.evaluator_transition_count
+    )
+
+    assert (
+        first.state.transition_index
+        == second.state.transition_index
+    )
+
+    for machine in (left, right):
+        assert machine.heap.get(x_ref).value == Indirection(
+            ImmediateInteger(21)
+        )
+        assert machine.heap.get(y_ref).value == Indirection(
+            ImmediateInteger(21)
+        )
+
+    assert left.heap.current_slots == right.heap.current_slots
+    assert left.heap.next_object_id == right.heap.next_object_id
+
+    rules = [entry.rule_id for entry in first.trace]
+
+    assert rules.count(RuleId.CORE_THUNK_UPDATE_WHNF) == 2
+
+    # The checkpoint is still an active, resumable computation.
+    assert checkpoint.transition_index == original_index
+    assert checkpoint_machine.stack.depth == original_depth
+    assert checkpoint_machine.heap.current_slots == original_slots
+
+    assert checkpoint_machine.stack.frames[-1] is x_frame
+    assert checkpoint_machine.stack.frames[-2] is y_frame
+
+    assert isinstance(
+        checkpoint_machine.heap.get(x_ref).value,
+        EvaluatingThunk,
+    )
+    assert isinstance(
+        checkpoint_machine.heap.get(y_ref).value,
+        EvaluatingThunk,
+    )

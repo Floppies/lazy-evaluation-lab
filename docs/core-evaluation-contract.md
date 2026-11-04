@@ -170,12 +170,14 @@ operations and recursive binding initialization.
 The initial B04.1 continuation plan assigned support to the
 following operational milestones:
 
-- Thunk updates and sharing: B05.
 - Constructors and pattern matching: B06.
 
-The B04 entries are now implemented as described below; saturated
-seq uses the existing application continuations. Thunk updates,
-sharing, constructors and pattern matching remain deferred.
+The B04 entries are implemented as described below.
+Thunk updates and sharing for deferred function arguments
+are implemented in B05.5. Global and recursive binding
+integration remains part of B05.6; blackhole detection
+belongs to B05.7. Constructors and pattern matching
+remain part of B06.
 
 ## 7. Evaluation Strategies and Binding Contracts
 
@@ -519,16 +521,12 @@ not counted node by node in the simulated heap.
 The anchor representations each require one abstract slot,
 independently of the payload size.
 
-Payloads and anchors are immutable. Their lifecycle will
-be implemented through controlled heap-cell replacement
-in subsequent B05 tasks.
+Thunk lifecycle transitions use controlled heap-cell
+replacement, as specified in Section 7.11.
 
-The structural existence of these classes does not imply
-operational Call-by-Need evaluation, memoization or
-blackhole detection.
-
-Selective capture, allocation helpers, forcing and
-sharing are implemented in later B05 subtasks.
+These representations support deferred evaluation,
+memoization and sharing. Blackhole detection and
+additional binding forms are addressed separately.
 
 #### Selective Thunk Capture
 
@@ -562,10 +560,11 @@ Selection respects nested lambda parameters, recursive
 let bindings, shadowing, and Core case binders.
 
 Capture selection is deterministic and does not allocate
-simulated heap objects. Heap allocation belongs to B05.2.3.
+simulated heap objects, evaluate expressions or force
+captured references.
 
-This structural support does not yet implement thunk
-forcing or memoization.
+Allocation and subsequent memoizing evaluation are
+separate runtime operations.
 
 #### Thunk Heap Allocation
 
@@ -641,9 +640,8 @@ However, the payload remains allocated until garbage collection
 reclaims it, provided it is unreachable from the roots that
 must be preserved.
 
-No operational forcing, automatic lifecycle transition,
-indirection-path compression, or garbage collection is
-implemented by this structural contract.
+Indirection-path compression and garbage collection
+are not performed by thunk lifecycle transitions.
 
 ### 7.11 Thunk Update Continuations
 
@@ -1428,8 +1426,10 @@ These demand rules preserve pending application continuations.
 Their consumption is implemented by the separate B04.4.4
 application rules in Section 11.8.
 
-Full CBNeed sharing, thunk updates and blackhole detection
-remain responsibilities of B05.
+CBNeed argument-thunk updates and sharing are implemented
+in B05.5. Memoizing global demand, recursive bindings,
+and blackhole detection have separate implementation
+boundaries within B05.
 
 ### 11.8 Call-by-Value Function Application
 

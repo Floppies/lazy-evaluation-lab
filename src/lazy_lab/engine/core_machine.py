@@ -446,6 +446,7 @@ def _install_global_rhs(
     heap: Heap,
     global_environment: Environment,
     binding: CoreBinding,
+    strategy: Strategy,
 ) -> HeapReference:
     """Install one global RHS without evaluating its expression.
 
@@ -485,21 +486,33 @@ def _install_global_rhs(
         )
 
     if isinstance(binding.rhs, CoreLam):
-        # A top-level lambda has no free local bindings to capture.
-        # References to globals are resolved through the separate
-        # global environment when the closure is applied.
+        # Top-level functions remain ready closures.
         value = capture_closure(
             binding.rhs,
             Environment(),
             free_local_names=(),
         )
-    else:
-        value = PendingGlobal(binding.rhs)
+        heap.replace(reference, value)
 
-    heap.replace(reference, value)
+    elif strategy is Strategy.CBNEED:
+        # Initialize the existing reserved global anchor
+        # using the ordinary Call-by-Need thunk protocol.
+        allocate_thunk(
+            heap,
+            binding.rhs,
+            global_environment,
+            global_environment,
+            anchor_reference=reference,
+        )
+
+    else:
+        # Preserve the existing CBV/CBN initialization path.
+        heap.replace(
+            reference,
+            PendingGlobal(binding.rhs),
+        )
 
     return reference
-
 
 def _advance_global_initialization(
     machine: MachineState,
@@ -572,6 +585,7 @@ def _advance_global_initialization(
             machine.heap,
             machine.global_environment,
             binding,
+            machine.strategy,
         )
 
         return (
@@ -965,7 +979,7 @@ def _advance_return(
     if isinstance(reference, HeapReference):
         value = machine.heap.get(reference).value
 
-        if isinstance(value, (PendingGlobal, Indirection)):
+        if isinstance(value, (PendingGlobal, Indirection, PendingThunk)):
             return (
                 replace(
                     machine,

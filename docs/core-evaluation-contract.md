@@ -604,7 +604,8 @@ allocation.
 
 Previously initialized anchors cannot be initialized again.
 
-Global PendingGlobal conversion is handled separately in B05.6.
+Global PendingGlobal conversion is implemented, refer to Section 7.11
+Global and Aliases sub-section.
 
 Payload reclamation is deferred to the future garbage collector.
 Until then, unreachable payloads remain allocated in the
@@ -746,7 +747,7 @@ Successful Update.
 
 #### Successful Update
 
-CORE_THUNK_UPDATE_WHNF completes an UpdateFrame whose
+`CORE_THUNK_UPDATE_WHNF` completes an UpdateFrame whose
 awaiting_whnf flag is True and whose returned reference
 has been verified to be in WHNF.
 
@@ -781,14 +782,23 @@ existing aliases, or compress indirection paths.
 
 #### Globals and Aliases
 
-Under CBNeed, pending global RHS computations participate
-in the same memoizing update protocol.
+Under CBNeed, non-lambda global RHS expressions are
+installed as PendingThunk values in their previously
+reserved one-slot global anchors.
 
-Existing CBV global demand behavior remains unchanged.
+The corresponding ThunkPayload is allocated separately.
+Global references are resolved through the shared global
+environment rather than captured as local bindings.
 
-An update targets the identity cell of the demanded thunk.
-Other aliases do not require eager rewriting or
-indirection-path compression.
+Root evaluation may explicitly force a PendingThunk global
+through CORE_ROOT_REQUIRE_WHNF.
+
+Global thunk demand and update use the same UpdateFrame
+protocol as deferred function arguments.
+
+Top-level lambda bindings remain directly installed
+Closures. CBV retains its existing PendingGlobal demand
+behavior without memoization.
 
 #### Blackholes and Execution Limits
 

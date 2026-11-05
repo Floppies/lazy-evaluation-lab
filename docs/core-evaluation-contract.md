@@ -1931,6 +1931,19 @@ evaluate RHS expressions or allocate additional anchors.
 When all bindings are installed, CORE_LETREC_ENTER_BODY
 begins evaluating the let body in the recursive environment.
 
+Mutually recursive local closures preserve references to
+all members of their binding group, including forward
+references. Capturing a reference does not demand it.
+
+Nested recursive scopes may shadow outer bindings without
+changing references captured by existing closures.
+Deferred arguments capture their call-site lexical
+references independently of the function's definition scope.
+
+Unused recursive bindings remain deferred. Reentrant
+demands of an EvaluatingThunk are handled separately
+by the blackhole protocol specified for B05.7.
+
 Subsequent demands use the ordinary CBNeed forcing,
 memoization and update protocol defined in Sections
 7.10–7.11.

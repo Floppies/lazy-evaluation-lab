@@ -40,7 +40,7 @@ from lazy_lab.runtime.thunks import (
     ThunkPayload,
     EvaluatingThunk,
 )
-from lazy_lab.runtime.transitions import BatchStopReason, RuleId
+from lazy_lab.runtime.transitions import BatchStopReason, RuleId, TraceEntry
 from lazy_lab.runtime.closures import Closure
 from lazy_lab.core.nodes import (
     CoreApp,
@@ -81,17 +81,32 @@ def advance_to_next_cbneed_body(state, config):
 
 
 def advance_to_second_thunk_entry(initial, config):
-    """Find two nested CBNeed thunk-entry transitions."""
+    """Find y's and x's nested entries, retaining every transition rule."""
 
     current = initial
     entries = []
     rules = []
+    argument_refs = {}
 
     for _ in range(140):
         transition = step(current, config)
         rules.append(transition.rule_id)
 
-        if transition.rule_id is RuleId.CORE_FORCE_THUNK_ENTER:
+        if transition.rule_id is RuleId.CORE_CBNEED_ENTER_BODY:
+            environment = transition.next_state.machine_state.local_environment
+            for name in ("x", "y"):
+                if name in environment.bindings:
+                    argument_refs[name] = environment.lookup(name)
+
+        if (
+            transition.rule_id is RuleId.CORE_FORCE_THUNK_ENTER
+            and current.machine_state.control.reference
+            in argument_refs.values()
+        ):
+            expected_name = ("y", "x")[len(entries)]
+            assert current.machine_state.control.reference == argument_refs[
+                expected_name
+            ]
             entries.append(
                 (current, transition.next_state)
             )
@@ -102,6 +117,58 @@ def advance_to_second_thunk_entry(initial, config):
         current = transition.next_state
 
     raise AssertionError("Two thunk entries were not reached")
+
+
+def thunk_transition_anchors(initial, config, trace):
+    """Replay a batch trace to associate thunk rules with their anchors.
+
+    TraceEntry has no reference field, so inspect each predecessor state
+    while verifying that replay reproduces the complete original trace.
+    """
+    anchors = {
+        RuleId.CORE_FORCE_THUNK_ENTER: [],
+        RuleId.CORE_THUNK_REQUIRE_WHNF: [],
+        RuleId.CORE_THUNK_UPDATE_WHNF: [],
+    }
+    current = initial
+
+    for entry in trace:
+        machine = current.machine_state
+        transition = step(current, config)
+        assert TraceEntry.from_transition(transition) == entry
+
+        if entry.rule_id is RuleId.CORE_FORCE_THUNK_ENTER:
+            assert isinstance(machine.control, Force)
+            reference = machine.control.reference
+            assert isinstance(machine.heap.get(reference).value, PendingThunk)
+            anchors[entry.rule_id].append(reference)
+        elif entry.rule_id in (
+            RuleId.CORE_THUNK_REQUIRE_WHNF,
+            RuleId.CORE_THUNK_UPDATE_WHNF,
+        ):
+            frame = machine.stack.peek()
+            assert isinstance(frame, UpdateFrame)
+            anchors[entry.rule_id].append(frame.thunk_reference)
+
+        current = transition.next_state
+
+    return anchors
+
+
+def advance_to_pending_function_demand(state, config):
+    """Find demand for the current local f anchor, excluding globals."""
+    function_ref = state.machine_state.local_environment.lookup("f")
+    assert isinstance(function_ref, HeapReference)
+    current = state
+
+    for _ in range(100):
+        machine = current.machine_state
+        if machine.control == Force(function_ref):
+            assert isinstance(machine.heap.get(function_ref).value, PendingThunk)
+            return current
+        current = step(current, config).next_state
+
+    raise AssertionError("Pending function thunk demand not reached")
 
 
 def test_unused_argument_is_not_evaluated():
@@ -573,8 +640,19 @@ def test_cbneed_applies_function_through_global_alias():
     rules = [entry.rule_id for entry in result.trace]
 
     assert RuleId.CORE_APPLY_REQUIRE_FUNCTION_WHNF in rules
-    assert RuleId.CORE_FORCE_GLOBAL_RHS in rules
     assert RuleId.CORE_CBNEED_ENTER_BODY in rules
+
+    machine = result.state.machine_state
+    alias_ref = machine.global_environment.lookup("alias")
+    constant_ref = machine.global_environment.lookup("constant")
+    main_ref = machine.global_environment.lookup("main")
+    anchors = thunk_transition_anchors(initial, config, result.trace)
+    assert anchors[RuleId.CORE_FORCE_THUNK_ENTER] == [main_ref, alias_ref]
+    assert anchors[RuleId.CORE_THUNK_REQUIRE_WHNF] == [alias_ref, main_ref]
+    assert anchors[RuleId.CORE_THUNK_UPDATE_WHNF] == [alias_ref, main_ref]
+    assert machine.heap.get(alias_ref).value == Indirection(constant_ref)
+    assert isinstance(machine.heap.get(constant_ref).value, Closure)
+    assert machine.heap.get(main_ref).value == Indirection(ImmediateInteger(42))
 
     # Only the function position was demanded.
     assert RuleId.CORE_EVAL_PRIMITIVE_START not in rules
@@ -595,24 +673,8 @@ def test_cbneed_pending_function_position_requires_thunk_forcing():
         session_id="cbneed-pending-function-position",
     )
 
-    for _ in range(100):
-        machine = current.machine_state
-        control = machine.control
-
-        if (
-            isinstance(control, Force)
-            and isinstance(control.reference, HeapReference)
-            and isinstance(
-                machine.heap.get(control.reference).value,
-                PendingThunk,
-            )
-        ):
-            break
-
-        current = step(current, config).next_state
-
-    else:
-        pytest.fail("No pending function thunk demand reached")
+    _, body_state = advance_to_next_cbneed_body(current, config)
+    current = advance_to_pending_function_demand(body_state, config)
 
     machine = current.machine_state
     function_ref = machine.control.reference
@@ -913,24 +975,10 @@ def test_thunk_entry_restores_captured_lexical_scope():
         session_id="cbneed-thunk-entry-scope",
     )
 
-    for _ in range(120):
-        machine = current.machine_state
-        control = machine.control
-
-        if (
-            isinstance(control, Force)
-            and isinstance(control.reference, HeapReference)
-            and isinstance(
-                machine.heap.get(control.reference).value,
-                PendingThunk,
-            )
-        ):
-            break
-
-        current = step(current, config).next_state
-
-    else:
-        pytest.fail("Pending function thunk demand not reached")
+    _, x_state = advance_to_next_cbneed_body(current, config)
+    captured_x_ref = x_state.machine_state.local_environment.lookup("x")
+    _, f_state = advance_to_next_cbneed_body(x_state, config)
+    current = advance_to_pending_function_demand(f_state, config)
 
     machine = current.machine_state
     thunk_ref = machine.control.reference
@@ -944,6 +992,7 @@ def test_thunk_entry_restores_captured_lexical_scope():
     assert set(payload.captured_locals.bindings) == {"x"}
 
     captured_x = payload.captured_locals.lookup("x")
+    assert captured_x is captured_x_ref
 
     transition = step(current, config)
     next_machine = transition.next_state.machine_state
@@ -1228,7 +1277,11 @@ def test_nested_thunk_forcing_preserves_update_frames():
         PrimitiveOperandsFrame,
     )
 
-    assert rules.count(RuleId.CORE_FORCE_THUNK_ENTER) == 2
+    prefix = run_batch(initial, config, max_steps=len(rules))
+    assert tuple(entry.rule_id for entry in prefix.trace) == rules
+    anchors = thunk_transition_anchors(initial, config, prefix.trace)
+    main_ref = x_machine.global_environment.lookup("main")
+    assert anchors[RuleId.CORE_FORCE_THUNK_ENTER] == [main_ref, y_ref, x_ref]
     assert RuleId.CORE_THUNK_REQUIRE_WHNF in rules
 
     # Entering x does not allocate additional heap objects.
@@ -1504,6 +1557,8 @@ def test_cbneed_immediate_thunk_update_completes_program():
         config,
         session_id="cbneed-immediate-update",
     )
+    _, body_state = advance_to_next_cbneed_body(initial, config)
+    x_ref = body_state.machine_state.local_environment.lookup("x")
 
     result = run_batch(
         initial,
@@ -1516,24 +1571,14 @@ def test_cbneed_immediate_thunk_update_completes_program():
         ImmediateInteger(21)
     )
 
-    rules = [entry.rule_id for entry in result.trace]
-
-    assert rules.count(RuleId.CORE_FORCE_THUNK_ENTER) == 1
-    assert rules.count(RuleId.CORE_THUNK_REQUIRE_WHNF) == 1
-    assert rules.count(RuleId.CORE_THUNK_UPDATE_WHNF) == 1
-
     machine = result.state.machine_state
-
-    updated_anchors = [
-        cell.value
-        for cell in machine.heap.cells.values()
-        if isinstance(cell.value, Indirection)
-    ]
-
-    assert any(
-        indirection.target == ImmediateInteger(20)
-        for indirection in updated_anchors
-    )
+    main_ref = machine.global_environment.lookup("main")
+    anchors = thunk_transition_anchors(initial, config, result.trace)
+    assert anchors[RuleId.CORE_FORCE_THUNK_ENTER] == [main_ref, x_ref]
+    assert anchors[RuleId.CORE_THUNK_REQUIRE_WHNF] == [x_ref, main_ref]
+    assert anchors[RuleId.CORE_THUNK_UPDATE_WHNF] == [x_ref, main_ref]
+    assert machine.heap.get(x_ref).value == Indirection(ImmediateInteger(20))
+    assert machine.heap.get(main_ref).value == Indirection(ImmediateInteger(21))
 
     assert machine.stack.depth == 0
 
@@ -1786,9 +1831,12 @@ def test_cbneed_repeated_argument_demand_shares_result():
 
     rules = [entry.rule_id for entry in result.trace]
 
-    # The RHS was entered and updated exactly once.
-    assert rules.count(RuleId.CORE_FORCE_THUNK_ENTER) == 1
-    assert rules.count(RuleId.CORE_THUNK_UPDATE_WHNF) == 1
+    # Only x is entered here; main was entered before body_state.
+    main_ref = machine.global_environment.lookup("main")
+    anchors = thunk_transition_anchors(body_state, config, result.trace)
+    assert anchors[RuleId.CORE_FORCE_THUNK_ENTER] == [x_ref]
+    assert anchors[RuleId.CORE_THUNK_REQUIRE_WHNF] == [x_ref, main_ref]
+    assert anchors[RuleId.CORE_THUNK_UPDATE_WHNF] == [x_ref, main_ref]
 
     # The second demand follows the existing indirection.
     assert rules.count(RuleId.CORE_FORCE_INDIRECTION) == 1
@@ -1861,10 +1909,12 @@ def test_cbneed_shares_captured_thunks_across_closure_calls():
 
     rules = [entry.rule_id for entry in result.trace]
 
-    # Exactly two thunks are demanded:
-    # the function thunk f and the captured value thunk x.
-    assert rules.count(RuleId.CORE_FORCE_THUNK_ENTER) == 2
-    assert rules.count(RuleId.CORE_THUNK_UPDATE_WHNF) == 2
+    # f and x are each demanded once; main's update is separate.
+    main_ref = machine.global_environment.lookup("main")
+    anchors = thunk_transition_anchors(after_f, config, result.trace)
+    assert anchors[RuleId.CORE_FORCE_THUNK_ENTER] == [f_ref, x_ref]
+    assert anchors[RuleId.CORE_THUNK_REQUIRE_WHNF] == [f_ref, x_ref, main_ref]
+    assert anchors[RuleId.CORE_THUNK_UPDATE_WHNF] == [f_ref, x_ref, main_ref]
 
     # The deferred function expression creates its closure once.
     assert rules.count(RuleId.CORE_EVAL_LAMBDA) == 1
@@ -1984,8 +2034,13 @@ def test_cbneed_sharing_is_deterministic_across_batches():
 
     assert heap_signature(left) == heap_signature(right)
 
-    assert full_rules.count(RuleId.CORE_FORCE_THUNK_ENTER) == 1
-    assert full_rules.count(RuleId.CORE_THUNK_UPDATE_WHNF) == 1
+    _, body_state = advance_to_next_cbneed_body(initial, config)
+    x_ref = body_state.machine_state.local_environment.lookup("x")
+    main_ref = left.global_environment.lookup("main")
+    anchors = thunk_transition_anchors(initial, config, full.trace)
+    assert anchors[RuleId.CORE_FORCE_THUNK_ENTER] == [main_ref, x_ref]
+    assert anchors[RuleId.CORE_THUNK_REQUIRE_WHNF] == [x_ref, main_ref]
+    assert anchors[RuleId.CORE_THUNK_UPDATE_WHNF] == [x_ref, main_ref]
     assert full_rules.count(RuleId.CORE_FORCE_INDIRECTION) == 1
 
     assert initial.transition_index == 0
@@ -2071,9 +2126,11 @@ def test_nested_updates_can_resume_from_same_snapshot():
     assert left.heap.current_slots == right.heap.current_slots
     assert left.heap.next_object_id == right.heap.next_object_id
 
-    rules = [entry.rule_id for entry in first.trace]
-
-    assert rules.count(RuleId.CORE_THUNK_UPDATE_WHNF) == 2
+    main_ref = checkpoint_machine.global_environment.lookup("main")
+    anchors = thunk_transition_anchors(checkpoint, config, first.trace)
+    assert anchors[RuleId.CORE_FORCE_THUNK_ENTER] == []
+    assert anchors[RuleId.CORE_THUNK_REQUIRE_WHNF] == [x_ref, main_ref]
+    assert anchors[RuleId.CORE_THUNK_UPDATE_WHNF] == [x_ref, y_ref, main_ref]
 
     # The checkpoint is still an active, resumable computation.
     assert checkpoint.transition_index == original_index

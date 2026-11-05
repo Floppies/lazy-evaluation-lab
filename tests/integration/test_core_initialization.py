@@ -48,6 +48,7 @@ from lazy_lab.runtime.control import (
     Force,
 )
 from lazy_lab.runtime.global_bindings import PendingGlobal
+from lazy_lab.runtime.thunks import PendingThunk, ThunkPayload
 from lazy_lab.runtime.predefined import PredefinedFunction
 from lazy_lab.runtime.closures import Closure
 
@@ -357,7 +358,7 @@ def test_global_literal_is_installed_without_evaluation():
     original_slots = heap.current_slots
 
     installed = _install_global_rhs(
-        heap, environment, program.bindings[0]
+        heap, environment, program.bindings[0], Strategy.CBV
     )
 
     assert installed is reference
@@ -389,7 +390,7 @@ def test_global_alias_is_not_resolved_during_installation():
     answer_ref = environment.lookup("answer")
 
     _install_global_rhs(
-        heap, environment, program.bindings[0]
+        heap, environment, program.bindings[0], Strategy.CBV
     )
 
     pending = heap.get(main_ref).value
@@ -399,7 +400,8 @@ def test_global_alias_is_not_resolved_during_installation():
     assert isinstance(heap.get(answer_ref).value, Reserved)
 
 
-def test_global_lambda_installs_closure_without_running_body():
+@pytest.mark.parametrize("strategy", list(Strategy))
+def test_global_lambda_installs_closure_without_running_body(strategy):
     program = compile_source(
         "identity x = x\n"
         "main = identity"
@@ -414,7 +416,7 @@ def test_global_lambda_installs_closure_without_running_body():
     slots_before = heap.current_slots
 
     _install_global_rhs(
-        heap, environment, program.bindings[0]
+        heap, environment, program.bindings[0], strategy
     )
 
     closure = heap.get(reference).value
@@ -432,7 +434,8 @@ def test_global_lambda_installs_closure_without_running_body():
     )
 
 
-def test_all_global_installations_preserve_addresses():
+@pytest.mark.parametrize("strategy", list(Strategy))
+def test_all_global_installations_preserve_addresses(strategy):
     program = compile_source(
         "first = second\n"
         "second = 42\n"
@@ -452,19 +455,31 @@ def test_all_global_installations_preserve_addresses():
     next_object_id = heap.next_object_id
 
     for binding in program.bindings:
-        _install_global_rhs(heap, environment, binding)
+        installed = _install_global_rhs(heap, environment, binding, strategy)
+        assert installed is references[binding.name]
 
-    for name, reference in references.items():
-        assert environment.lookup(name) is reference
-        assert isinstance(
-            heap.get(reference).value, PendingGlobal
-        )
+    for binding in program.bindings:
+        reference = references[binding.name]
+        assert environment.lookup(binding.name) is reference
+        cell = heap.get(reference)
+        assert cell.allocated_slots == 1
+        if strategy is Strategy.CBNEED:
+            assert isinstance(cell.value, PendingThunk)
+            payload = heap.get(cell.value.payload_reference).value
+            assert isinstance(payload, ThunkPayload)
+            assert payload.expression is binding.rhs
+            assert not payload.captured_locals.bindings
+            assert payload.captured_locals.parent is None
+        else:
+            assert isinstance(cell.value, PendingGlobal)
 
-    assert heap.current_slots == initial_slots
-    assert heap.next_object_id == next_object_id
+    payload_count = len(program.bindings) if strategy is Strategy.CBNEED else 0
+    assert heap.current_slots == initial_slots + payload_count
+    assert heap.next_object_id == next_object_id + payload_count
 
 
-def test_installing_shadowed_seq_keeps_builtin_unchanged():
+@pytest.mark.parametrize("strategy", list(Strategy))
+def test_installing_shadowed_seq_keeps_builtin_unchanged(strategy):
     program = compile_source(
         "seq x y = x\n"
         "main = seq 1 2"
@@ -479,7 +494,7 @@ def test_installing_shadowed_seq_keeps_builtin_unchanged():
     user_ref = environment.lookup("seq")
 
     _install_global_rhs(
-        heap, environment, program.bindings[0]
+        heap, environment, program.bindings[0], strategy
     )
 
     assert isinstance(heap.get(user_ref).value, Closure)
@@ -489,7 +504,8 @@ def test_installing_shadowed_seq_keeps_builtin_unchanged():
     )
 
 
-def test_reinstalling_global_is_rejected_without_mutation():
+@pytest.mark.parametrize("strategy", list(Strategy))
+def test_reinstalling_global_is_rejected_without_mutation(strategy):
     program = compile_source("main = 42")
 
     heap = Heap()
@@ -500,16 +516,23 @@ def test_reinstalling_global_is_rejected_without_mutation():
     binding = program.bindings[0]
     reference = environment.lookup("main")
 
-    _install_global_rhs(heap, environment, binding)
+    _install_global_rhs(heap, environment, binding, strategy)
     installed_cell = heap.get(reference)
+    cells_before = dict(heap.cells)
+    slots_before = heap.current_slots
+    next_id_before = heap.next_object_id
 
     with pytest.raises(ValueError, match="already initialized"):
-        _install_global_rhs(heap, environment, binding)
+        _install_global_rhs(heap, environment, binding, strategy)
 
     assert heap.get(reference) is installed_cell
+    assert dict(heap.cells) == cells_before
+    assert heap.current_slots == slots_before
+    assert heap.next_object_id == next_id_before
 
 
-def test_unreserved_global_cannot_be_installed():
+@pytest.mark.parametrize("strategy", list(Strategy))
+def test_unreserved_global_cannot_be_installed(strategy):
     program = compile_source("main = 42")
 
     heap = Heap()
@@ -522,7 +545,7 @@ def test_unreserved_global_cannot_be_installed():
 
     with pytest.raises(UnboundNameError):
         _install_global_rhs(
-            heap, environment, extra_binding
+            heap, environment, extra_binding, strategy
         )
 
     assert heap.current_slots == slots_before
@@ -579,13 +602,14 @@ def test_initialization_reserves_scope_in_one_transition(strategy):
     assert machine.evaluator_transition_count == 1
 
 
-def test_each_installation_advances_one_binding():
+@pytest.mark.parametrize("strategy", list(Strategy))
+def test_each_installation_advances_one_binding(strategy):
     program = compile_source(
         "answer = 42\n"
         "identity x = x\n"
         "main = answer"
     )
-    config = make_config()
+    config = make_config(strategy)
     initial = create_initial_core_state(
         program,
         config,
@@ -593,6 +617,8 @@ def test_each_installation_advances_one_binding():
     )
 
     reserved = step(initial, config).next_state
+    reserved_machine = reserved.machine_state
+    answer_ref = reserved_machine.global_environment.lookup("answer")
     first = step(reserved, config)
     first_machine = first.next_state.machine_state
 
@@ -600,12 +626,15 @@ def test_each_installation_advances_one_binding():
     assert first_machine.control.next_index == 1
 
     environment = first_machine.global_environment
+    assert environment.lookup("answer") is answer_ref
+    assert isinstance(reserved_machine.heap.get(answer_ref).value, Reserved)
+    assert first_machine.heap.get(answer_ref).allocated_slots == 1
 
     assert isinstance(
         first_machine.heap.get(
             environment.lookup("answer")
         ).value,
-        PendingGlobal,
+        PendingThunk if strategy is Strategy.CBNEED else PendingGlobal,
     )
     assert isinstance(
         first_machine.heap.get(
@@ -613,6 +642,7 @@ def test_each_installation_advances_one_binding():
         ).value,
         Reserved,
     )
+    assert first_machine.stack.depth == 0
 
     second = step(first.next_state, config)
     second_machine = second.next_state.machine_state
@@ -676,7 +706,7 @@ def test_initialization_enters_selected_global(strategy):
         machine.heap.get(
             machine.global_environment.lookup("loop")
         ).value,
-        PendingGlobal,
+        PendingThunk if strategy is Strategy.CBNEED else PendingGlobal,
     )
 
     assert current.transition_index == 4

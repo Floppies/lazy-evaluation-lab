@@ -800,6 +800,19 @@ Top-level lambda bindings remain directly installed
 Closures. CBV retains its existing PendingGlobal demand
 behavior without memoization.
 
+Global aliases and forward references preserve the
+pre-reserved binding identities. A global RHS may demand
+another global thunk through the shared global environment.
+
+Nested global demands use the ordinary UpdateFrame protocol
+and complete in LIFO order. Each successfully evaluated
+global thunk is memoized at its own stable anchor.
+
+Subsequent demands reuse the updated result, including
+demands originating from different applications of a
+top-level closure. Unreferenced global thunks remain
+pending.
+
 #### Blackholes and Execution Limits
 
 A demand of an already EVALUATING thunk is a reentrant

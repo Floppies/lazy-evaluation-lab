@@ -1087,9 +1087,9 @@ def test_cbv_letrec_reserves_mutually_recursive_functions():
 
 @pytest.mark.parametrize(
     "strategy",
-    [Strategy.CBN, Strategy.CBNEED],
+    [Strategy.CBN],
 )
-def test_non_strict_letrec_is_not_implemented_yet(strategy):
+def test_CBN_letrec_is_not_implemented_yet(strategy):
     expression = CoreLetRec(
         (CoreBinding("x", CoreInt(10)),),
         CoreVar("x"),
@@ -1107,7 +1107,7 @@ def test_non_strict_letrec_is_not_implemented_yet(strategy):
 
     with pytest.raises(
         UnsupportedTransitionError,
-        match="Non-strict local bindings",
+        match="Local recursive bindings are not implemented for this strategy",
     ):
         step(original, config)
 

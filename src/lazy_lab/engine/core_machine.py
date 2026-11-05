@@ -1725,9 +1725,12 @@ def _enter_local_letrec(
     expression: CoreLetRec,
 ) -> tuple[MachineState, RuleId]:
     """Reserve every local binding before evaluating any RHS."""
-    if machine.strategy is not Strategy.CBV:
+    if machine.strategy not in (
+        Strategy.CBV,
+        Strategy.CBNEED,
+    ):
         raise UnsupportedTransitionError(
-            "Non-strict local bindings are not implemented yet"
+            "Local recursive bindings are not implemented for this strategy"
         )
 
     bindings = expression.bindings

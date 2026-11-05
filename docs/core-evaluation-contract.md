@@ -1737,10 +1737,10 @@ explicitly in B07 instrumentation.
 
 ## 13. Local Recursive Bindings
 
-### 13.1 CBV Local Scope Reservation
+### 13.1 Local Scope Reservation (CBV and CBNeed)
 
-`CORE_LETREC_RESERVE_SCOPE` begins evaluation of a
-CoreLetRec expression under Call by Value.
+`CORE_LETREC_RESERVE_SCOPE` begins evaluation of a CoreLetRec
+expression under CBV or CBNeed.
 
 The rule reserves one stable heap address for each local
 binding before evaluating any right-hand side.
@@ -1769,11 +1769,14 @@ with captured references.
 Strict RHS initialization and recursive dependency handling
 are implemented as described in Sections 13.2-13.4.
 
-CBN and CBNeed local bindings remain unsupported by this
-CBV-specific rule. CBNeed local bindings will be implemented in B05.6
+Under CBV, initialization proceeds through the strict rules
+defined in Sections 13.2–13.4.
 
-The reservation rule does not implement thunk allocation,
-sharing updates or blackhole detection.
+Under CBNeed, reservation reaches InitializeLocalBindings.
+Deferred initialization of the reserved bindings is
+implemented separately in B05.6.4.
+
+CBN local recursive bindings remain unsupported until B11.
 
 ### 13.2 CBV Local Function Initialization
 

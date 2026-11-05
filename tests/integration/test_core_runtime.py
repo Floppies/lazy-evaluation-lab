@@ -174,22 +174,6 @@ def test_compiled_literals_use_runtime(
     assert result.trace[0].previous_state_id == 0
     assert result.trace[0].next_state_id == 1
 
-#TODO these tests are temporary
-@pytest.mark.parametrize(
-    "source",
-    [
-        "main = let { x = 1 } in x",
-    ],
-)
-def test_unimplemented_core_constructs_remain_unsupported(source):
-    state = make_demo_state(source)
-
-    with pytest.raises(UnsupportedTransitionError):
-        step(state, make_config())
-
-    assert state.state_id == 0
-    assert state.transition_index == 0
-    assert state.machine_state.evaluator_transition_count == 0
 
 def test_trace_mode_does_not_change_semantic_result():
     state = make_demo_state("main = True")

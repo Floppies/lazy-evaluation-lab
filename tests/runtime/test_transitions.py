@@ -1089,7 +1089,7 @@ def test_cbv_letrec_reserves_mutually_recursive_functions():
     "strategy",
     [Strategy.CBN],
 )
-def test_CBN_letrec_is_not_implemented_yet(strategy):
+def test_cbn_letrec_is_not_implemented_yet(strategy):
     expression = CoreLetRec(
         (CoreBinding("x", CoreInt(10)),),
         CoreVar("x"),

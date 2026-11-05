@@ -616,9 +616,9 @@ def _advance_local_initialization(
     control: InitializeLocalBindings,
 ) -> tuple[MachineState, RuleId]:
     """Initialize local recursive bindings in source order."""
-    if machine.strategy is not Strategy.CBV:
+    if machine.strategy not in (Strategy.CBV, Strategy.CBNEED):
         raise UnsupportedTransitionError(
-            "Non-strict local initialization is not implemented"
+            "Local initialization is not implemented for this strategy"
         )
 
     if machine.phase is not ExecutionPhase.EVALUATION:
@@ -685,6 +685,29 @@ def _advance_local_initialization(
                 ),
             ),
             RuleId.CORE_LETREC_INSTALL_FUNCTION,
+        )
+
+    if machine.strategy is Strategy.CBNEED:
+        # All local anchors were reserved before initialization.
+        # Capture free local references from the complete
+        # recursive environment without evaluating the RHS.
+        allocate_thunk(
+            machine.heap,
+            binding.rhs,
+            machine.local_environment,
+            machine.global_environment,
+            anchor_reference=reference,
+        )
+
+        return (
+            replace(
+                machine,
+                control=replace(
+                    control,
+                    next_index=control.next_index + 1,
+                ),
+            ),
+            RuleId.CORE_LETREC_INSTALL_THUNK,
         )
 
     # Non-lambda RHS: evaluate it strictly and wait

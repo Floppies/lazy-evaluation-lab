@@ -1903,6 +1903,41 @@ Error classification concerns operational behavior. The
 chosen stable binding-cell representation is documented
 separately in ADR-006.
 
+### 13.5 CBNeed Deferred Local Initialization
+
+Under CBNeed, InitializeLocalBindings installs each local
+binding in source order without evaluating its RHS.
+
+All binding identities have already been reserved by
+CORE_LETREC_RESERVE_SCOPE.
+
+For a CoreLam RHS, CORE_LETREC_INSTALL_FUNCTION allocates
+a Closure capturing the required free local references
+and installs an Indirection in the original reserved anchor.
+The function body is not evaluated.
+
+For a non-lambda RHS, CORE_LETREC_INSTALL_THUNK allocates a
+separate ThunkPayload and replaces the existing Reserved
+anchor with PendingThunk.
+
+The payload captures only the required free local references
+from the complete recursive environment. Those references
+may designate bindings whose initialization is still pending.
+
+Initialization preserves each reserved ObjectId and its
+one-slot capacity. It does not force captured references,
+evaluate RHS expressions or allocate additional anchors.
+
+When all bindings are installed, CORE_LETREC_ENTER_BODY
+begins evaluating the let body in the recursive environment.
+
+Subsequent demands use the ordinary CBNeed forcing,
+memoization and update protocol defined in Sections
+7.10–7.11.
+
+CBV retains its strict initialization rules from Sections
+13.2–13.4. CBN remains unsupported until B11.
+
 ## 14. First-Class Predefined `seq`
 
 ### 14.1 Partial Predefined Function Representation

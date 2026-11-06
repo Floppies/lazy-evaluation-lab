@@ -2032,13 +2032,18 @@ Under CBV, applied arguments must reach WHNF before
 the partial application is constructed.
 
 Under CBN and CBNeed, arguments may remain deferred.
-CBNeed implementation of seq is described in section 14.5 and 14.6.
+CBNeed partial application and saturation are implemented
+as specified in Sections 14.5 and 14.6. CBN support
+remains deferred to B11.
+
+Saturated applications do not produce
+PartialPredefinedFunction values.
+
+The CBV operational rules are defined in Sections 14.2
+and 14.3, and the CBNeed rules in Sections 14.5 and 14.6.
 
 Saturated applications do not produce
 `PartialPredefinedFunction values`.
-
-The operational rules for application and saturation
-are defined in section 14.5 and 14.6
 
 ### 14.2 CBV Partial Application of Predefined Functions
 
@@ -2108,8 +2113,8 @@ This rule is specific to CBV. Under CBN and CBNeed,
 seq must explicitly demand its first argument at
 saturation because partial application does not force it.
 
-The non-strict operational rules are implemented
-with their corresponding evaluator strategies. For the CBNeed behaviour refer to section 14.5 and 14.6.
+The CBNeed operational rules are implemented in
+Sections 14.5 and 14.6. CBN remains deferred to B11.
 
 The sequence of operational transitions remains observable
 through the existing RuleId and trace infrastructure.
@@ -2224,8 +2229,14 @@ It is a passive operation that:
 - Does not follow unresolved indirections.
 - Does not consume evaluator or result-consumer transitions.
 
-References to `Reserved`, `PendingGlobal` or `Indirection` objects
-must be resolved by the evaluator before canonical observation.
+References to `Reserved`, `PendingGlobal`, `PendingThunk`,
+`EvaluatingThunk`, or `Indirection` objects have not reached
+observable WHNF and must be rejected by passive observation
+with UnresolvedObservationError.
+
+The evaluator is responsible for resolving such references
+before result consumption. Observation must not force,
+evaluate, or update them.
 
 Unsupported runtime objects must not silently produce
 fabricated canonical values.

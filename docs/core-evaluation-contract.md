@@ -704,8 +704,7 @@ The UpdateFrame continuation handles the eventual RHS return
 and subsequent WHNF demand, as specified in the following
 subsections.
 
-Blackhole detection for demands on EvaluatingThunk remains
-part of B05.7.
+Blackhole detection is explain in the subsection Blackholes and Execution Limits
 
 #### Return and WHNF Verification
 

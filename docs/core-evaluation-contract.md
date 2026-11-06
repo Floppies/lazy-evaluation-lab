@@ -2187,6 +2187,13 @@ context.
 If forcing the first argument detects a blackhole,
 saturation does not occur.
 
+The deferred second argument may evaluate to an atomic
+value or a function value. In both cases, forcing and
+memoization follow the ordinary CBNeed thunk protocol.
+
+A failure or blackhole originating from the second argument
+occurs only if a subsequent evaluation context demands it.
+
 ## 15. Canonical Result Observation
 
 ### 15.1 Passive WHNF Conversion

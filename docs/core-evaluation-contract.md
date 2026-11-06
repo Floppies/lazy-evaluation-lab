@@ -842,6 +842,23 @@ A suspended execution with an active UpdateFrame remains
 resumable. Reaching the execution-step budget is not
 equivalent to detecting a blackhole.
 
+Evaluator budget exhaustion does not change the machine
+status and does not imply a blackhole.
+
+A RUNNING execution suspended with active UpdateFrames
+may resume when the cumulative execution-step limit is
+increased. Its existing heap, control, stack and
+continuations are preserved.
+
+If the budget is reached before a reentrant Force
+transition executes, run_batch reports EVALUATOR_BUDGET.
+The blackhole is detected only when that transition is
+subsequently allowed to execute.
+
+Once BLACKHOLE_DETECTED is reached, the execution is
+terminal. TERMINAL_STATUS takes precedence over the
+evaluator budget in batch stopping.
+
 Failed transitions must not partially mutate their input
 ExecutionState.
 

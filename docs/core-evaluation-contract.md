@@ -845,6 +845,16 @@ equivalent to detecting a blackhole.
 Failed transitions must not partially mutate their input
 ExecutionState.
 
+Blackhole detection also applies to indirect recursive
+dependencies. If forcing a thunk eventually demands an
+anchor that is still EvaluatingThunk with an active
+UpdateFrame, the machine detects a blackhole.
+
+No dependency-graph traversal is required. Recursive
+bindings and mutually recursive closures are not
+themselves blackholes; detection occurs only upon an
+actual reentrant demand.
+
 #### Implementation Boundaries
 
 Concrete UpdateFrame types, RuleIds and forcing transitions

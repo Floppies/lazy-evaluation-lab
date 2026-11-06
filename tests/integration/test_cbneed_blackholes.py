@@ -3,12 +3,12 @@ from dataclasses import replace
 
 import pytest
 
-from lazy_lab.engine.core_machine import create_initial_core_state, run_batch, step
+from lazy_lab.engine.core_machine import InvalidMachineStateError, create_initial_core_state, run_batch, step
 from lazy_lab.pipeline import compile_source
 from lazy_lab.runtime.control import Force, Return
 from lazy_lab.runtime.heap import Reserved
 from lazy_lab.runtime.references import ImmediateInteger
-from lazy_lab.runtime.stack import UpdateFrame
+from lazy_lab.runtime.stack import Stack, UpdateFrame
 from lazy_lab.runtime.state import ExecutionStatus, TraceMode
 from lazy_lab.runtime.thunks import EvaluatingThunk
 from lazy_lab.runtime.transitions import BatchStopReason, RuleId, TraceEntry
@@ -719,3 +719,104 @@ def test_cbneed_blackhole_transition_replays_from_snapshot():
     assert batch.stop_reason is BatchStopReason.TERMINAL_STATUS
     assert len(batch.trace) == 1
     assert batch.trace[0] == TraceEntry.from_transition(first)
+
+
+def test_cbneed_evaluating_thunk_without_update_frame_is_invalid():
+    program = compile_source("main = main")
+    config = make_cbneed_config()
+
+    initial = create_initial_core_state(
+        program,
+        config,
+        session_id="cbneed-missing-update-frame",
+    )
+
+    # Reach a legitimate EvaluatingThunk state.
+    current = initial
+
+    for _ in range(100):
+        transition = step(current, config)
+
+        if transition.rule_id is RuleId.CORE_FORCE_THUNK_ENTER:
+            checkpoint = transition.next_state
+            break
+
+        current = transition.next_state
+    else:
+        pytest.fail("Thunk entry was not reached")
+
+    machine = checkpoint.machine_state
+    main_ref = machine.global_environment.lookup("main")
+
+    assert isinstance(
+        machine.heap.get(main_ref).value,
+        EvaluatingThunk,
+    )
+
+    assert any(
+        isinstance(frame, UpdateFrame)
+        and frame.thunk_reference == main_ref
+        for frame in machine.stack.frames
+    )
+
+    # Construct an intentionally inconsistent state:
+    # the anchor remains EVALUATING, but its UpdateFrame
+    # is missing.
+    malformed = checkpoint.snapshot()
+
+    malformed_stack = Stack()
+
+    for frame in malformed.machine_state.stack.frames:
+        if not isinstance(frame, UpdateFrame):
+            malformed_stack.push(frame)
+
+    malformed = replace(
+        malformed,
+        machine_state=replace(
+            malformed.machine_state,
+            stack=malformed_stack,
+            control=Force(main_ref),
+        ),
+    )
+
+    assert not any(
+        isinstance(frame, UpdateFrame)
+        and frame.thunk_reference == main_ref
+        for frame in malformed.machine_state.stack.frames
+    )
+
+    before_machine = malformed.machine_state
+    before_cells = dict(before_machine.heap.cells)
+    before_frames = before_machine.stack.frames
+    before_index = malformed.transition_index
+    before_count = before_machine.evaluator_transition_count
+
+    # An inconsistent machine state is not a semantic
+    # blackhole and must never become a terminal transition.
+    with pytest.raises(
+        InvalidMachineStateError,
+        match="no active UpdateFrame",
+    ):
+        step(malformed, config)
+
+    # The failed transition must not mutate its input.
+    assert malformed.transition_index == before_index
+    assert (
+        malformed.machine_state.evaluator_transition_count
+        == before_count
+    )
+    assert malformed.machine_state.status is ExecutionStatus.RUNNING
+    assert dict(malformed.machine_state.heap.cells) == before_cells
+    assert malformed.machine_state.stack.frames == before_frames
+    assert malformed.machine_state.control == Force(main_ref)
+
+    # The original, valid checkpoint is unchanged.
+    assert any(
+        isinstance(frame, UpdateFrame)
+        and frame.thunk_reference == main_ref
+        for frame in checkpoint.machine_state.stack.frames
+    )
+    assert isinstance(
+        checkpoint.machine_state.heap.get(main_ref).value,
+        EvaluatingThunk,
+    )

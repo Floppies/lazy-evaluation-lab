@@ -2261,7 +2261,7 @@ The initial result consumer supports an explicit
 4. Converts the returned reference using passive `observe_whnf`.
 5. Records the reference and resolved result mode in `ResultState`.
 6. Stores the canonical result separately from `MachineState`.
-7. Changes ExecutionStatus to `` COMPLETED .
+7. Changes ExecutionStatus to `COMPLETED` .
 
 The transition has kind `RESULT_CONSUMER`.
 

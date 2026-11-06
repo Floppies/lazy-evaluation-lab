@@ -15,7 +15,7 @@ from lazy_lab.runtime.observation import (
     UnresolvedObservationError,
     observe_whnf,
 )
-from lazy_lab.runtime.state import ExecutionPhase, ExecutionStatus, ResultPolicy
+from lazy_lab.runtime.state import ExecutionPhase, ExecutionStatus, ResultPolicy, TraceMode
 from lazy_lab.runtime.thunks import EvaluatingThunk, PendingThunk
 from lazy_lab.runtime.transitions import BatchStopReason, RuleId, TransitionKind
 from tests.integration.test_cbneed_application import make_cbneed_config
@@ -427,4 +427,255 @@ def test_cbneed_interactive_selection_requires_whnf(
     assert (
         result.state.machine_state.result_state.resolved_result_mode
         is None
+    )
+
+
+def test_cbneed_session_trace_modes_and_batches_are_equivalent():
+    program = compile_source(
+        "main = seq (10 + 1) (20 + 22)"
+    )
+
+    results = {}
+
+    for mode in TraceMode:
+        config = replace(
+            make_cbneed_config(),
+            trace_mode=mode,
+            execution_step_limit=300,
+        )
+
+        initial = create_initial_core_state(
+            program,
+            config,
+            session_id="cbneed-session-tracing",
+        )
+
+        # Complete session in one batch.
+        full = run_session_batch(
+            initial, config, max_steps=300
+        )
+
+        assert full.stop_reason is BatchStopReason.TERMINAL_STATUS
+        assert full.state.machine_state.status is ExecutionStatus.COMPLETED
+        assert full.state.canonical_result == CanonicalInteger(42)
+
+        # Execute the same session one transition at a time.
+        current = initial
+        collected_trace = []
+
+        for _ in range(302):
+            batch = run_session_batch(
+                current,
+                config,
+                max_steps=1,
+            )
+
+            current = batch.state
+            collected_trace.extend(batch.trace)
+
+            if batch.stop_reason is BatchStopReason.TERMINAL_STATUS:
+                break
+
+            assert batch.stop_reason is BatchStopReason.BATCH_LIMIT
+        else:
+            pytest.fail("Chunked session did not complete")
+
+        assert current.canonical_result == full.state.canonical_result
+        assert current.machine_state.status is ExecutionStatus.COMPLETED
+
+        assert current.transition_index == full.state.transition_index
+        assert (
+            current.machine_state.evaluator_transition_count
+            == full.state.machine_state.evaluator_transition_count
+        )
+
+        assert (
+            current.machine_state.heap.current_slots
+            == full.state.machine_state.heap.current_slots
+        )
+        assert (
+            current.machine_state.heap.next_object_id
+            == full.state.machine_state.heap.next_object_id
+        )
+
+        assert current.machine_state.stack.depth == 0
+
+        # Traces may be empty in METRICS_ONLY.
+        assert tuple(collected_trace) == full.trace
+
+        results[mode] = full
+
+    full = results[TraceMode.FULL]
+    events = results[TraceMode.EVENTS]
+    metrics = results[TraceMode.METRICS_ONLY]
+
+    assert full.trace == events.trace
+    assert metrics.trace == ()
+
+    for result in results.values():
+        machine = result.state.machine_state
+
+        assert result.state.transition_index == full.state.transition_index
+        assert machine.evaluator_transition_count == (
+            full.state.machine_state.evaluator_transition_count
+        )
+
+        # One fixed-policy result-consumer transition.
+        assert result.state.transition_index == (
+            machine.evaluator_transition_count + 1
+        )
+
+    # Tracing must preserve transition classification.
+    consumer_entries = [
+        entry for entry in full.trace
+        if entry.transition_kind is TransitionKind.RESULT_CONSUMER
+    ]
+
+    assert len(consumer_entries) == 1
+    assert consumer_entries[0].rule_id is RuleId.RESULT_OBSERVE_WHNF
+    assert full.trace[-1] == consumer_entries[0]
+
+
+def test_cbneed_session_batch_stops_before_result_consumption():
+    config = replace(
+        make_cbneed_config(),
+        execution_step_limit=300,
+    )
+
+    initial = create_initial_core_state(
+        compile_source("main = seq 10 42"),
+        config,
+        session_id="cbneed-consumer-batch-boundary",
+    )
+
+    evaluated = run_batch(
+        initial, config, max_steps=300
+    )
+
+    assert evaluated.stop_reason is BatchStopReason.WHNF_PENDING
+
+    evaluator_steps = (
+        evaluated.state.transition_index - initial.transition_index
+    )
+
+    # Allocate exactly enough batch transitions for evaluation.
+    paused = run_session_batch(
+        initial,
+        config,
+        max_steps=evaluator_steps,
+    )
+
+    assert paused.stop_reason is BatchStopReason.BATCH_LIMIT
+    assert paused.state.machine_state.status is ExecutionStatus.RUNNING
+    assert paused.state.canonical_result is None
+
+    assert paused.state.transition_index == evaluator_steps
+    assert paused.trace == evaluated.trace
+
+    # The next batch only consumes the already-WHNF result.
+    completed = run_session_batch(
+        paused.state,
+        config,
+        max_steps=1,
+    )
+
+    assert completed.stop_reason is BatchStopReason.TERMINAL_STATUS
+    assert completed.state.machine_state.status is ExecutionStatus.COMPLETED
+    assert completed.state.canonical_result == CanonicalInteger(42)
+
+    assert len(completed.trace) == 1
+    assert completed.trace[0].rule_id is RuleId.RESULT_OBSERVE_WHNF
+    assert completed.trace[0].transition_kind is TransitionKind.RESULT_CONSUMER
+
+    assert (
+        completed.state.machine_state.evaluator_transition_count
+        == paused.state.machine_state.evaluator_transition_count
+    )
+
+    assert completed.state.transition_index == (
+        paused.state.transition_index + 1
+    )
+
+
+def test_cbneed_session_resumes_after_evaluator_budget():
+    program = compile_source(
+        "main = seq (10 + 1) 42"
+    )
+
+    config = replace(
+        make_cbneed_config(),
+        execution_step_limit=300,
+    )
+
+    limited_config = replace(
+        config,
+        execution_step_limit=3,
+    )
+
+    initial = create_initial_core_state(
+        program,
+        limited_config,
+        session_id="cbneed-session-budget",
+    )
+
+    paused = run_session_batch(
+        initial,
+        limited_config,
+        max_steps=300,
+    )
+
+    assert paused.stop_reason is BatchStopReason.EVALUATOR_BUDGET
+    assert paused.state.machine_state.status is ExecutionStatus.RUNNING
+    assert paused.state.canonical_result is None
+
+    assert (
+        paused.state.machine_state.evaluator_transition_count
+        == 3
+    )
+
+    assert all(
+        entry.transition_kind is TransitionKind.EVALUATOR
+        for entry in paused.trace
+    )
+
+    # Increase the cumulative evaluator limit.
+    resumed = run_session_batch(
+        paused.state,
+        config,
+        max_steps=300,
+    )
+
+    uninterrupted = run_session_batch(
+        initial,
+        config,
+        max_steps=300,
+    )
+
+    assert resumed.stop_reason is BatchStopReason.TERMINAL_STATUS
+    assert uninterrupted.stop_reason is BatchStopReason.TERMINAL_STATUS
+
+    assert resumed.state.canonical_result == CanonicalInteger(42)
+    assert resumed.state.canonical_result == (
+        uninterrupted.state.canonical_result
+    )
+
+    assert resumed.state.transition_index == (
+        uninterrupted.state.transition_index
+    )
+
+    assert (
+        resumed.state.machine_state.evaluator_transition_count
+        == uninterrupted.state.machine_state.evaluator_transition_count
+    )
+
+    assert tuple(paused.trace) + tuple(resumed.trace) == (
+        uninterrupted.trace
+    )
+
+    # The paused snapshot remains independently inspectable.
+    assert paused.state.machine_state.status is ExecutionStatus.RUNNING
+    assert paused.state.canonical_result is None
+    assert (
+        paused.state.machine_state.evaluator_transition_count
+        == 3
     )

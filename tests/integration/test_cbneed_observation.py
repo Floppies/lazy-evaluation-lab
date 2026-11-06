@@ -15,9 +15,11 @@ from lazy_lab.runtime.observation import (
     UnresolvedObservationError,
     observe_whnf,
 )
+from lazy_lab.runtime.stack import UpdateFrame
 from lazy_lab.runtime.state import ExecutionPhase, ExecutionStatus, ResultPolicy, TraceMode
 from lazy_lab.runtime.thunks import EvaluatingThunk, PendingThunk
 from lazy_lab.runtime.transitions import BatchStopReason, RuleId, TransitionKind
+from tests.helpers.runtime_equivalence import runtime_fingerprint
 from tests.integration.test_cbneed_application import make_cbneed_config
 from tests.integration.test_cbneed_seq import advance_to_seq_saturation
 
@@ -679,3 +681,169 @@ def test_cbneed_session_resumes_after_evaluator_budget():
         paused.state.machine_state.evaluator_transition_count
         == 3
     )
+
+
+@pytest.mark.parametrize(
+    "source, expected_status",
+    [
+        (
+            "partial = seq (20 + 1)\n"
+            "main = partial 41 + partial 42",
+            ExecutionStatus.COMPLETED,
+        ),
+        (
+            r"main = let { x = 10; f = \y -> x + y } "
+            "in f 32",
+            ExecutionStatus.COMPLETED,
+        ),
+        (
+            r"main = seq 10 (\x -> x)",
+            ExecutionStatus.COMPLETED,
+        ),
+        (
+            "main = let { x = x } in x",
+            ExecutionStatus.BLACKHOLE_DETECTED,
+        ),
+    ],
+)
+@pytest.mark.parametrize("chunk_size", [1, 3, 11])
+def test_cbneed_complete_runtime_equivalence(
+    source, expected_status, chunk_size
+):
+    program = compile_source(source)
+    reference_fingerprint = None
+    full_trace_reference = None
+
+    for mode in TraceMode:
+        config = replace(
+            make_cbneed_config(),
+            trace_mode=mode,
+            execution_step_limit=400,
+        )
+
+        initial = create_initial_core_state(
+            program,
+            config,
+            session_id="cbneed-deep-equivalence",
+        )
+
+        initial_fingerprint = runtime_fingerprint(initial)
+
+        # One continuous session.
+        full = run_session_batch(
+            initial, config, max_steps=400
+        )
+
+        assert full.stop_reason is BatchStopReason.TERMINAL_STATUS
+        assert full.state.machine_state.status is expected_status
+
+        # The same session executed in small batches.
+        current = initial
+        collected_trace = []
+
+        for _ in range(400):
+            batch = run_session_batch(
+                current,
+                config,
+                max_steps=chunk_size,
+            )
+
+            current = batch.state
+            collected_trace.extend(batch.trace)
+
+            if batch.stop_reason is BatchStopReason.TERMINAL_STATUS:
+                break
+
+            assert batch.stop_reason is BatchStopReason.BATCH_LIMIT
+        else:
+            pytest.fail("Chunked execution did not terminate")
+
+        # Compare every dataclass field, every heap cell,
+        # every lexical environment and every continuation.
+        assert runtime_fingerprint(current) == (
+            runtime_fingerprint(full.state)
+        )
+
+        assert tuple(collected_trace) == full.trace
+
+        fingerprint = runtime_fingerprint(full.state)
+
+        if reference_fingerprint is None:
+            reference_fingerprint = fingerprint
+        else:
+            assert fingerprint == reference_fingerprint
+
+        if mode is TraceMode.FULL:
+            full_trace_reference = full.trace
+        elif mode is TraceMode.EVENTS:
+            assert full.trace == full_trace_reference
+        else:
+            assert full.trace == ()
+
+        # Running both variants must not mutate the initial state.
+        assert runtime_fingerprint(initial) == initial_fingerprint
+
+
+def test_cbneed_nested_forcing_checkpoint_is_deterministic():
+    program = compile_source(
+        "main = let { x = 20 + 1; y = x + 1 } "
+        "in y + x"
+    )
+
+    config = replace(
+        make_cbneed_config(),
+        execution_step_limit=300,
+    )
+
+    initial = create_initial_core_state(
+        program,
+        config,
+        session_id="cbneed-deep-checkpoint",
+    )
+
+    # Find a checkpoint with nested active thunk updates.
+    current = initial
+
+    for _ in range(200):
+        transition = step(current, config)
+        current = transition.next_state
+
+        active_updates = [
+            frame for frame in current.machine_state.stack.frames
+            if isinstance(frame, UpdateFrame)
+        ]
+
+        if len(active_updates) >= 3:
+            checkpoint = current
+            break
+    else:
+        pytest.fail("Nested forcing checkpoint not reached")
+
+    checkpoint_fingerprint = runtime_fingerprint(checkpoint)
+    checkpoint_index = checkpoint.transition_index
+
+    for mode in TraceMode:
+        mode_config = replace(config, trace_mode=mode)
+
+        fresh = create_initial_core_state(
+            program,
+            mode_config,
+            session_id="cbneed-deep-checkpoint",
+        )
+
+        # Run exactly as far as the reference checkpoint.
+        current_batch = run_batch(
+            fresh,
+            mode_config,
+            max_steps=checkpoint_index,
+        )
+
+        assert current_batch.stop_reason is BatchStopReason.BATCH_LIMIT
+
+        assert runtime_fingerprint(
+            current_batch.state
+        ) == checkpoint_fingerprint
+
+    # Inspecting and replaying the same initial program
+    # must not alter the original checkpoint.
+    assert runtime_fingerprint(checkpoint) == checkpoint_fingerprint

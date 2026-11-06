@@ -69,12 +69,12 @@ The descriptions follow the **Gantt B** plan and its milestone acceptance criter
 | B05.3 | Lazy Function Application | Completed |
 | B05.4 | Forcing and Update Continuations | Completed |
 | B05.5 | Memoization and Sharing | Completed |
-| B05.6 | Global and Recursive Bindings | In Progress |
-| B05.7 | Blackhole Detection | Planned |
-| B05.8 | Non-Strict seq Evaluation | Planned |
-| B05.9 | Observation, Batching and Tracing | Planned |
-| B05.10 | Integration and Regression Tests | Planned |
-| B05.11 | Final Audit | Planned |
+| B05.6 | Global and Recursive Bindings | Completed |
+| B05.7 | Blackhole Detection | Completed |
+| B05.8 | Non-Strict seq Evaluation | Completed |
+| B05.9 | Observation, Batching and Tracing | Completed |
+| B05.10 | Integration and Regression Tests | Completed |
+| B05.11 | Final Audit | In Progress |
 
 ### Important notes
 

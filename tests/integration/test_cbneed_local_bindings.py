@@ -13,8 +13,8 @@ from lazy_lab.runtime.closures import Closure
 from lazy_lab.runtime.control import EvaluateCore, InitializeLocalBindings, Return
 from lazy_lab.runtime.heap import Indirection, Reserved
 from lazy_lab.runtime.references import ImmediateInteger
-from lazy_lab.runtime.stack import RestoreEnvironmentFrame
-from lazy_lab.runtime.thunks import PendingThunk, ThunkPayload
+from lazy_lab.runtime.stack import RestoreEnvironmentFrame, UpdateFrame
+from lazy_lab.runtime.thunks import EvaluatingThunk, PendingThunk, ThunkPayload
 from lazy_lab.runtime.transitions import BatchStopReason, RuleId
 from tests.integration.test_cbneed_application import make_cbneed_config, thunk_transition_anchors
 
@@ -627,3 +627,220 @@ def test_cbneed_local_unused_recursion_not_demanded():
 
     assert unused_ref not in anchors[RuleId.CORE_FORCE_THUNK_ENTER]
     assert unused_ref not in anchors[RuleId.CORE_THUNK_UPDATE_WHNF]
+
+    
+def test_cbneed_letrec_is_deterministic_across_batches():
+    program = compile_source(
+        "main = let { x = 20 + 1; y = x + 1 } in y + x"
+    )
+    config = make_cbneed_config()
+
+    initial = create_initial_core_state(
+        program,
+        config,
+        session_id="cbneed-letrec-batch-equivalence",
+    )
+
+    _, reserved = advance_to_letrec_reservation(
+        initial, config
+    )
+
+    current = reserved
+
+    for _ in range(3):
+        transition = step(current, config)
+        current = transition.next_state
+
+    # Two thunk installations followed by body entry.
+    body_state = current
+    body_machine = body_state.machine_state
+
+    assert isinstance(body_machine.control, EvaluateCore)
+
+    x_ref = body_machine.local_environment.lookup("x")
+    y_ref = body_machine.local_environment.lookup("y")
+
+    assert isinstance(
+        body_machine.heap.get(x_ref).value,
+        PendingThunk,
+    )
+    assert isinstance(
+        body_machine.heap.get(y_ref).value,
+        PendingThunk,
+    )
+
+    # Uninterrupted execution.
+    full = run_batch(
+        body_state,
+        config,
+        max_steps=150,
+    )
+
+    # Equivalent execution, one transition per batch.
+    current = body_state
+    chunked_trace = []
+
+    for _ in range(150):
+        batch = run_batch(
+            current,
+            config,
+            max_steps=1,
+        )
+
+        chunked_trace.extend(batch.trace)
+        current = batch.state
+
+        if batch.stop_reason is BatchStopReason.WHNF_PENDING:
+            break
+    else:
+        pytest.fail("Chunked letrec execution did not finish")
+
+    assert full.stop_reason is BatchStopReason.WHNF_PENDING
+
+    # Both execution histories must be equivalent.
+    assert tuple(full.trace) == tuple(chunked_trace)
+
+    left = full.state.machine_state
+    right = current.machine_state
+
+    assert left.control == right.control
+    assert left.control == Return(ImmediateInteger(43))
+
+    assert left.stack.depth == right.stack.depth == 0
+
+    assert (
+        left.evaluator_transition_count
+        == right.evaluator_transition_count
+    )
+    assert full.state.transition_index == current.transition_index
+
+    assert left.heap.current_slots == right.heap.current_slots
+    assert left.heap.next_object_id == right.heap.next_object_id
+
+    for machine in (left, right):
+        assert machine.heap.get(x_ref).value == Indirection(
+            ImmediateInteger(21)
+        )
+        assert machine.heap.get(y_ref).value == Indirection(
+            ImmediateInteger(22)
+        )
+
+    # The starting snapshot remains unchanged.
+    assert isinstance(
+        body_machine.heap.get(x_ref).value,
+        PendingThunk,
+    )
+    assert isinstance(
+        body_machine.heap.get(y_ref).value,
+        PendingThunk,
+    )
+
+
+def test_cbneed_nested_local_forcing_snapshot_is_resumable():
+    program = compile_source(
+        "main = let { x = 20 + 1; y = x + 1 } in y + x"
+    )
+    config = make_cbneed_config()
+
+    initial = create_initial_core_state(
+        program,
+        config,
+        session_id="cbneed-letrec-snapshot-resume",
+    )
+
+    _, reserved = advance_to_letrec_reservation(
+        initial, config
+    )
+
+    env = reserved.machine_state.local_environment
+    x_ref = env.lookup("x")
+    y_ref = env.lookup("y")
+
+    current = reserved
+
+    # Find the point immediately after entering x.
+    # At that moment y is already being evaluated.
+    for _ in range(150):
+        transition = step(current, config)
+        successor = transition.next_state
+
+        if transition.rule_id is RuleId.CORE_FORCE_THUNK_ENTER:
+            frame = successor.machine_state.stack.peek()
+
+            if (
+                isinstance(frame, UpdateFrame)
+                and frame.thunk_reference == x_ref
+            ):
+                checkpoint = successor
+                break
+
+        current = successor
+    else:
+        pytest.fail("Nested local thunk forcing was not reached")
+
+    snapshot = checkpoint.machine_state
+
+    assert isinstance(
+        snapshot.heap.get(x_ref).value,
+        EvaluatingThunk,
+    )
+    assert isinstance(
+        snapshot.heap.get(y_ref).value,
+        EvaluatingThunk,
+    )
+
+    # UpdateFrames need not be adjacent: primitive
+    # continuations can exist between them.
+    active_updates = [
+        frame.thunk_reference
+        for frame in snapshot.stack.frames
+        if isinstance(frame, UpdateFrame)
+    ]
+
+    assert x_ref in active_updates
+    assert y_ref in active_updates
+
+    original_cells = dict(snapshot.heap.cells)
+    original_frames = snapshot.stack.frames
+    original_index = checkpoint.transition_index
+
+    # Two independent resumptions from the same snapshot.
+    first = run_batch(checkpoint, config, max_steps=150)
+    second = run_batch(checkpoint, config, max_steps=150)
+
+    assert first.stop_reason is BatchStopReason.WHNF_PENDING
+    assert second.stop_reason is BatchStopReason.WHNF_PENDING
+
+    assert first.trace == second.trace
+
+    left = first.state.machine_state
+    right = second.state.machine_state
+
+    assert left.control == right.control
+    assert left.control == Return(ImmediateInteger(43))
+
+    assert left.stack.depth == right.stack.depth == 0
+    assert left.heap.current_slots == right.heap.current_slots
+    assert left.heap.next_object_id == right.heap.next_object_id
+
+    for machine in (left, right):
+        assert machine.heap.get(x_ref).value == Indirection(
+            ImmediateInteger(21)
+        )
+        assert machine.heap.get(y_ref).value == Indirection(
+            ImmediateInteger(22)
+        )
+
+    # No update may mutate the original checkpoint.
+    assert checkpoint.transition_index == original_index
+    assert dict(snapshot.heap.cells) == original_cells
+    assert snapshot.stack.frames == original_frames
+
+    assert isinstance(
+        snapshot.heap.get(x_ref).value,
+        EvaluatingThunk,
+    )
+    assert isinstance(
+        snapshot.heap.get(y_ref).value,
+        EvaluatingThunk,
+    )

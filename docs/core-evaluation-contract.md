@@ -604,8 +604,9 @@ allocation.
 
 Previously initialized anchors cannot be initialized again.
 
-Global PendingGlobal conversion is implemented, refer to Section 7.11
-Global and Aliases sub-section.
+Under CBNeed, non-lambda globals are installed directly as
+PendingThunk values in their reserved anchors, as described
+in Section 7.11, Globals and Aliases.
 
 Payload reclamation is deferred to the future garbage collector.
 Until then, unreachable payloads remain allocated in the
@@ -1083,23 +1084,27 @@ transitions are described in Sections 9.5 and 9.6.
 After every global binding has a stable reserved address, the
 runtime installs RHS representations without evaluating them.
 
-A non-lambda global RHS is represented by `PendingGlobal`,
-which retains the original Core expression.
+Under CBV and CBN, a non-lambda global RHS is represented
+by PendingGlobal, which retains the original Core expression.
 
-A top-level lambda RHS is installed directly as a `Closure`.
-Its body is not evaluated, and the closure captures no local
-bindings. Global references are resolved through the separate
-global environment when the function is applied.
+Under CBNeed, a non-lambda global RHS is installed as
+PendingThunk in its existing reserved one-slot anchor.
+A separate ThunkPayload stores the original Core expression
+without capturing global references as local bindings.
 
-Installation preserves the original heap address and its
-allocated slot capacity. It does not allocate a second object
-for the global binding.
+A top-level lambda RHS is installed directly as a Closure
+under all strategies. Its body is not evaluated, and the
+closure captures no local bindings. Global references are
+resolved through the global environment when it is applied.
 
-`PendingGlobal` uses one abstract heap slot. The host memory
-occupied by its Core AST is outside the simulated heap.
+Installation preserves the original binding address and its
+allocated slot capacity. CBNeed allocates a separate payload
+for each non-lambda RHS; CBV and CBN install PendingGlobal
+without allocating an additional heap object.
 
-`PendingGlobal` does not implement forcing, memoization,
-updates or strategy-specific sharing.
+PendingGlobal uses one abstract heap slot and does not
+implement forcing, memoization, updates or strategy-specific
+sharing. Core AST host memory is outside the simulated heap.
 
 Global RHS demand remains independent from argument
 strictness and local `CoreLetRec` initialization.
@@ -1436,9 +1441,8 @@ globals.
 Under CBV, demand-driven evaluation of a PendingGlobal
 does not memoize its result or update the global binding.
 
-CBNeed requires memoizing global demand through the thunk
-update protocol defined in Section 7.11. The integration
-of global bindings with this protocol belongs to B05.6.
+Under CBNeed, memoizing global demand is implemented through
+the thunk update protocol defined in Section 7.11.
 
 CBN remains nonmemoizing and is implemented in B11.
 
@@ -1774,7 +1778,7 @@ defined in Sections 13.2–13.4.
 
 Under CBNeed, reservation reaches InitializeLocalBindings.
 Deferred initialization of the reserved bindings is
-implemented separately in B05.6.4.
+implemented and explained in section 13.5.
 
 CBN local recursive bindings remain unsupported until B11.
 

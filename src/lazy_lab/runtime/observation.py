@@ -89,7 +89,7 @@ def observe_whnf(
             Indirection,
             PendingThunk,
             EvaluatingThunk,
-            ),
+        ),
     ):
         raise UnresolvedObservationError(
             f"{type(value).__name__} has not reached WHNF"

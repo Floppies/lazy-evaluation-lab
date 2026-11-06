@@ -2036,9 +2036,6 @@ CBNeed partial application and saturation are implemented
 as specified in Sections 14.5 and 14.6. CBN support
 remains deferred to B11.
 
-Saturated applications do not produce
-PartialPredefinedFunction values.
-
 The CBV operational rules are defined in Sections 14.2
 and 14.3, and the CBNeed rules in Sections 14.5 and 14.6.
 

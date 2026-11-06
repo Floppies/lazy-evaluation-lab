@@ -819,7 +819,24 @@ pending.
 A demand of an already EVALUATING thunk is a reentrant
 demand and must be detected as a blackhole.
 
-The exact error/status integration is deferred to B05.7.
+A Force demand targeting an EvaluatingThunk under CBNeed
+detects a blackhole when the thunk has an active UpdateFrame.
+
+CORE_BLACKHOLE_DETECTED transitions the machine to the
+terminal ExecutionStatus.BLACKHOLE_DETECTED state.
+
+Detection preserves the current Force control, thunk
+anchor, heap contents, continuation stack and lexical
+environments. The ordinary evaluator transition counters
+advance, and the transition is available to tracing.
+
+The terminal state retains the suspended execution context
+for inspection but cannot be resumed.
+
+run_batch reports BatchStopReason.TERMINAL_STATUS for this
+state. Blackhole detection is distinct from evaluator
+budget exhaustion and does not require a general
+dependency-graph traversal.
 
 A suspended execution with an active UpdateFrame remains
 resumable. Reaching the execution-step budget is not

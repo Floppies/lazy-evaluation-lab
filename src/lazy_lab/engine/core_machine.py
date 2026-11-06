@@ -846,6 +846,37 @@ def _advance_force(
             RuleId.CORE_FORCE_THUNK_ENTER,
         )
 
+    if isinstance(value, EvaluatingThunk):
+        if machine.strategy is not Strategy.CBNEED:
+            raise InvalidMachineStateError(
+                "EvaluatingThunk requires Call-by-Need"
+            )
+
+        # A legitimate evaluating thunk must have an
+        # active update continuation for its stable anchor.
+        active_update = any(
+            isinstance(frame, UpdateFrame)
+            and frame.thunk_reference == reference
+            for frame in machine.stack.frames
+        )
+
+        if not active_update:
+            raise InvalidMachineStateError(
+                "EvaluatingThunk has no active UpdateFrame"
+            )
+
+        # Preserve the control, heap, stack and environments.
+        # The enclosing step() owns the isolated successor state
+        # and advances the transition counters.
+        return (
+            replace(
+                machine,
+                status=ExecutionStatus.BLACKHOLE_DETECTED,
+            ),
+            RuleId.CORE_BLACKHOLE_DETECTED,
+        )
+
+
     if isinstance(value, PendingGlobal):
         machine.stack.push(
             GlobalDemandFrame(

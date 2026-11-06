@@ -7,6 +7,7 @@ import pytest
 
 from lazy_lab.pipeline import compile_source
 from lazy_lab.engine.core_machine import (
+    InvalidMachineStateError,
     UnsupportedTransitionError,
     run_batch,
     step,
@@ -674,7 +675,7 @@ def test_cbneed_global_demand_respects_evaluator_budget():
     assert paused.stack.frames == frames_before
 
 
-def test_cbneed_reentrant_global_demand_is_unsupported_without_mutation():
+def test_cbneed_reentrant_global_demand_detects_blackhole():
     config = make_config(strategy=Strategy.CBNEED)
     current = create_initial_core_state(
         compile_source("main = main"), config,
@@ -703,9 +704,44 @@ def test_cbneed_reentrant_global_demand_is_unsupported_without_mutation():
     next_id_before = machine.heap.next_object_id
     snapshot = replace(current, machine_state=replace(machine))
 
-    # B05.7 will replace this temporary boundary with formal blackhole detection.
-    with pytest.raises(UnsupportedTransitionError, match="EvaluatingThunk"):
-        step(current, config)
+    transition = step(current, config)
+
+    assert transition.rule_id is RuleId.CORE_BLACKHOLE_DETECTED
+
+    terminal = transition.next_state.machine_state
+
+    assert terminal.status is ExecutionStatus.BLACKHOLE_DETECTED
+    assert terminal.control == Force(main_ref)
+
+    assert terminal.heap.get(main_ref).value == (
+        machine.heap.get(main_ref).value
+    )
+
+    # No heap allocation or update occurs.
+    assert dict(terminal.heap.cells) == cells_before
+    assert terminal.heap.current_slots == slots_before
+    assert terminal.heap.next_object_id == next_id_before
+
+    # Keep the suspended continuation available for inspection.
+    assert terminal.stack.frames == frames_before
+    assert terminal.local_environment is machine.local_environment
+
+    # The original checkpoint remains running and unchanged.
+    assert current.machine_state.status is ExecutionStatus.RUNNING
+    assert dict(machine.heap.cells) == cells_before
+    assert machine.stack.frames == frames_before
+
+    assert (
+        transition.next_state.transition_index
+        == current.transition_index + 1
+    )
+
+    # Terminal states cannot advance through step().
+    with pytest.raises(
+        InvalidMachineStateError,
+        match="Only RUNNING states can advance",
+    ):
+        step(transition.next_state, config)
 
     assert current == snapshot
     assert current.machine_state is machine

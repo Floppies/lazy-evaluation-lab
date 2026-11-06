@@ -704,7 +704,8 @@ The UpdateFrame continuation handles the eventual RHS return
 and subsequent WHNF demand, as specified in the following
 subsections.
 
-Blackhole detection is explain in the subsection Blackholes and Execution Limits
+Blackhole detection is explained in the subsection
+Blackholes and Execution Limits.
 
 #### Return and WHNF Verification
 
@@ -2140,6 +2141,29 @@ preserve their stable binding addresses and use the
 existing Indirection representation.
 
 The frontend does not introduce a dedicated `CoreSeq` node.
+
+### 14.5 CBNeed Partial Application of `seq`
+
+Under CBNeed, the first application of the predefined
+seq function is non-strict.
+
+The function position is demanded to WHNF. The argument
+expression is captured in a fresh PendingThunk using its
+original lexical call-site environment.
+
+`CORE_PREDEFINED_PARTIAL_APPLY` allocates a
+PartialPredefinedFunction retaining the thunk anchor
+reference, restores the caller environment, and returns
+the partial application as a function value in WHNF.
+
+Neither the argument expression nor its thunk is forced
+during partial application.
+
+The argument remains pending even when its evaluation
+would diverge or detect a blackhole.
+
+Saturation and explicit WHNF demand of the first argument
+are implemented separately in B05.8.2.
 
 ## 15. Canonical Result Observation
 

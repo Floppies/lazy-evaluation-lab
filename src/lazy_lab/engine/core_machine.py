@@ -1307,12 +1307,49 @@ def _resume_apply_function(
         raise TypeError("Cannot apply a non-function value")
 
     if machine.strategy is Strategy.CBNEED:
-        # Non-strict predefined application belongs to B05.8.
-        # Do not accidentally apply CBV's strict argument rules.
-        if not isinstance(function_value, Closure):
-            raise UnsupportedTransitionError(
-                "CBNeed predefined application is deferred to B05.8"
+        if isinstance(function_value, PredefinedFunction):
+            if function_value.name != "seq" or function_value.arity != 2:
+                raise UnsupportedTransitionError(
+                    "Unsupported CBNeed predefined function"
+                )
+
+            # Preserve the original call-site lexical context.
+            # The argument is neither evaluated nor forced.
+            argument_reference = allocate_thunk(
+                machine.heap,
+                frame.argument,
+                frame.environment,
+                machine.global_environment,
             )
+
+            partial = PartialPredefinedFunction(
+                name="seq",
+                applied_arguments=(argument_reference,),
+            )
+
+            partial_reference = machine.heap.allocate(
+                partial,
+                allocated_slots=partial.required_slots,
+            )
+
+            machine.stack.pop()
+
+            return (
+                replace(
+                    machine,
+                    local_environment=frame.environment,
+                    control=Return(partial_reference),
+                ),
+                RuleId.CORE_PREDEFINED_PARTIAL_APPLY,
+            )
+
+        if isinstance(function_value, PartialPredefinedFunction):
+            raise UnsupportedTransitionError(
+                "CBNeed seq saturation is deferred to B05.8.2"
+            )
+
+        if not isinstance(function_value, Closure):
+            raise TypeError("Cannot apply a non-function value")
 
         # Capture the argument's original lexical call-site
         # references without evaluating its Core expression.

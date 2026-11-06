@@ -9,9 +9,9 @@ from lazy_lab.runtime.control import Force, Return
 from lazy_lab.runtime.heap import Reserved
 from lazy_lab.runtime.references import ImmediateInteger
 from lazy_lab.runtime.stack import UpdateFrame
-from lazy_lab.runtime.state import ExecutionStatus
+from lazy_lab.runtime.state import ExecutionStatus, TraceMode
 from lazy_lab.runtime.thunks import EvaluatingThunk
-from lazy_lab.runtime.transitions import BatchStopReason, RuleId
+from lazy_lab.runtime.transitions import BatchStopReason, RuleId, TraceEntry
 from tests.integration.test_cbneed_application import make_cbneed_config, thunk_transition_anchors
 from tests.integration.test_cbneed_local_bindings import advance_to_letrec_reservation
 
@@ -545,3 +545,177 @@ def test_cbneed_terminal_blackhole_is_priority_over_budget_limit():
     assert again.stop_reason is BatchStopReason.TERMINAL_STATUS
     assert again.state is detected.state
     assert again.trace == ()
+
+
+def test_cbneed_blackhole_is_equivalent_across_trace_modes():
+    program = compile_source(
+        "main = let { x = y; y = x } in x"
+    )
+    config = make_cbneed_config()
+
+    initial = create_initial_core_state(
+        program,
+        config,
+        session_id="cbneed-blackhole-trace-modes",
+    )
+
+    _, reserved = advance_to_letrec_reservation(
+        initial, config
+    )
+
+    env = reserved.machine_state.local_environment
+    x_ref = env.lookup("x")
+    y_ref = env.lookup("y")
+
+    results = {
+        mode: run_batch(
+            reserved,
+            replace(config, trace_mode=mode),
+            max_steps=150,
+        )
+        for mode in TraceMode
+    }
+
+    full = results[TraceMode.FULL]
+    events = results[TraceMode.EVENTS]
+    metrics = results[TraceMode.METRICS_ONLY]
+
+    # Tracing does not affect terminal semantics.
+    for result in results.values():
+        assert result.stop_reason is BatchStopReason.TERMINAL_STATUS
+
+        machine = result.state.machine_state
+
+        assert machine.status is ExecutionStatus.BLACKHOLE_DETECTED
+        assert machine.control == Force(x_ref)
+
+        for ref in (x_ref, y_ref):
+            assert isinstance(
+                machine.heap.get(ref).value,
+                EvaluatingThunk,
+            )
+
+        active_updates = [
+            (frame.thunk_reference, frame.awaiting_whnf)
+            for frame in machine.stack.frames
+            if isinstance(frame, UpdateFrame)
+        ]
+
+        assert [ref for ref, _ in active_updates if ref in (x_ref, y_ref)] == [
+            x_ref, y_ref
+        ]
+
+    # FULL and EVENTS currently expose the same basic trace.
+    assert full.trace == events.trace
+
+    # METRICS_ONLY omits trace entries, not execution steps.
+    assert metrics.trace == ()
+
+    full_machine = full.state.machine_state
+
+    for result in (events, metrics):
+        machine = result.state.machine_state
+
+        assert result.state.transition_index == full.state.transition_index
+        assert machine.evaluator_transition_count == (
+            full_machine.evaluator_transition_count
+        )
+        assert machine.heap.current_slots == full_machine.heap.current_slots
+        assert machine.heap.next_object_id == full_machine.heap.next_object_id
+
+        assert tuple(type(frame) for frame in machine.stack.frames) == (
+            tuple(type(frame) for frame in full_machine.stack.frames)
+        )
+
+    rules = [entry.rule_id for entry in full.trace]
+
+    assert rules.count(RuleId.CORE_BLACKHOLE_DETECTED) == 1
+    assert rules[-1] is RuleId.CORE_BLACKHOLE_DETECTED
+
+    # The shared starting snapshot remains reserved.
+    assert isinstance(
+        reserved.machine_state.heap.get(x_ref).value,
+        Reserved,
+    )
+    assert isinstance(
+        reserved.machine_state.heap.get(y_ref).value,
+        Reserved,
+    )
+
+
+def test_cbneed_blackhole_transition_replays_from_snapshot():
+    program = compile_source(
+        "main = a\n"
+        "a = b\n"
+        "b = a"
+    )
+    config = make_cbneed_config()
+
+    checkpoint = create_initial_core_state(
+        program,
+        config,
+        session_id="cbneed-blackhole-replay",
+    )
+
+    # Locate the predecessor of the terminal transition.
+    for _ in range(150):
+        transition = step(checkpoint, config)
+
+        if transition.rule_id is RuleId.CORE_BLACKHOLE_DETECTED:
+            break
+
+        checkpoint = transition.next_state
+    else:
+        pytest.fail("Blackhole detection not reached")
+
+    before = checkpoint.machine_state
+    a_ref = before.global_environment.lookup("a")
+
+    assert before.status is ExecutionStatus.RUNNING
+    assert before.control == Force(a_ref)
+
+    original_cells = dict(before.heap.cells)
+    original_frames = before.stack.frames
+    original_index = checkpoint.transition_index
+
+    first = step(checkpoint, config)
+    second = step(checkpoint, config)
+
+    assert first.rule_id is RuleId.CORE_BLACKHOLE_DETECTED
+    assert second.rule_id is RuleId.CORE_BLACKHOLE_DETECTED
+
+    # The emitted trace entry is deterministic.
+    assert TraceEntry.from_transition(first) == (
+        TraceEntry.from_transition(second)
+    )
+
+    left = first.next_state.machine_state
+    right = second.next_state.machine_state
+
+    for machine in (left, right):
+        assert machine.status is ExecutionStatus.BLACKHOLE_DETECTED
+        assert machine.control == Force(a_ref)
+        assert dict(machine.heap.cells) == original_cells
+        assert machine.stack.frames == original_frames
+        assert machine.local_environment is before.local_environment
+
+    # Independent successor storage.
+    assert left.heap is not right.heap
+    assert left.stack is not right.stack
+
+    assert first.next_state.transition_index == original_index + 1
+    assert second.next_state.transition_index == original_index + 1
+
+    # The common predecessor remains unchanged.
+    assert checkpoint.transition_index == original_index
+    assert before.status is ExecutionStatus.RUNNING
+    assert dict(before.heap.cells) == original_cells
+    assert before.stack.frames == original_frames
+
+    # A batch from the same checkpoint performs exactly
+    # the same terminal transition.
+    batch = run_batch(checkpoint, config, max_steps=3)
+
+    assert batch.stop_reason is BatchStopReason.TERMINAL_STATUS
+    assert len(batch.trace) == 1
+    assert batch.trace[0] == TraceEntry.from_transition(first)

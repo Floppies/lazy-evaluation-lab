@@ -2032,13 +2032,13 @@ Under CBV, applied arguments must reach WHNF before
 the partial application is constructed.
 
 Under CBN and CBNeed, arguments may remain deferred.
-Those strategies require their later runtime machinery.
+CBNeed implementation of seq is described in section 14.5 and 14.6.
 
 Saturated applications do not produce
 `PartialPredefinedFunction values`.
 
 The operational rules for application and saturation
-are defined in subsequent B04.7 sections.
+are defined in section 14.5 and 14.6
 
 ### 14.2 CBV Partial Application of Predefined Functions
 
@@ -2108,8 +2108,8 @@ This rule is specific to CBV. Under CBN and CBNeed,
 seq must explicitly demand its first argument at
 saturation because partial application does not force it.
 
-The non-strict operational rules will be implemented
-with their corresponding evaluator strategies.
+The non-strict operational rules are implemented
+with their corresponding evaluator strategies. For the CBNeed behaviour refer to section 14.5 and 14.6.
 
 The sequence of operational transitions remains observable
 through the existing RuleId and trace infrastructure.

@@ -13,7 +13,7 @@ from lazy_lab.runtime.heap import Indirection
 from lazy_lab.runtime.predefined import PartialPredefinedFunction
 from lazy_lab.runtime.references import ImmediateInteger
 from lazy_lab.runtime.state import ExecutionStatus
-from lazy_lab.runtime.thunks import PendingThunk
+from lazy_lab.runtime.thunks import PendingThunk, ThunkPayload
 from lazy_lab.runtime.transitions import BatchStopReason, RuleId
 from tests.integration.test_cbneed_application import make_cbneed_config, thunk_transition_anchors
 
@@ -553,3 +553,161 @@ def test_cbneed_seq_batch_execution_is_deterministic():
     # Original execution state is unchanged.
     assert initial.transition_index == 0
     assert initial.machine_state.heap.current_slots == 0
+
+
+def test_cbneed_seq_arguments_capture_distinct_lexical_scopes():
+    program = compile_source(
+        "x = 999\n"
+        "main = let { x = 10; partial = seq (x + 1) } "
+        "in let { x = 40 } in partial (x + 2)"
+    )
+    config = replace(
+        make_cbneed_config(),
+        execution_step_limit=300,
+    )
+
+    initial = create_initial_core_state(
+        program,
+        config,
+        session_id="cbneed-seq-distinct-scopes",
+    )
+
+    # Stop immediately after the first partial application.
+    current = initial
+
+    for _ in range(config.execution_step_limit):
+        transition = step(current, config)
+        current = transition.next_state
+
+        if transition.rule_id is RuleId.CORE_PREDEFINED_PARTIAL_APPLY:
+            break
+    else:
+        pytest.fail("Partial application not reached")
+
+    partial_state = current
+    partial_machine = partial_state.machine_state
+
+    partial_ref = partial_machine.control.reference
+    partial = partial_machine.heap.get(partial_ref).value
+
+    assert isinstance(partial, PartialPredefinedFunction)
+
+    first_ref = partial.applied_arguments[0]
+    first_pending = partial_machine.heap.get(first_ref).value
+
+    assert isinstance(first_pending, PendingThunk)
+
+    first_payload = partial_machine.heap.get(
+        first_pending.payload_reference
+    ).value
+
+    assert isinstance(first_payload, ThunkPayload)
+
+    outer_x_ref = first_payload.captured_locals.lookup("x")
+
+    # The first argument is still pending.
+    assert isinstance(
+        partial_machine.heap.get(first_ref).value,
+        PendingThunk,
+    )
+
+    # Continue until seq has forced its first argument
+    # and returned the deferred second argument.
+    saturated, _ = advance_to_seq_saturation(
+        partial_state, config
+    )
+
+    machine = saturated.machine_state
+
+    assert machine.heap.get(first_ref).value == Indirection(
+        ImmediateInteger(11)
+    )
+
+    second_ref = machine.control.reference
+    second_pending = machine.heap.get(second_ref).value
+
+    assert isinstance(second_pending, PendingThunk)
+
+    second_payload = machine.heap.get(
+        second_pending.payload_reference
+    ).value
+
+    assert isinstance(second_payload, ThunkPayload)
+
+    inner_x_ref = second_payload.captured_locals.lookup("x")
+
+    # Both expressions captured different lexical bindings.
+    assert outer_x_ref != inner_x_ref
+
+    # The global binding was not selected by either capture.
+    global_x_ref = machine.global_environment.lookup("x")
+
+    assert outer_x_ref != global_x_ref
+    assert inner_x_ref != global_x_ref
+
+    # The second argument and its local x are still pending.
+    assert isinstance(
+        machine.heap.get(inner_x_ref).value,
+        PendingThunk,
+    )
+
+    assert isinstance(
+        machine.heap.get(global_x_ref).value,
+        PendingThunk,
+    )
+
+    completed = run_batch(
+        saturated, config, max_steps=300
+    )
+
+    assert completed.stop_reason is BatchStopReason.WHNF_PENDING
+    assert completed.state.machine_state.control == Return(
+        ImmediateInteger(42)
+    )
+
+    # The earlier snapshots were not modified.
+    assert isinstance(
+        partial_machine.heap.get(first_ref).value,
+        PendingThunk,
+    )
+    assert isinstance(
+        machine.heap.get(second_ref).value,
+        PendingThunk,
+    )
+
+
+def test_cbneed_seq_returned_closure_captures_second_scope():
+    program = compile_source(
+        "main = let { x = 5; partial = seq (x + 1) } "
+        r"in let { x = 100 } in (partial (\y -> x + y)) 2"
+    )
+
+    config = replace(
+        make_cbneed_config(),
+        execution_step_limit=300,
+    )
+
+    initial = create_initial_core_state(
+        program,
+        config,
+        session_id="cbneed-seq-closure-scope",
+    )
+
+    result = run_batch(initial, config, max_steps=300)
+
+    assert result.stop_reason is BatchStopReason.WHNF_PENDING
+
+    machine = result.state.machine_state
+    assert machine.control == Return(ImmediateInteger(102))
+    assert machine.stack.depth == 0
+
+    rules = [entry.rule_id for entry in result.trace]
+
+    assert RuleId.CORE_SEQ_REQUIRE_FIRST_WHNF in rules
+    assert RuleId.CORE_SEQ_SATURATE in rules
+    assert RuleId.CORE_CBNEED_ENTER_BODY in rules
+    assert RuleId.CORE_BLACKHOLE_DETECTED not in rules
+
+    # Both the first argument and the returned function's
+    # body perform arithmetic under their captured scopes.
+    assert rules.count(RuleId.CORE_PRIM_EXECUTE) == 2

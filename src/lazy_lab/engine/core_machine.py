@@ -51,6 +51,7 @@ from lazy_lab.runtime.stack import (
     IfFrame,
     LocalValueInitializationFrame,
     UpdateFrame,
+    SeqFirstArgumentFrame,
 )
 from lazy_lab.runtime.predefined import PredefinedFunction
 from lazy_lab.runtime.state import (
@@ -1022,13 +1023,20 @@ def _advance_return(
                 control,
                 frame,
             )
+        # 9. First seq argument has returned
+        if isinstance(frame, SeqFirstArgumentFrame):
+            return _resume_seq_first_argument(
+                machine,
+                control,
+                frame,
+            )
 
         raise UnsupportedTransitionError(
             "Unsupported return continuation: "
             f"{type(frame).__name__}"
         )
 
-    # 9. No continuation remains: handle the root result.
+    # 10. No continuation remains: handle the root result.
     # A root reference to a pending object still requires WHNF.
     if isinstance(reference, HeapReference):
         value = machine.heap.get(reference).value
@@ -1344,8 +1352,28 @@ def _resume_apply_function(
             )
 
         if isinstance(function_value, PartialPredefinedFunction):
-            raise UnsupportedTransitionError(
-                "CBNeed seq saturation is deferred to B05.8.2"
+            if (
+                function_value.name != "seq"
+                or function_value.remaining_arity != 1
+            ):
+                raise UnsupportedTransitionError(
+                    "Unsupported CBNeed predefined saturation"
+                )
+
+            first_reference = function_value.applied_arguments[0]
+
+            machine.stack.pop()
+            machine.stack.push(
+                SeqFirstArgumentFrame(
+                    first_argument_reference=first_reference,
+                    second_expression=frame.argument,
+                    return_environment=frame.environment,
+                )
+            )
+
+            return (
+                replace(machine, control=Force(first_reference)),
+                RuleId.CORE_SEQ_REQUIRE_FIRST_WHNF,
             )
 
         if not isinstance(function_value, Closure):
@@ -1405,6 +1433,42 @@ def _resume_apply_function(
             control=EvaluateCore(frame.argument),
         ),
         RuleId.CORE_CBV_EVAL_ARGUMENT,
+    )
+
+def _resume_seq_first_argument(
+    machine: MachineState,
+    control: Return,
+    frame: SeqFirstArgumentFrame,
+) -> tuple[MachineState, RuleId]:
+    """Complete CBNeed seq without forcing its second argument."""
+
+    if machine.strategy is not Strategy.CBNEED:
+        raise InvalidMachineStateError(
+            "SeqFirstArgumentFrame requires Call-by-Need"
+        )
+
+    if not _reference_is_whnf(machine, control.reference):
+        raise InvalidMachineStateError(
+            "seq first argument did not reach WHNF"
+        )
+
+    # Only now construct the deferred second argument.
+    second_reference = allocate_thunk(
+        machine.heap,
+        frame.second_expression,
+        frame.return_environment,
+        machine.global_environment,
+    )
+
+    machine.stack.pop()
+
+    return (
+        replace(
+            machine,
+            local_environment=frame.return_environment,
+            control=Return(second_reference),
+        ),
+        RuleId.CORE_SEQ_SATURATE,
     )
 
 def _resume_apply_argument(

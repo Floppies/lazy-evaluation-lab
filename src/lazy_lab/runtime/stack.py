@@ -110,6 +110,15 @@ class LocalValueInitializationFrame(StackFrame):
     awaiting_whnf: bool = False
 
 
+@dataclass(frozen=True, slots=True)
+class SeqFirstArgumentFrame(StackFrame):
+    """Resume CBNeed seq after its first argument reaches WHNF."""
+
+    first_argument_reference: RuntimeRef
+    second_expression: CoreExpr
+    return_environment: Environment
+
+
 class EmptyStackError(LookupError):
     """Raised when accessing an empty stack."""
 

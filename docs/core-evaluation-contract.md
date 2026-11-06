@@ -2162,8 +2162,30 @@ during partial application.
 The argument remains pending even when its evaluation
 would diverge or detect a blackhole.
 
-Saturation and explicit WHNF demand of the first argument
-are implemented separately in B05.8.2.
+### 14.6 CBNeed Saturated `seq`
+
+Under CBNeed, applying a PartialPredefinedFunction
+representing seq to its second argument initiates an
+explicit WHNF demand of the stored first argument.
+
+CORE_SEQ_REQUIRE_FIRST_WHNF installs a
+SeqFirstArgumentFrame and changes the control to
+Force(first_argument_reference).
+
+The continuation preserves the unevaluated second
+expression and its lexical call-site environment.
+
+Once the first argument reaches WHNF, CORE_SEQ_SATURATE
+allocates a fresh thunk for the second expression,
+removes the continuation, restores the caller environment,
+and returns the second thunk reference.
+
+Saturation does not force the second argument. Any
+subsequent demand belongs to the surrounding evaluation
+context.
+
+If forcing the first argument detects a blackhole,
+saturation does not occur.
 
 ## 15. Canonical Result Observation
 

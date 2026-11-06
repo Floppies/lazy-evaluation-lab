@@ -1,13 +1,14 @@
 # Core Evaluation Contract
 
-**Status:** B04 Core CBV evaluation and canonical observation implemented; audited with documented limitations.
+**Status:** Core CBV and CBNeed evaluation and canonical observation implemented; audited with documented limitations.
 
-**Scope:** Implemented Core CBV subset and CBNeed contracts; planned CBN.
+**Scope:** Implemented Core CBV and CBNeed subsets; planned CBN and executable constructors/case.
 
 This document retains the incremental B04 submilestone boundaries.
 Those boundaries describe the responsibility of each stage, not
 missing functionality in the completed B04 subset. See the
-[B04 audit](audits/b04-audit.md) for verification evidence and limitations.
+[B04 audit](audits/b04-audit.md) and [B05 audit](audits/b05-audit.md)
+for verification evidence and limitations of the supported CBV and CBNeed subsets.
 
 ## 1. Evaluation and Demand
 
@@ -51,8 +52,10 @@ A demand for WHNF may originate from:
 
 These contexts may require different continuation frames but share the abstract notion of WHNF demand.
 
-The implemented CBV rules are described below. Non-strict demand
-and constructor matching remain part of B05, B06 and B11.
+The implemented CBV and CBNeed rules are described below. CBNeed
+includes non-strict demand, shared thunk updates and blackhole detection.
+Constructor matching remains part of B06; nonmemoizing CBN evaluation
+remains part of B11.
 
 ## 4. Result Observation
 
@@ -262,7 +265,7 @@ Local recursive bindings are non-strict.
 Direct aliases must preserve reference identity where required
 without accidentally introducing call-by-need sharing.
 
-The operational representation of suspensions belongs to B05.
+The operational representation of nonmemoizing CBN suspensions belongs to B11.
 
 ### 7.5 Call by Need
 

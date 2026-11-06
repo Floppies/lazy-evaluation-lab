@@ -1,4 +1,4 @@
-"""Small-step Core CBV evaluation with explicit WHNF demand and continuations."""
+"""Small-step Core CBV and CBNeed evaluation with explicit WHNF demand and continuations."""
 
 from __future__ import annotations
 
@@ -758,7 +758,11 @@ def _advance_force(
     machine: MachineState,
     control: Force,
 ) -> tuple[MachineState, RuleId]:
-    """Demand WHNF without implementing thunk updates."""
+    """Demand WHNF, entering CBNeed thunks or detecting reentrant demand.
+
+    Thunk entry installs an UpdateFrame; its return continuation
+    verifies WHNF and performs the memoizing update.
+    """
     reference = control.reference
 
     if isinstance(
@@ -1275,7 +1279,11 @@ def _resume_apply_function(
     control: Return,
     frame: ApplyFunctionFrame,
 ) -> tuple[MachineState, RuleId]:
-    """Demand the function, then begin strict CBV argument evaluation."""
+    """Demand the function, then dispatch CBV or CBNeed application.
+
+    CBV evaluates its argument strictly. CBNeed defers closure arguments
+    and partial seq arguments; saturated seq first demands its stored argument.
+    """
     reference = control.reference
 
     if not frame.awaiting_whnf:

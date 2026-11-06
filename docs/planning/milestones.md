@@ -63,7 +63,7 @@ The descriptions follow the **Gantt B** plan and its milestone acceptance criter
 | B04.6 | CBV Recursive Local Bindings | Completed |
 | B04.7 | First-Class seq Evaluation | Completed |
 | B04.8 | Canonical Result Observation | Completed |
-| B05 | Call by Need and Sharing | In progress |
+| B05 | Call by Need and Sharing | Completed |
 | B05.1 | CBNeed Operational Contract | Completed |
 | B05.2 | Thunk Representation and Allocation | Completed |
 | B05.3 | Lazy Function Application | Completed |
@@ -74,7 +74,7 @@ The descriptions follow the **Gantt B** plan and its milestone acceptance criter
 | B05.8 | Non-Strict seq Evaluation | Completed |
 | B05.9 | Observation, Batching and Tracing | Completed |
 | B05.10 | Integration and Regression Tests | Completed |
-| B05.11 | Final Audit | In Progress |
+| B05.11 | Final Audit | Completed |
 
 ### Important notes
 

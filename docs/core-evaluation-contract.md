@@ -2445,3 +2445,40 @@ snapshots.
 Result consumption does not modify earlier snapshots,
 allocate simulated heap objects or alter the evaluation
 strategy.
+
+## 16. Constructor and Pattern-Matching Contract
+
+This section defines the agreed operational rules for B06.
+
+### Constructor Representation and Demand
+
+- The runtime supports `Nil` (arity 0) and `Cons` (arity 2).
+- Both use a single immutable heap-object representation containing a constructor tag and a tuple of runtime references.
+- Constructor allocation requires `1 + arity` abstract heap slots.
+- CBV evaluates constructor fields from left to right, demanding each to WHNF before constructing the value.
+- CBNeed creates deferred fields using the existing thunk allocation mechanism. Reaching constructor WHNF does not force its fields.
+- Constructor objects do not require separate identity anchors.
+
+### Case Evaluation
+
+- `CoreCase` evaluates and demands its scrutinee to WHNF.
+- Alternatives are considered in their original order; the first matching alternative is selected.
+- Constructor alternatives match only the corresponding constructor tag.
+- Default alternatives match any WHNF value, including non-list values.
+- Constructor pattern binders preserve stored field references without additional forcing.
+- Default binders preserve the scrutinee reference.
+- If no alternative matches, evaluation raises a pattern-matching error.
+- The selected body executes in the appropriate lexical environment extended with pattern bindings.
+
+### Observation and Materialization
+
+- Passive constructor observation returns `ConstructorWHNF(tag, arity)` without inspecting fields.
+- Complete materialization traverses constructor fields depth-first, left to right, requesting WHNF through evaluator transitions when needed.
+- Canonical results never expose heap addresses or thunk identities.
+- Every occurrence in the canonical result tree counts toward `result_node_limit`, including shared occurrences.
+- Evaluator transitions caused by materialization count toward `execution_step_limit` and belong to the `RESULT_MATERIALIZATION` phase.
+- Result-node exhaustion preserves the available partial result and reports `RESULT_LIMIT_REACHED`.
+- Batch boundaries preserve materialization progress and support deterministic resumption.
+- Infinite or cyclic values are bounded by the existing execution and result limits.
+
+These rules do not introduce new language syntax, evaluation strategies, garbage collection, or experimental metrics.

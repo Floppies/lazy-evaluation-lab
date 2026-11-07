@@ -7,6 +7,7 @@ import pytest
 
 from lazy_lab.pipeline import compile_source
 from lazy_lab.engine.core_machine import (
+    InvalidMachineStateError,
     UnsupportedTransitionError,
     run_batch,
     step,
@@ -33,6 +34,7 @@ from lazy_lab.runtime.stack import (
     ApplyArgumentFrame,
     PrimitiveOperandsFrame,
     GlobalDemandFrame,
+    UpdateFrame,
     LocalValueInitializationFrame,
 )                                   
 from lazy_lab.runtime.state import (
@@ -60,6 +62,7 @@ from lazy_lab.runtime.closures import (
     allocate_closure,
 )
 from lazy_lab.runtime.global_bindings import PendingGlobal
+from lazy_lab.runtime.thunks import PendingThunk, EvaluatingThunk
 from lazy_lab.runtime.predefined import (
     PredefinedFunction,
     PartialPredefinedFunction,
@@ -172,22 +175,6 @@ def test_compiled_literals_use_runtime(
     assert result.trace[0].previous_state_id == 0
     assert result.trace[0].next_state_id == 1
 
-#TODO these tests are temporary
-@pytest.mark.parametrize(
-    "source",
-    [
-        "main = let { x = 1 } in x",
-    ],
-)
-def test_unimplemented_core_constructs_remain_unsupported(source):
-    state = make_demo_state(source)
-
-    with pytest.raises(UnsupportedTransitionError):
-        step(state, make_config())
-
-    assert state.state_id == 0
-    assert state.transition_index == 0
-    assert state.machine_state.evaluator_transition_count == 0
 
 def test_trace_mode_does_not_change_semantic_result():
     state = make_demo_state("main = True")
@@ -375,12 +362,13 @@ def test_compiled_nested_closure_preserves_local_shadowing():
     assert global_env.lookup("x") == ImmediateInteger(100)
 
 
-def test_global_variable_lookup_does_not_force_rhs():
+@pytest.mark.parametrize("strategy", list(Strategy))
+def test_global_variable_lookup_does_not_force_rhs(strategy):
     program = compile_source(
         "answer = 42\n"
         "main = answer"
     )
-    config = make_config()
+    config = make_config(strategy=strategy)
 
     initial = create_initial_core_state(
         program,
@@ -406,11 +394,11 @@ def test_global_variable_lookup_does_not_force_rhs():
     assert machine.control.reference is main_reference
     assert isinstance(
         machine.heap.get(main_reference).value,
-        PendingGlobal,
+        PendingThunk if strategy is Strategy.CBNEED else PendingGlobal,
     )
     assert isinstance(
         machine.heap.get(answer_reference).value,
-        PendingGlobal,
+        PendingThunk if strategy is Strategy.CBNEED else PendingGlobal,
     )
 
     for reference in (main_reference, answer_reference):
@@ -422,12 +410,13 @@ def test_global_variable_lookup_does_not_force_rhs():
     assert machine.status is ExecutionStatus.RUNNING
 
 
-def test_global_lambda_lookup_reuses_installed_closure():
+@pytest.mark.parametrize("strategy", list(Strategy))
+def test_global_lambda_lookup_reuses_installed_closure(strategy):
     program = compile_source(
         "identity x = x\n"
         "main = identity"
     )
-    config = make_config()
+    config = make_config(strategy=strategy)
 
     initial = create_initial_core_state(
         program,
@@ -436,20 +425,32 @@ def test_global_lambda_lookup_reuses_installed_closure():
         entry="identity",
     )
 
-    result = run_batch(initial, config, max_steps=20)
+    current = initial
+    while current.machine_state.phase is ExecutionPhase.INITIALIZATION:
+        current = step(current, config).next_state
+
+    before = current.machine_state
+    reference = before.global_environment.lookup("identity")
+    original_closure = before.heap.get(reference).value
+    assert isinstance(original_closure, Closure)
+    cells_before = dict(before.heap.cells)
+    result = run_batch(current, config, max_steps=20)
     machine = result.state.machine_state
 
-    reference = machine.global_environment.lookup("identity")
+    assert machine.global_environment.lookup("identity") is reference
 
     assert machine.control == Return(reference)
-    assert isinstance(machine.heap.get(reference).value, Closure)
+    assert machine.control.reference is reference
+    assert machine.heap.get(reference).value is original_closure
 
-    # One predefined function and two global bindings.
-    # CoreVar lookup must not allocate another closure.
-    assert machine.heap.next_object_id == 3
-    assert machine.heap.current_slots == 3
+    # Lookup preserves the installed closure and every heap cell.
+    assert dict(machine.heap.cells) == cells_before
+    assert machine.heap.next_object_id == before.heap.next_object_id
+    assert machine.heap.current_slots == before.heap.current_slots
+    assert dict(before.heap.cells) == cells_before
 
-    assert result.trace[-1].rule_id == "CORE_EVAL_VARIABLE"
+    assert [entry.rule_id for entry in result.trace] == [RuleId.CORE_EVAL_VARIABLE]
+    assert result.stop_reason is BatchStopReason.WHNF_PENDING
 
 
 def test_compiled_application_preserves_pending_function_frame():
@@ -496,21 +497,32 @@ def test_compiled_application_preserves_pending_function_frame():
     assert state.machine_state.heap.current_slots == 0
 
 
-def test_global_alias_chain_reaches_whnf_without_updates():
+@pytest.mark.parametrize("strategy", list(Strategy))
+def test_global_alias_chain_reaches_whnf_with_strategy_specific_updates(strategy):
     program = compile_source(
         "loop = loop\n"
         "answer = 42\n"
         "main = answer"
     )
 
-    config = make_config()
+    config = make_config(strategy=strategy)
     initial = create_initial_core_state(
         program,
         config,
         session_id="global-alias-demand",
     )
 
-    result = run_batch(initial, config, max_steps=50)
+    installed = initial
+    while installed.machine_state.phase is ExecutionPhase.INITIALIZATION:
+        installed = step(installed, config).next_state
+    before = installed.machine_state
+    references = {
+        name: before.global_environment.lookup(name)
+        for name in ("loop", "answer", "main")
+    }
+    cells_before = dict(before.heap.cells)
+
+    result = run_batch(installed, config, max_steps=50)
     machine = result.state.machine_state
 
     assert result.stop_reason is BatchStopReason.WHNF_PENDING
@@ -518,23 +530,52 @@ def test_global_alias_chain_reaches_whnf_without_updates():
     assert machine.stack.depth == 0
     assert machine.local_environment is machine.global_environment
 
-    # No global RHS was updated or memoized.
-    for name in ("loop", "answer", "main"):
-        reference = machine.global_environment.lookup(name)
+    for name, reference in references.items():
+        assert machine.global_environment.lookup(name) is reference
+    assert machine.heap.get(references["loop"]) == cells_before[
+        references["loop"].object_id
+    ]
 
-        assert isinstance(
-            machine.heap.get(reference).value,
-            PendingGlobal,
-        )
+    rules = [entry.rule_id for entry in result.trace]
+    if strategy is Strategy.CBNEED:
+        assert isinstance(machine.heap.get(references["loop"]).value, PendingThunk)
+        for name in ("answer", "main"):
+            assert machine.heap.get(references[name]).value == Indirection(
+                ImmediateInteger(42)
+            )
+            assert machine.heap.get(references[name]).allocated_slots == 1
 
-    assert any(
-        entry.rule_id == "CORE_FORCE_GLOBAL_RHS"
-        for entry in result.trace
-    )
-    assert any(
-        entry.rule_id == "CORE_GLOBAL_DEMAND_RETURN"
-        for entry in result.trace
-    )
+        # Associate each entry/update with its concrete global anchor.
+        current = installed
+        entered = []
+        updated = []
+        for entry in result.trace:
+            predecessor = current.machine_state
+            transition = step(current, config)
+            assert TraceEntry.from_transition(transition) == entry
+            if entry.rule_id is RuleId.CORE_FORCE_THUNK_ENTER:
+                assert isinstance(predecessor.control, Force)
+                entered.append(predecessor.control.reference)
+            elif entry.rule_id is RuleId.CORE_THUNK_UPDATE_WHNF:
+                frame = predecessor.stack.peek()
+                assert isinstance(frame, UpdateFrame)
+                assert frame.awaiting_whnf
+                updated.append(frame.thunk_reference)
+            current = transition.next_state
+        assert entered == [references["main"], references["answer"]]
+        assert updated == [references["answer"], references["main"]]
+        assert RuleId.CORE_FORCE_GLOBAL_RHS not in rules
+    else:
+        # CBV/CBN retain the original non-memoizing global protocol.
+        for reference in references.values():
+            assert isinstance(machine.heap.get(reference).value, PendingGlobal)
+            assert machine.heap.get(reference) == cells_before[reference.object_id]
+        assert RuleId.CORE_FORCE_GLOBAL_RHS in rules
+        assert RuleId.CORE_GLOBAL_DEMAND_RETURN in rules
+        assert RuleId.CORE_FORCE_THUNK_ENTER not in rules
+        assert RuleId.CORE_THUNK_UPDATE_WHNF not in rules
+
+    assert dict(before.heap.cells) == cells_before
 
     # The first state remains unchanged.
     assert initial.transition_index == 0
@@ -574,7 +615,7 @@ def test_recursive_global_demand_is_step_bounded():
     program = compile_source("main = main")
 
     config = replace(
-        make_config(),
+        make_config(strategy=Strategy.CBV),
         execution_step_limit=20,
     )
 
@@ -592,6 +633,123 @@ def test_recursive_global_demand_is_step_bounded():
         == 20
     )
     assert result.state.machine_state.status is ExecutionStatus.RUNNING
+
+
+def test_cbneed_global_demand_respects_evaluator_budget():
+    config = make_config(strategy=Strategy.CBNEED)
+    initial = create_initial_core_state(
+        compile_source("main = 20 + 22"), config,
+        session_id="cbneed-global-budget",
+    )
+    current = initial
+    for _ in range(config.execution_step_limit):
+        transition = step(current, config)
+        current = transition.next_state
+        if transition.rule_id is RuleId.CORE_FORCE_THUNK_ENTER:
+            break
+    else:
+        pytest.fail("Global thunk entry was not reached")
+
+    main_ref = current.machine_state.global_environment.lookup("main")
+    limited = replace(
+        config,
+        execution_step_limit=current.machine_state.evaluator_transition_count + 1,
+    )
+    result = run_batch(initial, limited, max_steps=100)
+    assert result.stop_reason is BatchStopReason.EVALUATOR_BUDGET
+    paused = result.state.machine_state
+    assert paused.evaluator_transition_count == limited.execution_step_limit
+    assert paused.status is ExecutionStatus.RUNNING
+    assert isinstance(paused.heap.get(main_ref).value, EvaluatingThunk)
+    assert any(
+        isinstance(frame, UpdateFrame) and frame.thunk_reference == main_ref
+        for frame in paused.stack.frames
+    )
+
+    cells_before = dict(paused.heap.cells)
+    frames_before = paused.stack.frames
+    resumed = run_batch(result.state, config, max_steps=100)
+    assert resumed.stop_reason is BatchStopReason.WHNF_PENDING
+    assert resumed.state.machine_state.control == Return(ImmediateInteger(42))
+    assert dict(paused.heap.cells) == cells_before
+    assert paused.stack.frames == frames_before
+
+
+def test_cbneed_reentrant_global_demand_detects_blackhole():
+    config = make_config(strategy=Strategy.CBNEED)
+    current = create_initial_core_state(
+        compile_source("main = main"), config,
+        session_id="cbneed-reentrant-global",
+    )
+    for _ in range(config.execution_step_limit):
+        machine = current.machine_state
+        if isinstance(machine.control, Force):
+            main_ref = machine.global_environment.lookup("main")
+            if (
+                machine.control.reference == main_ref
+                and isinstance(machine.heap.get(main_ref).value, EvaluatingThunk)
+            ):
+                break
+        current = step(current, config).next_state
+    else:
+        pytest.fail("Reentrant demand of the global anchor was not reached")
+
+    frame = machine.stack.peek()
+    assert isinstance(frame, UpdateFrame)
+    assert frame.thunk_reference is main_ref
+    assert frame.awaiting_whnf
+    cells_before = dict(machine.heap.cells)
+    frames_before = machine.stack.frames
+    slots_before = machine.heap.current_slots
+    next_id_before = machine.heap.next_object_id
+    snapshot = replace(current, machine_state=replace(machine))
+
+    transition = step(current, config)
+
+    assert transition.rule_id is RuleId.CORE_BLACKHOLE_DETECTED
+
+    terminal = transition.next_state.machine_state
+
+    assert terminal.status is ExecutionStatus.BLACKHOLE_DETECTED
+    assert terminal.control == Force(main_ref)
+
+    assert terminal.heap.get(main_ref).value == (
+        machine.heap.get(main_ref).value
+    )
+
+    # No heap allocation or update occurs.
+    assert dict(terminal.heap.cells) == cells_before
+    assert terminal.heap.current_slots == slots_before
+    assert terminal.heap.next_object_id == next_id_before
+
+    # Keep the suspended continuation available for inspection.
+    assert terminal.stack.frames == frames_before
+    assert terminal.local_environment is machine.local_environment
+
+    # The original checkpoint remains running and unchanged.
+    assert current.machine_state.status is ExecutionStatus.RUNNING
+    assert dict(machine.heap.cells) == cells_before
+    assert machine.stack.frames == frames_before
+
+    assert (
+        transition.next_state.transition_index
+        == current.transition_index + 1
+    )
+
+    # Terminal states cannot advance through step().
+    with pytest.raises(
+        InvalidMachineStateError,
+        match="Only RUNNING states can advance",
+    ):
+        step(transition.next_state, config)
+
+    assert current == snapshot
+    assert current.machine_state is machine
+    assert dict(machine.heap.cells) == cells_before
+    assert machine.heap.current_slots == slots_before
+    assert machine.heap.next_object_id == next_id_before
+    assert machine.stack.frames == frames_before
+    assert machine.global_environment.lookup("main") is main_ref
 
 
 def test_cbv_identity_application_reaches_whnf():
@@ -970,7 +1128,7 @@ def test_cbv_rejects_application_of_non_function():
 
 @pytest.mark.parametrize(
     "strategy",
-    [Strategy.CBN, Strategy.CBNEED],
+    [Strategy.CBN],
 )
 def test_non_strict_application_remains_explicitly_unsupported(
     strategy,
@@ -1273,8 +1431,14 @@ def test_if_evaluates_only_selected_branch(
         config,
         session_id="conditional-branch",
     )
+    installed = initial
+    while installed.machine_state.phase is ExecutionPhase.INITIALIZATION:
+        installed = step(installed, config).next_state
+    before = installed.machine_state
+    loop_reference = before.global_environment.lookup("loop")
+    cells_before = dict(before.heap.cells)
 
-    result = run_batch(initial, config, max_steps=100)
+    result = run_batch(installed, config, max_steps=100)
     machine = result.state.machine_state
 
     assert result.stop_reason is BatchStopReason.WHNF_PENDING
@@ -1289,12 +1453,15 @@ def test_if_evaluates_only_selected_branch(
     assert "CORE_IF_REQUIRE_CONDITION_WHNF" in rules
 
     # The discarded recursive branch was never demanded.
-    loop_reference = machine.global_environment.lookup("loop")
+    assert machine.global_environment.lookup("loop") is loop_reference
 
     assert isinstance(
         machine.heap.get(loop_reference).value,
-        PendingGlobal,
+        PendingThunk if strategy is Strategy.CBNEED else PendingGlobal,
     )
+    assert machine.heap.get(loop_reference) == before.heap.get(loop_reference)
+    assert dict(before.heap.cells) == cells_before
+    assert initial.machine_state.heap.current_slots == 0
 
 
 def test_if_with_primitive_condition_and_branch():

@@ -1,0 +1,2150 @@
+
+"""Integration tests for Call-by-Need closure application."""
+
+import pytest
+from dataclasses import replace
+
+from lazy_lab.pipeline import compile_source
+from lazy_lab.engine.core_machine import (
+    create_initial_core_state,
+    run_batch,
+    step,
+    UnsupportedTransitionError,
+    InvalidMachineStateError,
+)
+from lazy_lab.runtime.control import (
+    Return,
+    Force,
+    EvaluateCore,
+)
+from lazy_lab.runtime.heap import Indirection
+from lazy_lab.runtime.references import (
+    HeapReference,
+    ImmediateInteger,
+)
+from lazy_lab.runtime.stack import (
+    ApplyFunctionFrame,
+    RestoreEnvironmentFrame,
+    UpdateFrame,
+    PrimitiveOperandsFrame,
+)
+from lazy_lab.runtime.state import (
+    ExecutionConfig,
+    MachineKind,
+    ResultPolicy,
+    Strategy,
+    TraceMode,
+)
+from lazy_lab.runtime.thunks import (
+    PendingThunk,
+    ThunkPayload,
+    EvaluatingThunk,
+)
+from lazy_lab.runtime.transitions import BatchStopReason, RuleId, TraceEntry
+from lazy_lab.runtime.closures import Closure
+from lazy_lab.core.nodes import (
+    CoreApp,
+    CoreBool,
+    CoreInt,
+    CorePrimOp,
+    CoreVar,
+)
+
+
+def make_cbneed_config():
+    return ExecutionConfig(
+        machine_kind=MachineKind.CORE,
+        strategy=Strategy.CBNEED,
+        result_policy=ResultPolicy.WHNF_ONLY,
+        execution_step_limit=150,
+        result_node_limit=100,
+        trace_mode=TraceMode.FULL,
+    )
+
+
+def advance_to_next_cbneed_body(state, config):
+    """Advance through the next CBNeed closure-body entry.
+
+    Return the state before the transition and its successor.
+    """
+    current = state
+
+    for _ in range(100):
+        transition = step(current, config)
+
+        if transition.rule_id is RuleId.CORE_CBNEED_ENTER_BODY:
+            return current, transition.next_state
+
+        current = transition.next_state
+
+    raise AssertionError("No CBNeed closure-body entry found")
+
+
+def advance_to_second_thunk_entry(initial, config):
+    """Find y's and x's nested entries, retaining every transition rule."""
+
+    current = initial
+    entries = []
+    rules = []
+    argument_refs = {}
+
+    for _ in range(140):
+        transition = step(current, config)
+        rules.append(transition.rule_id)
+
+        if transition.rule_id is RuleId.CORE_CBNEED_ENTER_BODY:
+            environment = transition.next_state.machine_state.local_environment
+            for name in ("x", "y"):
+                if name in environment.bindings:
+                    argument_refs[name] = environment.lookup(name)
+
+        if (
+            transition.rule_id is RuleId.CORE_FORCE_THUNK_ENTER
+            and current.machine_state.control.reference
+            in argument_refs.values()
+        ):
+            expected_name = ("y", "x")[len(entries)]
+            assert current.machine_state.control.reference == argument_refs[
+                expected_name
+            ]
+            entries.append(
+                (current, transition.next_state)
+            )
+
+            if len(entries) == 2:
+                return entries, tuple(rules)
+
+        current = transition.next_state
+
+    raise AssertionError("Two thunk entries were not reached")
+
+
+def thunk_transition_anchors(initial, config, trace):
+    """Replay a batch trace to associate thunk rules with their anchors.
+
+    TraceEntry has no reference field, so inspect each predecessor state
+    while verifying that replay reproduces the complete original trace.
+    """
+    anchors = {
+        RuleId.CORE_FORCE_THUNK_ENTER: [],
+        RuleId.CORE_THUNK_REQUIRE_WHNF: [],
+        RuleId.CORE_THUNK_UPDATE_WHNF: [],
+    }
+    current = initial
+
+    for entry in trace:
+        machine = current.machine_state
+        transition = step(current, config)
+        assert TraceEntry.from_transition(transition) == entry
+
+        if entry.rule_id is RuleId.CORE_FORCE_THUNK_ENTER:
+            assert isinstance(machine.control, Force)
+            reference = machine.control.reference
+            assert isinstance(machine.heap.get(reference).value, PendingThunk)
+            anchors[entry.rule_id].append(reference)
+        elif entry.rule_id in (
+            RuleId.CORE_THUNK_REQUIRE_WHNF,
+            RuleId.CORE_THUNK_UPDATE_WHNF,
+        ):
+            frame = machine.stack.peek()
+            assert isinstance(frame, UpdateFrame)
+            anchors[entry.rule_id].append(frame.thunk_reference)
+
+        current = transition.next_state
+
+    return anchors
+
+
+def advance_to_pending_function_demand(state, config):
+    """Find demand for the current local f anchor, excluding globals."""
+    function_ref = state.machine_state.local_environment.lookup("f")
+    assert isinstance(function_ref, HeapReference)
+    current = state
+
+    for _ in range(100):
+        machine = current.machine_state
+        if machine.control == Force(function_ref):
+            assert isinstance(machine.heap.get(function_ref).value, PendingThunk)
+            return current
+        current = step(current, config).next_state
+
+    raise AssertionError("Pending function thunk demand not reached")
+
+
+def test_unused_argument_is_not_evaluated():
+    program = compile_source(
+        r"main = (\x -> 42) (1 + True)"
+    )
+
+    config = make_cbneed_config()
+    initial = create_initial_core_state(
+        program,
+        config,
+        session_id="cbneed-unused-argument",
+    )
+
+    result = run_batch(
+        initial,
+        config,
+        max_steps=100,
+    )
+
+    assert result.stop_reason is BatchStopReason.WHNF_PENDING
+    assert result.state.machine_state.control == Return(
+        ImmediateInteger(42)
+    )
+
+    rule_ids = [entry.rule_id for entry in result.trace]
+
+    assert RuleId.CORE_CBNEED_ENTER_BODY in rule_ids
+    assert RuleId.CORE_CBV_EVAL_ARGUMENT not in rule_ids
+    assert RuleId.CORE_CBV_REQUIRE_ARGUMENT_WHNF not in rule_ids
+
+    # No primitive expression was evaluated.
+    assert RuleId.CORE_EVAL_PRIMITIVE_START not in rule_ids
+    assert RuleId.CORE_PRIM_EXECUTE not in rule_ids
+
+    assert result.state.machine_state.stack.depth == 0
+
+
+def test_cbneed_enters_body_with_pending_argument_thunk():
+    program = compile_source(
+        r"main = (\x -> 42) (20 + 1)"
+    )
+
+    config = make_cbneed_config()
+    current = create_initial_core_state(
+        program,
+        config,
+        session_id="cbneed-thunk-binding",
+    )
+
+    for _ in range(60):
+        transition = step(current, config)
+
+        if transition.rule_id is RuleId.CORE_CBNEED_ENTER_BODY:
+            break
+
+        current = transition.next_state
+    else:
+        raise AssertionError("CBNeed never entered the closure body")
+
+    previous = current
+    successor = transition.next_state
+
+    before = previous.machine_state
+    after = successor.machine_state
+
+    assert isinstance(before.stack.peek(), ApplyFunctionFrame)
+    assert isinstance(
+        after.stack.peek(),
+        RestoreEnvironmentFrame,
+    )
+
+    argument_ref = after.local_environment.lookup("x")
+    assert isinstance(argument_ref, HeapReference)
+
+    anchor = after.heap.get(argument_ref).value
+    assert isinstance(anchor, PendingThunk)
+
+    payload_cell = after.heap.get(anchor.payload_reference)
+    assert isinstance(payload_cell.value, ThunkPayload)
+    assert payload_cell.value.required_slots == 1
+
+    # One payload slot and one stable anchor slot.
+    assert after.heap.current_slots == before.heap.current_slots + 2
+
+    # The function body has not demanded x.
+    assert isinstance(
+        after.heap.get(argument_ref).value,
+        PendingThunk,
+    )
+
+    # The transition did not mutate the previous state.
+    assert previous.machine_state.heap is not after.heap
+    assert previous.machine_state.stack is not after.stack
+
+
+def test_lazy_argument_captures_local_but_not_global_names():
+    program = compile_source(
+        "global_value = 100\n"
+        r"main = (\x -> (\y -> 42) (x + global_value)) 20"
+    )
+    config = make_cbneed_config()
+
+    initial = create_initial_core_state(
+        program,
+        config,
+        session_id="cbneed-local-global-captures",
+    )
+
+    # First application: bind x to a thunk for 20.
+    _, outer_state = advance_to_next_cbneed_body(
+        initial, config
+    )
+
+    outer_x = outer_state.machine_state.local_environment.lookup(
+        "x"
+    )
+    assert isinstance(outer_x, HeapReference)
+
+    # Second application: defer x + global_value.
+    _, inner_state = advance_to_next_cbneed_body(
+        outer_state, config
+    )
+
+    machine = inner_state.machine_state
+    y_ref = machine.local_environment.lookup("y")
+
+    assert isinstance(y_ref, HeapReference)
+
+    y_anchor = machine.heap.get(y_ref).value
+    assert isinstance(y_anchor, PendingThunk)
+
+    payload = machine.heap.get(
+        y_anchor.payload_reference
+    ).value
+    assert isinstance(payload, ThunkPayload)
+
+    assert set(payload.captured_locals.bindings) == {"x"}
+    assert payload.captured_locals.lookup("x") is outer_x
+    assert payload.required_slots == 2
+
+    # Both deferred computations remain pending.
+    assert isinstance(
+        machine.heap.get(outer_x).value,
+        PendingThunk,
+    )
+
+    # Completing the program must not demand either thunk.
+    result = run_batch(inner_state, config, max_steps=100)
+
+    assert result.stop_reason is BatchStopReason.WHNF_PENDING
+    assert result.state.machine_state.control == Return(
+        ImmediateInteger(42)
+    )
+    assert (
+        result.state.machine_state.local_environment
+        is result.state.machine_state.global_environment
+    )
+
+
+def test_lazy_argument_preserves_call_site_under_shadowing():
+    program = compile_source(
+        r"main = (\x -> (\x -> 42) (x + 1)) 10"
+    )
+    config = make_cbneed_config()
+
+    initial = create_initial_core_state(
+        program,
+        config,
+        session_id="cbneed-shadowed-parameter",
+    )
+
+    _, outer_state = advance_to_next_cbneed_body(
+        initial, config
+    )
+
+    outer_x = outer_state.machine_state.local_environment.lookup(
+        "x"
+    )
+
+    _, inner_state = advance_to_next_cbneed_body(
+        outer_state, config
+    )
+
+    machine = inner_state.machine_state
+
+    # The second lambda introduces another x binding.
+    inner_x = machine.local_environment.lookup("x")
+
+    assert isinstance(inner_x, HeapReference)
+    assert isinstance(outer_x, HeapReference)
+    assert inner_x != outer_x
+
+    inner_anchor = machine.heap.get(inner_x).value
+    assert isinstance(inner_anchor, PendingThunk)
+
+    inner_payload = machine.heap.get(
+        inner_anchor.payload_reference
+    ).value
+    assert isinstance(inner_payload, ThunkPayload)
+
+    # The RHS x + 1 refers to the OUTER x.
+    assert set(inner_payload.captured_locals.bindings) == {
+        "x"
+    }
+    assert inner_payload.captured_locals.lookup("x") is outer_x
+
+    # Neither thunk has been demanded.
+    assert isinstance(
+        machine.heap.get(outer_x).value,
+        PendingThunk,
+    )
+
+    result = run_batch(inner_state, config, max_steps=100)
+
+    assert result.stop_reason is BatchStopReason.WHNF_PENDING
+    assert result.state.machine_state.control == Return(
+        ImmediateInteger(42)
+    )
+
+
+def test_nested_lazy_argument_captures_two_thunk_references():
+    program = compile_source(
+        r"main = (\x -> (\z -> (\y -> 42) (x + z)) 30) 20"
+    )
+    config = make_cbneed_config()
+
+    initial = create_initial_core_state(
+        program,
+        config,
+        session_id="cbneed-nested-thunk-captures",
+    )
+
+    _, x_state = advance_to_next_cbneed_body(
+        initial, config
+    )
+
+    x_ref = x_state.machine_state.local_environment.lookup("x")
+
+    _, z_state = advance_to_next_cbneed_body(
+        x_state, config
+    )
+
+    z_environment = z_state.machine_state.local_environment
+    z_ref = z_environment.lookup("z")
+
+    # The nested closure still refers to the original x.
+    assert z_environment.lookup("x") is x_ref
+
+    _, y_state = advance_to_next_cbneed_body(
+        z_state, config
+    )
+
+    machine = y_state.machine_state
+    y_ref = machine.local_environment.lookup("y")
+
+    anchor = machine.heap.get(y_ref).value
+    assert isinstance(anchor, PendingThunk)
+
+    payload_cell = machine.heap.get(
+        anchor.payload_reference
+    )
+    payload = payload_cell.value
+
+    assert isinstance(payload, ThunkPayload)
+    assert set(payload.captured_locals.bindings) == {
+        "x", "z"
+    }
+
+    assert payload.captured_locals.lookup("x") is x_ref
+    assert payload.captured_locals.lookup("z") is z_ref
+
+    assert payload.required_slots == 3
+    assert payload_cell.allocated_slots == 3
+    assert machine.heap.get(y_ref).allocated_slots == 1
+
+    assert isinstance(machine.heap.get(x_ref).value, PendingThunk)
+    assert isinstance(machine.heap.get(z_ref).value, PendingThunk)
+
+    result = run_batch(y_state, config, max_steps=100)
+
+    assert result.stop_reason is BatchStopReason.WHNF_PENDING
+    assert result.state.machine_state.control == Return(
+        ImmediateInteger(42)
+    )
+
+
+def test_returned_closure_preserves_pending_thunk_capture():
+    program = compile_source(
+        r"main = (\x -> \y -> x) (1 + True)"
+    )
+    config = make_cbneed_config()
+
+    initial = create_initial_core_state(
+        program,
+        config,
+        session_id="cbneed-returned-closure",
+    )
+
+    result = run_batch(
+        initial,
+        config,
+        max_steps=100,
+    )
+
+    assert result.stop_reason is BatchStopReason.WHNF_PENDING
+
+    machine = result.state.machine_state
+    assert isinstance(machine.control, Return)
+
+    closure_ref = machine.control.reference
+    assert isinstance(closure_ref, HeapReference)
+
+    closure = machine.heap.get(closure_ref).value
+    assert isinstance(closure, Closure)
+
+    # The returned closure captures the original thunk.
+    assert set(closure.captured_locals.bindings) == {"x"}
+
+    x_ref = closure.captured_locals.lookup("x")
+    assert isinstance(x_ref, HeapReference)
+
+    x_anchor = machine.heap.get(x_ref).value
+    assert isinstance(x_anchor, PendingThunk)
+
+    # The caller's environment has been restored.
+    assert machine.local_environment is machine.global_environment
+    assert machine.stack.depth == 0
+
+    # The invalid primitive argument was never evaluated.
+    rules = [entry.rule_id for entry in result.trace]
+    assert RuleId.CORE_EVAL_PRIMITIVE_START not in rules
+    assert RuleId.CORE_PRIM_EXECUTE not in rules
+
+
+def test_curried_application_preserves_original_capture():
+    program = compile_source(
+        r"main = (\x -> \y -> \z -> x) (1 + True) (2 + False)"
+    )
+    config = make_cbneed_config()
+
+    initial = create_initial_core_state(
+        program,
+        config,
+        session_id="cbneed-curried-returned-closure",
+    )
+
+    # First application binds x to a pending thunk.
+    _, first_state = advance_to_next_cbneed_body(
+        initial,
+        config,
+    )
+
+    x_ref = first_state.machine_state.local_environment.lookup(
+        "x"
+    )
+
+    # Second application binds y to another pending thunk.
+    _, second_state = advance_to_next_cbneed_body(
+        first_state,
+        config,
+    )
+
+    y_ref = second_state.machine_state.local_environment.lookup(
+        "y"
+    )
+
+    assert x_ref != y_ref
+
+    # The second lambda still has access to the original x.
+    assert (
+        second_state.machine_state.local_environment.lookup("x")
+        is x_ref
+    )
+
+    result = run_batch(
+        second_state,
+        config,
+        max_steps=100,
+    )
+
+    assert result.stop_reason is BatchStopReason.WHNF_PENDING
+
+    machine = result.state.machine_state
+    assert isinstance(machine.control, Return)
+
+    returned_ref = machine.control.reference
+    assert isinstance(returned_ref, HeapReference)
+
+    returned_closure = machine.heap.get(returned_ref).value
+    assert isinstance(returned_closure, Closure)
+
+    # The final \z -> x needs x but not y.
+    assert set(returned_closure.captured_locals.bindings) == {
+        "x"
+    }
+    assert returned_closure.captured_locals.lookup("x") is x_ref
+
+    assert isinstance(machine.heap.get(x_ref).value, PendingThunk)
+    assert isinstance(machine.heap.get(y_ref).value, PendingThunk)
+
+    assert machine.stack.depth == 0
+    assert machine.local_environment is machine.global_environment
+
+
+def test_curried_application_does_not_force_unused_arguments():
+    program = compile_source(
+        r"main = (\x -> \y -> 42) (1 + True) (2 + False)"
+    )
+    config = make_cbneed_config()
+
+    initial = create_initial_core_state(
+        program,
+        config,
+        session_id="cbneed-curried-unused-arguments",
+    )
+
+    result = run_batch(
+        initial,
+        config,
+        max_steps=100,
+    )
+
+    assert result.stop_reason is BatchStopReason.WHNF_PENDING
+    assert result.state.machine_state.control == Return(
+        ImmediateInteger(42)
+    )
+
+    rules = [entry.rule_id for entry in result.trace]
+
+    assert rules.count(RuleId.CORE_CBNEED_ENTER_BODY) == 2
+    assert RuleId.CORE_EVAL_PRIMITIVE_START not in rules
+    assert RuleId.CORE_PRIM_EXECUTE not in rules
+
+    machine = result.state.machine_state
+
+    pending_thunks = [
+        cell
+        for cell in machine.heap.cells.values()
+        if isinstance(cell.value, PendingThunk)
+    ]
+
+    assert len(pending_thunks) == 2
+    assert machine.stack.depth == 0
+    assert machine.local_environment is machine.global_environment
+
+
+def test_cbneed_applies_function_through_global_alias():
+    program = compile_source(
+        "constant x = 42\n"
+        "alias = constant\n"
+        "main = alias (1 + True)"
+    )
+    config = make_cbneed_config()
+
+    initial = create_initial_core_state(
+        program,
+        config,
+        session_id="cbneed-global-function-alias",
+    )
+
+    result = run_batch(initial, config, max_steps=100)
+
+    assert result.stop_reason is BatchStopReason.WHNF_PENDING
+    assert result.state.machine_state.control == Return(
+        ImmediateInteger(42)
+    )
+
+    rules = [entry.rule_id for entry in result.trace]
+
+    assert RuleId.CORE_APPLY_REQUIRE_FUNCTION_WHNF in rules
+    assert RuleId.CORE_CBNEED_ENTER_BODY in rules
+
+    machine = result.state.machine_state
+    alias_ref = machine.global_environment.lookup("alias")
+    constant_ref = machine.global_environment.lookup("constant")
+    main_ref = machine.global_environment.lookup("main")
+    anchors = thunk_transition_anchors(initial, config, result.trace)
+    assert anchors[RuleId.CORE_FORCE_THUNK_ENTER] == [main_ref, alias_ref]
+    assert anchors[RuleId.CORE_THUNK_REQUIRE_WHNF] == [alias_ref, main_ref]
+    assert anchors[RuleId.CORE_THUNK_UPDATE_WHNF] == [alias_ref, main_ref]
+    assert machine.heap.get(alias_ref).value == Indirection(constant_ref)
+    assert isinstance(machine.heap.get(constant_ref).value, Closure)
+    assert machine.heap.get(main_ref).value == Indirection(ImmediateInteger(42))
+
+    # Only the function position was demanded.
+    assert RuleId.CORE_EVAL_PRIMITIVE_START not in rules
+    assert RuleId.CORE_PRIM_EXECUTE not in rules
+
+    assert result.state.machine_state.stack.depth == 0
+
+
+def test_cbneed_pending_function_position_requires_thunk_forcing():
+    program = compile_source(
+        r"main = (\f -> f (1 + True)) (\x -> 42)"
+    )
+    config = make_cbneed_config()
+
+    current = create_initial_core_state(
+        program,
+        config,
+        session_id="cbneed-pending-function-position",
+    )
+
+    _, body_state = advance_to_next_cbneed_body(current, config)
+    current = advance_to_pending_function_demand(body_state, config)
+
+    machine = current.machine_state
+    function_ref = machine.control.reference
+
+    
+    assert isinstance(
+        machine.stack.peek(),
+        ApplyFunctionFrame,
+    )
+    assert machine.stack.peek().awaiting_whnf
+
+    pending = machine.heap.get(function_ref).value
+    assert isinstance(pending, PendingThunk)
+
+    payload = machine.heap.get(
+        pending.payload_reference
+    ).value
+    assert isinstance(payload, ThunkPayload)
+
+    previous_slots = machine.heap.current_slots
+    previous_next_id = machine.heap.next_object_id
+    previous_depth = machine.stack.depth
+
+    transition = step(current, config)
+    successor = transition.next_state
+    next_machine = successor.machine_state
+
+    assert transition.rule_id is RuleId.CORE_FORCE_THUNK_ENTER
+
+    # The original anchor has entered EVALUATING.
+    evaluating = next_machine.heap.get(function_ref).value
+
+    assert isinstance(evaluating, EvaluatingThunk)
+    assert evaluating.payload_reference == pending.payload_reference
+
+    # No new allocation occurs during thunk entry.
+    assert next_machine.heap.current_slots == previous_slots
+    assert next_machine.heap.next_object_id == previous_next_id
+
+    # The pending application remains below UpdateFrame.
+    assert next_machine.stack.depth == previous_depth + 1
+
+    frame = next_machine.stack.peek()
+    assert isinstance(frame, UpdateFrame)
+
+    assert frame.thunk_reference is function_ref
+    assert frame.return_environment is machine.local_environment
+    assert frame.awaiting_whnf is False
+
+    # Execution resumes with the deferred Core expression.
+    assert isinstance(next_machine.control, EvaluateCore)
+    assert next_machine.control.expression is payload.expression
+
+    # The previous ExecutionState remains unchanged.
+    assert current.state_id + 1 == successor.state_id
+    assert current.transition_index + 1 == successor.transition_index
+
+    assert isinstance(
+        machine.heap.get(function_ref).value,
+        PendingThunk,
+    )
+    assert machine.stack.depth == previous_depth
+
+
+def test_cbneed_non_callable_fails_before_argument_allocation():
+    program = compile_source("")
+    config = make_cbneed_config()
+
+    expression = CoreApp(
+        CoreInt(42),
+        CorePrimOp(
+            "+",
+            (CoreInt(1), CoreBool(True)),
+        ),
+    )
+
+    initial = create_initial_core_state(
+        program,
+        config,
+        session_id="cbneed-invalid-function",
+        entry=expression,
+    )
+
+    current = initial
+    rules = []
+
+    for _ in range(80):
+        before_id = current.state_id
+        before_slots = current.machine_state.heap.current_slots
+
+        try:
+            transition = step(current, config)
+
+        except TypeError as exc:
+            assert "Cannot apply a non-function value" in str(exc)
+
+            # The failed transition did not mutate the input.
+            assert current.state_id == before_id
+            assert current.machine_state.heap.current_slots == (
+                before_slots
+            )
+            break
+
+        rules.append(transition.rule_id)
+        current = transition.next_state
+
+    else:
+        pytest.fail("Invalid application was not rejected")
+
+    heap_objects = [
+        cell.value
+        for cell in current.machine_state.heap.cells.values()
+    ]
+
+    assert not any(
+        isinstance(value, (PendingThunk, ThunkPayload))
+        for value in heap_objects
+    )
+
+    assert RuleId.CORE_EVAL_PRIMITIVE_START not in rules
+    assert RuleId.CORE_CBNEED_ENTER_BODY not in rules
+
+    assert initial.state_id == 0
+    assert initial.machine_state.heap.current_slots == 0
+
+
+def test_cbneed_complete_and_single_step_batches_are_equivalent():
+    program = compile_source(
+        r"main = (\x -> \y -> 42) (1 + True) (2 + False)"
+    )
+    config = make_cbneed_config()
+
+    initial = create_initial_core_state(
+        program,
+        config,
+        session_id="cbneed-batch-equivalence",
+    )
+
+    # Uninterrupted execution.
+    full = run_batch(initial, config, max_steps=150)
+
+    # Resume the same program one transition at a time.
+    current = initial
+    chunked_rules = []
+
+    for _ in range(150):
+        batch = run_batch(
+            current,
+            config,
+            max_steps=1,
+        )
+
+        chunked_rules.extend(
+            entry.rule_id for entry in batch.trace
+        )
+        current = batch.state
+
+        if batch.stop_reason is BatchStopReason.WHNF_PENDING:
+            break
+    else:
+        raise AssertionError("Chunked execution did not finish")
+
+    assert full.stop_reason is BatchStopReason.WHNF_PENDING
+
+    full_machine = full.state.machine_state
+    chunked_machine = current.machine_state
+
+    expected_result = Return(ImmediateInteger(42))
+
+    assert full_machine.control == expected_result
+    assert chunked_machine.control == expected_result
+
+    full_rules = [
+        entry.rule_id for entry in full.trace
+    ]
+
+    assert full_rules == chunked_rules
+
+    assert full_rules.count(
+        RuleId.CORE_CBNEED_ENTER_BODY
+    ) == 2
+
+    assert RuleId.CORE_EVAL_PRIMITIVE_START not in full_rules
+    assert RuleId.CORE_CBV_EVAL_ARGUMENT not in full_rules
+
+    assert (
+        full_machine.evaluator_transition_count
+        == chunked_machine.evaluator_transition_count
+    )
+    assert full.state.transition_index == current.transition_index
+
+    assert (
+        full_machine.heap.current_slots
+        == chunked_machine.heap.current_slots
+    )
+    assert (
+        full_machine.heap.next_object_id
+        == chunked_machine.heap.next_object_id
+    )
+
+    # Compare structural allocation signatures.
+    # ThunkPayload intentionally does not use structural equality.
+    def heap_signature(machine):
+        return tuple(
+            (
+                cell.object_id,
+                type(cell.value).__name__,
+                cell.allocated_slots,
+            )
+            for cell in machine.heap.cells.values()
+        )
+
+    assert heap_signature(full_machine) == heap_signature(
+        chunked_machine
+    )
+
+    assert full_machine.stack.depth == 0
+    assert chunked_machine.stack.depth == 0
+
+    assert (
+        full_machine.local_environment
+        is full_machine.global_environment
+    )
+    assert (
+        chunked_machine.local_environment
+        is chunked_machine.global_environment
+    )
+
+    # Neither run may mutate the initial state.
+    assert initial.state_id == 0
+    assert initial.transition_index == 0
+    assert initial.machine_state.heap.current_slots == 0
+
+
+def test_cbneed_trace_modes_preserve_execution():
+    program = compile_source(
+        r"main = (\x -> \y -> 42) (1 + True) (2 + False)"
+    )
+
+    full_config = make_cbneed_config()
+    metrics_config = replace(
+        full_config,
+        trace_mode=TraceMode.METRICS_ONLY,
+    )
+
+    initial = create_initial_core_state(
+        program,
+        full_config,
+        session_id="cbneed-trace-mode-equivalence",
+    )
+
+    full = run_batch(
+        initial,
+        full_config,
+        max_steps=150,
+    )
+
+    metrics = run_batch(
+        initial,
+        metrics_config,
+        max_steps=150,
+    )
+
+    assert full.stop_reason == metrics.stop_reason
+    assert full.stop_reason is BatchStopReason.WHNF_PENDING
+
+    left = full.state.machine_state
+    right = metrics.state.machine_state
+
+    assert left.control == right.control
+    assert left.control == Return(ImmediateInteger(42))
+
+    assert (
+        left.evaluator_transition_count
+        == right.evaluator_transition_count
+    )
+    assert full.state.transition_index == metrics.state.transition_index
+
+    assert left.heap.current_slots == right.heap.current_slots
+    assert left.heap.next_object_id == right.heap.next_object_id
+
+    assert left.stack.depth == right.stack.depth == 0
+
+    # Trace retention must not affect machine execution.
+    assert len(full.trace) > 0
+    assert metrics.trace == ()
+
+
+def test_thunk_entry_restores_captured_lexical_scope():
+    program = compile_source(
+        r"main = (\x -> (\f -> f (1 + True)) (\y -> x)) 30"
+    )
+    config = make_cbneed_config()
+
+    current = create_initial_core_state(
+        program,
+        config,
+        session_id="cbneed-thunk-entry-scope",
+    )
+
+    _, x_state = advance_to_next_cbneed_body(current, config)
+    captured_x_ref = x_state.machine_state.local_environment.lookup("x")
+    _, f_state = advance_to_next_cbneed_body(x_state, config)
+    current = advance_to_pending_function_demand(f_state, config)
+
+    machine = current.machine_state
+    thunk_ref = machine.control.reference
+
+    pending = machine.heap.get(thunk_ref).value
+    payload = machine.heap.get(
+        pending.payload_reference
+    ).value
+
+    assert isinstance(payload, ThunkPayload)
+    assert set(payload.captured_locals.bindings) == {"x"}
+
+    captured_x = payload.captured_locals.lookup("x")
+    assert captured_x is captured_x_ref
+
+    transition = step(current, config)
+    next_machine = transition.next_state.machine_state
+
+    assert transition.rule_id is RuleId.CORE_FORCE_THUNK_ENTER
+
+    # The thunk uses its captures over the global environment.
+    thunk_env = next_machine.local_environment
+
+    assert thunk_env.parent is next_machine.global_environment
+    assert set(thunk_env.bindings) == {"x"}
+    assert thunk_env.lookup("x") is captured_x
+
+    # The caller's local parameter f is not inherited.
+    assert "f" not in thunk_env.bindings
+
+    # The caller's complete environment is preserved instead.
+    update_frame = next_machine.stack.peek()
+
+    assert isinstance(update_frame, UpdateFrame)
+    assert update_frame.return_environment is machine.local_environment
+
+    assert isinstance(
+        next_machine.heap.get(captured_x).value,
+        PendingThunk,
+    )
+
+    # Entry does not force a captured dependency.
+    assert next_machine.control.expression is payload.expression
+
+
+def test_update_frame_demands_rhs_whnf_before_update():
+    program = compile_source(
+        r"main = (\f -> f (1 + True)) (\x -> 42)"
+    )
+    config = make_cbneed_config()
+
+    current = create_initial_core_state(
+        program,
+        config,
+        session_id="cbneed-update-whnf",
+    )
+
+    # Find the first RHS return handled by UpdateFrame.
+    for _ in range(100):
+        machine = current.machine_state
+
+        if (
+            isinstance(machine.control, Return)
+            and machine.stack.depth > 0
+            and isinstance(machine.stack.peek(), UpdateFrame)
+            and not machine.stack.peek().awaiting_whnf
+        ):
+            break
+
+        current = step(current, config).next_state
+
+    else:
+        pytest.fail("UpdateFrame RHS return was not reached")
+
+    before = current.machine_state
+    original_frame = before.stack.peek()
+    result_ref = before.control.reference
+
+    assert isinstance(result_ref, HeapReference)
+    assert isinstance(
+        before.heap.get(original_frame.thunk_reference).value,
+        EvaluatingThunk,
+    )
+
+    # Stage 1: request explicit WHNF demand.
+    transition = step(current, config)
+
+    assert transition.rule_id is RuleId.CORE_THUNK_REQUIRE_WHNF
+
+    awaiting_state = transition.next_state
+    awaiting = awaiting_state.machine_state
+
+    assert awaiting.control == Force(result_ref)
+    assert awaiting.stack.depth == before.stack.depth
+
+    awaiting_frame = awaiting.stack.peek()
+    assert isinstance(awaiting_frame, UpdateFrame)
+    assert awaiting_frame.awaiting_whnf is True
+    assert original_frame.awaiting_whnf is False
+
+    assert awaiting_frame.thunk_reference is (
+        original_frame.thunk_reference
+    )
+    assert awaiting_frame.return_environment is (
+        original_frame.return_environment
+    )
+
+    # Stage 2: forcing the closure returns its WHNF reference.
+    forced = step(awaiting_state, config)
+
+    assert forced.rule_id is RuleId.CORE_FORCE_FUNCTION_WHNF
+
+    verified_state = forced.next_state
+    verified = verified_state.machine_state
+
+    assert verified.control == Return(result_ref)
+    assert verified.stack.peek().awaiting_whnf is True
+
+    updated = step(verified_state, config)
+
+    updated_state = updated.next_state
+    updated_machine = updated_state.machine_state
+
+    anchor = updated_machine.heap.get(
+        original_frame.thunk_reference
+    ).value
+
+    assert isinstance(anchor, Indirection)
+    assert anchor.target == result_ref
+
+    assert updated.rule_id is RuleId.CORE_THUNK_UPDATE_WHNF
+    assert updated_machine.local_environment is(
+        original_frame.return_environment
+    )
+
+    assert updated_machine.stack.depth == verified.stack.depth -1
+
+
+def test_update_frame_rejects_unresolved_second_stage_result():
+    program = compile_source(
+        r"main = (\f -> f 10) (\x -> 42)"
+    )
+    config = make_cbneed_config()
+
+    current = create_initial_core_state(
+        program,
+        config,
+        session_id="cbneed-invalid-update-return",
+    )
+
+    for _ in range(100):
+        machine = current.machine_state
+
+        if (
+            isinstance(machine.control, Return)
+            and machine.stack.depth > 0
+            and isinstance(machine.stack.peek(), UpdateFrame)
+            and not machine.stack.peek().awaiting_whnf
+        ):
+            break
+
+        current = step(current, config).next_state
+
+    else:
+        pytest.fail("UpdateFrame return not reached")
+
+    # Advance to the frame's WHNF-demand stage.
+    awaiting_state = step(current, config).next_state
+
+    assert isinstance(
+        awaiting_state.machine_state.control, Force
+    )
+    assert awaiting_state.machine_state.stack.peek().awaiting_whnf
+
+    # Construct an invalid continuation return:
+    # the original EvaluatingThunk anchor is not WHNF.
+    machine = awaiting_state.machine_state
+
+    invalid_machine = replace(
+        machine,
+        control=Return(
+            machine.stack.peek().thunk_reference
+        ),
+    )
+    invalid_state = replace(
+        awaiting_state,
+        machine_state=invalid_machine,
+    )
+
+    with pytest.raises(
+        InvalidMachineStateError,
+        match="Thunk demand resumed without WHNF",
+    ):
+        step(invalid_state, config)
+
+    # Failure must not mutate the supplied state.
+    assert invalid_state.machine_state.control == Return(
+        machine.stack.peek().thunk_reference
+    )
+    assert isinstance(
+        invalid_state.machine_state.heap.get(
+            machine.stack.peek().thunk_reference
+        ).value,
+        EvaluatingThunk,
+    )
+    assert invalid_state.machine_state.stack.peek().awaiting_whnf
+
+
+def test_nested_thunk_forcing_preserves_update_frames():
+    program = compile_source(
+        r"main = (\x -> (\y -> y + 1) x) (20 + 1)"
+    )
+    config = make_cbneed_config()
+
+    initial = create_initial_core_state(
+        program,
+        config,
+        session_id="cbneed-nested-forcing",
+    )
+
+    entries, rules = advance_to_second_thunk_entry(
+        initial, config
+    )
+
+    (before_y, after_y), (before_x, after_x) = entries
+
+    # First thunk: y, whose RHS is the variable x.
+    y_machine = after_y.machine_state
+    y_frame = y_machine.stack.peek()
+
+    assert isinstance(y_frame, UpdateFrame)
+    assert y_frame.awaiting_whnf is False
+
+    y_ref = y_frame.thunk_reference
+    y_anchor = y_machine.heap.get(y_ref).value
+
+    assert isinstance(y_anchor, EvaluatingThunk)
+
+    y_payload = y_machine.heap.get(
+        y_anchor.payload_reference
+    ).value
+
+    assert isinstance(y_payload, ThunkPayload)
+    assert isinstance(y_payload.expression, CoreVar)
+    assert y_payload.expression.name == "x"
+
+    # The outer thunk captured the original x reference.
+    x_ref = y_payload.captured_locals.lookup("x")
+
+    # Before entering x, y is already waiting for WHNF.
+    waiting_machine = before_x.machine_state
+
+    assert waiting_machine.control == Force(x_ref)
+
+    suspended_y_frame = waiting_machine.stack.peek()
+
+    assert isinstance(suspended_y_frame, UpdateFrame)
+    assert suspended_y_frame.thunk_reference == y_ref
+    assert suspended_y_frame.awaiting_whnf is True
+
+    assert isinstance(
+        waiting_machine.heap.get(x_ref).value,
+        PendingThunk,
+    )
+
+    # Second thunk entry pushes a frame above y's frame.
+    x_machine = after_x.machine_state
+
+    assert x_machine.stack.depth == (
+        waiting_machine.stack.depth + 1
+    )
+
+    x_frame = x_machine.stack.frames[-1]
+    parent_frame = x_machine.stack.frames[-2]
+
+    assert isinstance(x_frame, UpdateFrame)
+    assert x_frame.thunk_reference == x_ref
+    assert x_frame.awaiting_whnf is False
+
+    assert parent_frame is suspended_y_frame
+    assert parent_frame.awaiting_whnf is True
+    assert parent_frame.thunk_reference == y_ref
+
+    assert isinstance(
+        x_machine.heap.get(x_ref).value,
+        EvaluatingThunk,
+    )
+    assert isinstance(
+        x_machine.heap.get(y_ref).value,
+        EvaluatingThunk,
+    )
+
+    # The primitive demand remains below both update frames.
+    assert isinstance(
+        x_machine.stack.frames[-3],
+        PrimitiveOperandsFrame,
+    )
+
+    prefix = run_batch(initial, config, max_steps=len(rules))
+    assert tuple(entry.rule_id for entry in prefix.trace) == rules
+    anchors = thunk_transition_anchors(initial, config, prefix.trace)
+    main_ref = x_machine.global_environment.lookup("main")
+    assert anchors[RuleId.CORE_FORCE_THUNK_ENTER] == [main_ref, y_ref, x_ref]
+    assert RuleId.CORE_THUNK_REQUIRE_WHNF in rules
+
+    # Entering x does not allocate additional heap objects.
+    assert x_machine.heap.current_slots == (
+        waiting_machine.heap.current_slots
+    )
+    assert x_machine.heap.next_object_id == (
+        waiting_machine.heap.next_object_id
+    )
+
+    # The prior state remains unchanged.
+    assert isinstance(
+        waiting_machine.heap.get(x_ref).value,
+        PendingThunk,
+    )
+    assert waiting_machine.stack.peek() is suspended_y_frame
+
+
+def test_nested_forcing_preserves_outer_thunk_before_inner_update():
+    program = compile_source(
+        r"main = (\x -> (\y -> y + 1) x) (20 + 1)"
+    )
+    config = make_cbneed_config()
+
+    initial = create_initial_core_state(
+        program,
+        config,
+        session_id="cbneed-nested-update-boundary",
+    )
+
+    entries, _ = advance_to_second_thunk_entry(
+        initial, config
+    )
+
+    current = entries[-1][1]
+
+    # Evaluate x's RHS and perform its explicit WHNF demand.
+    for _ in range(80):
+        machine = current.machine_state
+
+        if (
+            machine.control == Return(ImmediateInteger(21))
+            and isinstance(machine.stack.peek(), UpdateFrame)
+            and machine.stack.peek().awaiting_whnf
+        ):
+            break
+
+        current = step(current, config).next_state
+
+    else:
+        pytest.fail("Inner thunk did not reach WHNF")
+
+    machine = current.machine_state
+
+    x_frame = machine.stack.frames[-1]
+    y_frame = machine.stack.frames[-2]
+
+    assert isinstance(x_frame, UpdateFrame)
+    assert isinstance(y_frame, UpdateFrame)
+
+    assert x_frame.awaiting_whnf is True
+    assert y_frame.awaiting_whnf is True
+
+    x_ref = x_frame.thunk_reference
+    y_ref = y_frame.thunk_reference
+
+    assert x_ref != y_ref
+
+    # Neither thunk has been updated yet.
+    assert isinstance(
+        machine.heap.get(x_ref).value,
+        EvaluatingThunk,
+    )
+
+    assert isinstance(
+        machine.heap.get(y_ref).value,
+        EvaluatingThunk,
+    )
+
+
+def test_nested_forcing_is_equivalent_across_batches():
+    program = compile_source(
+        r"main = (\x -> (\y -> y + 1) x) (20 + 1)"
+    )
+    config = make_cbneed_config()
+
+    initial = create_initial_core_state(
+        program,
+        config,
+        session_id="cbneed-nested-batches",
+    )
+
+    entries, stepped_rules = advance_to_second_thunk_entry(
+        initial, config
+    )
+
+    stepped = entries[-1][1]
+    total_steps = stepped.transition_index
+
+    # One uninterrupted batch, stopping after second entry.
+    full = run_batch(
+        initial,
+        config,
+        max_steps=total_steps,
+    )
+
+    # Two batches with a suspension between them.
+    split = total_steps // 2
+
+    first = run_batch(
+        initial,
+        config,
+        max_steps=split,
+    )
+
+    second = run_batch(
+        first.state,
+        config,
+        max_steps=total_steps - split,
+    )
+
+    assert full.stop_reason is BatchStopReason.BATCH_LIMIT
+    assert second.stop_reason is BatchStopReason.BATCH_LIMIT
+
+    resumed_rules = tuple(
+        entry.rule_id
+        for entry in first.trace + second.trace
+    )
+
+    assert resumed_rules == stepped_rules
+
+    left = full.state.machine_state
+    right = second.state.machine_state
+
+    assert left.control == right.control
+    assert left.stack.depth == right.stack.depth
+
+    assert (
+        left.evaluator_transition_count
+        == right.evaluator_transition_count
+    )
+    assert left.heap.current_slots == right.heap.current_slots
+    assert left.heap.next_object_id == right.heap.next_object_id
+
+    # The nested update continuations retain their stages.
+    for offset in (-1, -2):
+        left_frame = left.stack.frames[offset]
+        right_frame = right.stack.frames[offset]
+
+        assert isinstance(left_frame, UpdateFrame)
+        assert isinstance(right_frame, UpdateFrame)
+        assert left_frame.thunk_reference == (
+            right_frame.thunk_reference
+        )
+        assert left_frame.awaiting_whnf == (
+            right_frame.awaiting_whnf
+        )
+
+    assert left.stack.frames[-1].awaiting_whnf is False
+    assert left.stack.frames[-2].awaiting_whnf is True
+
+    assert initial.transition_index == 0
+    assert initial.machine_state.heap.current_slots == 0
+
+
+def test_cbneed_updates_function_thunk_and_resumes_application():
+    program = compile_source(
+        r"main = (\f -> f (1 + True)) (\x -> 42)"
+    )
+    config = make_cbneed_config()
+
+    current = create_initial_core_state(
+        program,
+        config,
+        session_id="cbneed-function-update",
+    )
+
+    # Reach the completed WHNF demand of the function thunk.
+    for _ in range(150):
+        machine = current.machine_state
+
+        if (
+            isinstance(machine.control, Return)
+            and machine.stack.depth > 0
+            and isinstance(machine.stack.peek(), UpdateFrame)
+            and machine.stack.peek().awaiting_whnf
+        ):
+            result_ref = machine.control.reference
+
+            if (
+                isinstance(result_ref, HeapReference)
+                and isinstance(
+                    machine.heap.get(result_ref).value,
+                    Closure,
+                )
+            ):
+                break
+
+        current = step(current, config).next_state
+
+    else:
+        pytest.fail("Function thunk did not reach WHNF")
+
+    before = current.machine_state
+    frame = before.stack.peek()
+    thunk_ref = frame.thunk_reference
+    closure_ref = before.control.reference
+
+    assert isinstance(
+        before.heap.get(thunk_ref).value,
+        EvaluatingThunk,
+    )
+
+    previous_slots = before.heap.current_slots
+    previous_next_id = before.heap.next_object_id
+    previous_depth = before.stack.depth
+
+    transition = step(current, config)
+
+    assert transition.rule_id is RuleId.CORE_THUNK_UPDATE_WHNF
+
+    successor = transition.next_state
+    after = successor.machine_state
+
+    updated = after.heap.get(thunk_ref).value
+
+    assert isinstance(updated, Indirection)
+    assert updated.target == closure_ref
+
+    # Update does not allocate or release heap slots.
+    assert after.heap.current_slots == previous_slots
+    assert after.heap.next_object_id == previous_next_id
+
+    # UpdateFrame is consumed; the pending application remains.
+    assert after.stack.depth == previous_depth - 1
+    assert isinstance(after.stack.peek(), ApplyFunctionFrame)
+
+    assert after.local_environment is frame.return_environment
+    assert after.control == Return(closure_ref)
+
+    # Historical snapshot remains unchanged.
+    assert isinstance(
+        before.heap.get(thunk_ref).value,
+        EvaluatingThunk,
+    )
+    assert before.stack.depth == previous_depth
+
+    # The suspended application can now finish.
+    completed = run_batch(
+        successor,
+        config,
+        max_steps=100,
+    )
+
+    assert completed.stop_reason is BatchStopReason.WHNF_PENDING
+    assert completed.state.machine_state.control == Return(
+        ImmediateInteger(42)
+    )
+
+    # The unused argument is never evaluated.
+    rules = [entry.rule_id for entry in completed.trace]
+    assert RuleId.CORE_PRIM_EXECUTE not in rules
+
+
+def test_cbneed_immediate_thunk_update_completes_program():
+    program = compile_source(
+        r"main = (\x -> x + 1) 20"
+    )
+    config = make_cbneed_config()
+
+    initial = create_initial_core_state(
+        program,
+        config,
+        session_id="cbneed-immediate-update",
+    )
+    _, body_state = advance_to_next_cbneed_body(initial, config)
+    x_ref = body_state.machine_state.local_environment.lookup("x")
+
+    result = run_batch(
+        initial,
+        config,
+        max_steps=150,
+    )
+
+    assert result.stop_reason is BatchStopReason.WHNF_PENDING
+    assert result.state.machine_state.control == Return(
+        ImmediateInteger(21)
+    )
+
+    machine = result.state.machine_state
+    main_ref = machine.global_environment.lookup("main")
+    anchors = thunk_transition_anchors(initial, config, result.trace)
+    assert anchors[RuleId.CORE_FORCE_THUNK_ENTER] == [main_ref, x_ref]
+    assert anchors[RuleId.CORE_THUNK_REQUIRE_WHNF] == [x_ref, main_ref]
+    assert anchors[RuleId.CORE_THUNK_UPDATE_WHNF] == [x_ref, main_ref]
+    assert machine.heap.get(x_ref).value == Indirection(ImmediateInteger(20))
+    assert machine.heap.get(main_ref).value == Indirection(ImmediateInteger(21))
+
+    assert machine.stack.depth == 0
+
+    # Execution must not mutate the initial snapshot.
+    assert initial.transition_index == 0
+    assert initial.machine_state.heap.current_slots == 0
+
+
+def test_nested_thunks_update_in_lifo_order():
+    program = compile_source(
+        r"main = (\x -> (\y -> y + 1) x) (20 + 1)"
+    )
+    config = make_cbneed_config()
+
+    initial = create_initial_core_state(
+        program,
+        config,
+        session_id="cbneed-nested-updates",
+    )
+
+    entries, _ = advance_to_second_thunk_entry(
+        initial, config
+    )
+    current = entries[-1][1]
+
+    machine = current.machine_state
+    x_frame = machine.stack.frames[-1]
+    y_frame = machine.stack.frames[-2]
+
+    assert isinstance(x_frame, UpdateFrame)
+    assert isinstance(y_frame, UpdateFrame)
+
+    x_ref = x_frame.thunk_reference
+    y_ref = y_frame.thunk_reference
+
+    assert x_frame.awaiting_whnf is False
+    assert y_frame.awaiting_whnf is True
+
+    # Advance until the inner thunk x is updated.
+    for _ in range(80):
+        transition = step(current, config)
+
+        if transition.rule_id is RuleId.CORE_THUNK_UPDATE_WHNF:
+            break
+
+        current = transition.next_state
+    else:
+        pytest.fail("Inner thunk update was not reached")
+
+    after_x_state = transition.next_state
+    after_x = after_x_state.machine_state
+
+    assert after_x.heap.get(x_ref).value == Indirection(
+        ImmediateInteger(21)
+    )
+
+    # The outer thunk must remain active.
+    assert isinstance(
+        after_x.heap.get(y_ref).value,
+        EvaluatingThunk,
+    )
+    assert isinstance(after_x.stack.peek(), UpdateFrame)
+    assert after_x.stack.peek().thunk_reference == y_ref
+    assert after_x.stack.peek().awaiting_whnf is True
+    assert after_x.control == Return(ImmediateInteger(21))
+
+    # The next update must belong to the outer thunk y.
+    second = step(after_x_state, config)
+
+    assert second.rule_id is RuleId.CORE_THUNK_UPDATE_WHNF
+
+    after_y = second.next_state.machine_state
+
+    assert after_y.heap.get(y_ref).value == Indirection(
+        ImmediateInteger(21)
+    )
+    assert after_y.heap.get(x_ref).value == Indirection(
+        ImmediateInteger(21)
+    )
+
+    # Neither update allocates or releases abstract heap slots.
+    assert (
+        after_x.heap.current_slots
+        == after_y.heap.current_slots
+    )
+    assert (
+        after_x.heap.next_object_id
+        == after_y.heap.next_object_id
+    )
+
+    # Continue the suspended primitive operation.
+    completed = run_batch(
+        second.next_state,
+        config,
+        max_steps=80,
+    )
+
+    assert completed.stop_reason is BatchStopReason.WHNF_PENDING
+    assert completed.state.machine_state.control == Return(
+        ImmediateInteger(22)
+    )
+    assert completed.state.machine_state.stack.depth == 0
+
+    # Existing references still designate the updated anchors.
+    final_heap = completed.state.machine_state.heap
+
+    assert final_heap.get(x_ref).value == Indirection(
+        ImmediateInteger(21)
+    )
+    assert final_heap.get(y_ref).value == Indirection(
+        ImmediateInteger(21)
+    )
+
+    # Historical snapshots retain their original lifecycle.
+    assert isinstance(
+        machine.heap.get(x_ref).value,
+        EvaluatingThunk,
+    )
+    assert isinstance(
+        machine.heap.get(y_ref).value,
+        EvaluatingThunk,
+    )
+
+
+def test_cbneed_follows_indirection_chain_without_compression():
+    config = make_cbneed_config()
+
+    initial = create_initial_core_state(
+        compile_source("main = 0"),
+        config,
+        session_id="cbneed-indirection-chain",
+    )
+
+    seed = run_batch(initial, config, max_steps=50)
+    assert seed.stop_reason is BatchStopReason.WHNF_PENDING
+
+    # Create an isolated state containing explicit aliases.
+    owned = seed.state.snapshot()
+    heap = owned.machine_state.heap
+
+    c_ref = heap.allocate(
+        Indirection(ImmediateInteger(42)),
+        allocated_slots=1,
+    )
+    b_ref = heap.allocate(
+        Indirection(c_ref),
+        allocated_slots=1,
+    )
+    a_ref = heap.allocate(
+        Indirection(b_ref),
+        allocated_slots=1,
+    )
+
+    force_state = replace(
+        owned,
+        machine_state=replace(
+            owned.machine_state,
+            control=Force(a_ref),
+        ),
+    )
+
+    slots_before = heap.current_slots
+    next_id_before = heap.next_object_id
+
+    result = run_batch(
+        force_state,
+        config,
+        max_steps=20,
+    )
+
+    assert result.stop_reason is BatchStopReason.WHNF_PENDING
+    assert result.state.machine_state.control == Return(
+        ImmediateInteger(42)
+    )
+
+    rules = [entry.rule_id for entry in result.trace]
+
+    assert rules == [
+        RuleId.CORE_FORCE_INDIRECTION,
+        RuleId.CORE_FORCE_INDIRECTION,
+        RuleId.CORE_FORCE_INDIRECTION,
+        RuleId.CORE_FORCE_IMMEDIATE,
+    ]
+
+    final_heap = result.state.machine_state.heap
+
+    # No path compression or eager rewriting.
+    assert final_heap.get(a_ref).value == Indirection(b_ref)
+    assert final_heap.get(b_ref).value == Indirection(c_ref)
+    assert final_heap.get(c_ref).value == Indirection(
+        ImmediateInteger(42)
+    )
+
+    assert final_heap.current_slots == slots_before
+    assert final_heap.next_object_id == next_id_before
+
+    # The state used to initiate forcing is unchanged.
+    assert force_state.machine_state.control == Force(a_ref)
+    assert force_state.machine_state.heap.get(a_ref).value == (
+        Indirection(b_ref)
+    )
+
+
+def test_cbneed_repeated_argument_demand_shares_result():
+    program = compile_source(
+        r"main = (\x -> x + x) (20 + 1)"
+    )
+    config = make_cbneed_config()
+
+    initial = create_initial_core_state(
+        program,
+        config,
+        session_id="cbneed-repeated-argument-sharing",
+    )
+
+    _, body_state = advance_to_next_cbneed_body(
+        initial, config
+    )
+
+    body_machine = body_state.machine_state
+    x_ref = body_machine.local_environment.lookup("x")
+
+    pending = body_machine.heap.get(x_ref).value
+    assert isinstance(pending, PendingThunk)
+
+    payload_ref = pending.payload_reference
+    original_payload = body_machine.heap.get(
+        payload_ref
+    ).value
+    assert isinstance(original_payload, ThunkPayload)
+
+    result = run_batch(
+        body_state,
+        config,
+        max_steps=120,
+    )
+
+    assert result.stop_reason is BatchStopReason.WHNF_PENDING
+
+    machine = result.state.machine_state
+
+    assert machine.control == Return(ImmediateInteger(42))
+    assert machine.stack.depth == 0
+
+    # The original anchor now points to the shared result.
+    updated = machine.heap.get(x_ref).value
+
+    assert isinstance(updated, Indirection)
+    assert updated.target == ImmediateInteger(21)
+
+    rules = [entry.rule_id for entry in result.trace]
+
+    # Only x is entered here; main was entered before body_state.
+    main_ref = machine.global_environment.lookup("main")
+    anchors = thunk_transition_anchors(body_state, config, result.trace)
+    assert anchors[RuleId.CORE_FORCE_THUNK_ENTER] == [x_ref]
+    assert anchors[RuleId.CORE_THUNK_REQUIRE_WHNF] == [x_ref, main_ref]
+    assert anchors[RuleId.CORE_THUNK_UPDATE_WHNF] == [x_ref, main_ref]
+
+    # The second demand follows the existing indirection.
+    assert rules.count(RuleId.CORE_FORCE_INDIRECTION) == 1
+
+    # Two primitive additions:
+    #   20 + 1 -> 21
+    #   21 + 21 -> 42
+    #
+    # There must not be a third addition.
+    assert rules.count(RuleId.CORE_PRIM_EXECUTE) == 2
+
+    # Updating the thunk does not destroy its old payload.
+    assert machine.heap.get(payload_ref).value is original_payload
+
+    # The state before forcing still contains the pending thunk.
+    assert isinstance(
+        body_machine.heap.get(x_ref).value,
+        PendingThunk,
+    )
+
+
+def test_cbneed_shares_captured_thunks_across_closure_calls():
+    program = compile_source(
+        r"main = (\x -> (\f -> f 10 + f 20) (\y -> x)) (20 + 1)"
+    )
+    config = make_cbneed_config()
+
+    initial = create_initial_core_state(
+        program,
+        config,
+        session_id="cbneed-captured-sharing",
+    )
+
+    # Outer application creates x.
+    _, after_x = advance_to_next_cbneed_body(
+        initial, config
+    )
+    x_ref = after_x.machine_state.local_environment.lookup("x")
+
+    # Inner application creates f, capturing x.
+    _, after_f = advance_to_next_cbneed_body(
+        after_x, config
+    )
+    f_ref = after_f.machine_state.local_environment.lookup("f")
+
+    f_pending = after_f.machine_state.heap.get(f_ref).value
+
+    assert isinstance(f_pending, PendingThunk)
+
+    f_payload = after_f.machine_state.heap.get(
+        f_pending.payload_reference
+    ).value
+
+    assert isinstance(f_payload, ThunkPayload)
+    assert set(f_payload.captured_locals.bindings) == {"x"}
+    assert f_payload.captured_locals.lookup("x") is x_ref
+
+    result = run_batch(
+        after_f,
+        config,
+        max_steps=140,
+    )
+
+    assert result.stop_reason is BatchStopReason.WHNF_PENDING
+
+    machine = result.state.machine_state
+
+    assert machine.control == Return(ImmediateInteger(42))
+    assert machine.stack.depth == 0
+
+    rules = [entry.rule_id for entry in result.trace]
+
+    # f and x are each demanded once; main's update is separate.
+    main_ref = machine.global_environment.lookup("main")
+    anchors = thunk_transition_anchors(after_f, config, result.trace)
+    assert anchors[RuleId.CORE_FORCE_THUNK_ENTER] == [f_ref, x_ref]
+    assert anchors[RuleId.CORE_THUNK_REQUIRE_WHNF] == [f_ref, x_ref, main_ref]
+    assert anchors[RuleId.CORE_THUNK_UPDATE_WHNF] == [f_ref, x_ref, main_ref]
+
+    # The deferred function expression creates its closure once.
+    assert rules.count(RuleId.CORE_EVAL_LAMBDA) == 1
+
+    # The same closure body is entered for both applications.
+    assert rules.count(RuleId.CORE_CBNEED_ENTER_BODY) == 2
+
+    # Repeated demands reuse the existing results.
+    assert rules.count(RuleId.CORE_FORCE_INDIRECTION) == 2
+
+    # One addition in x's RHS and one in the outer expression.
+    assert rules.count(RuleId.CORE_PRIM_EXECUTE) == 2
+
+    x_updated = machine.heap.get(x_ref).value
+    f_updated = machine.heap.get(f_ref).value
+
+    assert isinstance(x_updated, Indirection)
+    assert isinstance(f_updated, Indirection)
+
+    assert x_updated.target == ImmediateInteger(21)
+    assert isinstance(f_updated.target, HeapReference)
+    assert isinstance(
+        machine.heap.get(f_updated.target).value,
+        Closure,
+    )
+
+    # The two unused parameters must remain deferred.
+    pending_anchors = [
+        cell.value
+        for cell in machine.heap.cells.values()
+        if isinstance(cell.value, PendingThunk)
+    ]
+
+    assert len(pending_anchors) == 2
+
+
+def test_cbneed_sharing_is_deterministic_across_batches():
+    program = compile_source(
+        r"main = (\x -> x + x) (20 + 1)"
+    )
+    config = make_cbneed_config()
+
+    initial = create_initial_core_state(
+        program,
+        config,
+        session_id="cbneed-sharing-batch-determinism",
+    )
+
+    # Uninterrupted execution.
+    full = run_batch(
+        initial,
+        config,
+        max_steps=140,
+    )
+
+    # Resume the same initial state one transition at a time.
+    current = initial
+    chunked_rules = []
+
+    for _ in range(140):
+        batch = run_batch(
+            current,
+            config,
+            max_steps=1,
+        )
+
+        chunked_rules.extend(
+            entry.rule_id for entry in batch.trace
+        )
+        current = batch.state
+
+        if batch.stop_reason is BatchStopReason.WHNF_PENDING:
+            break
+    else:
+        pytest.fail("Chunked CBNeed evaluation did not finish")
+
+    assert full.stop_reason is BatchStopReason.WHNF_PENDING
+
+    full_rules = tuple(
+        entry.rule_id for entry in full.trace
+    )
+
+    assert full_rules == tuple(chunked_rules)
+
+    left = full.state.machine_state
+    right = current.machine_state
+
+    assert left.control == right.control
+    assert left.control == Return(ImmediateInteger(42))
+
+    assert left.stack.depth == right.stack.depth == 0
+
+    assert (
+        left.evaluator_transition_count
+        == right.evaluator_transition_count
+    )
+    assert full.state.transition_index == current.transition_index
+
+    assert left.heap.current_slots == right.heap.current_slots
+    assert left.heap.next_object_id == right.heap.next_object_id
+
+    # Compare stable allocation and update structure.
+    def heap_signature(machine):
+        return tuple(
+            (
+                object_id,
+                cell.allocated_slots,
+                type(cell.value).__name__,
+                (
+                    cell.value.target
+                    if isinstance(cell.value, Indirection)
+                    else None
+                ),
+            )
+            for object_id, cell in machine.heap.cells.items()
+        )
+
+    assert heap_signature(left) == heap_signature(right)
+
+    _, body_state = advance_to_next_cbneed_body(initial, config)
+    x_ref = body_state.machine_state.local_environment.lookup("x")
+    main_ref = left.global_environment.lookup("main")
+    anchors = thunk_transition_anchors(initial, config, full.trace)
+    assert anchors[RuleId.CORE_FORCE_THUNK_ENTER] == [main_ref, x_ref]
+    assert anchors[RuleId.CORE_THUNK_REQUIRE_WHNF] == [x_ref, main_ref]
+    assert anchors[RuleId.CORE_THUNK_UPDATE_WHNF] == [x_ref, main_ref]
+    assert full_rules.count(RuleId.CORE_FORCE_INDIRECTION) == 1
+
+    assert initial.transition_index == 0
+    assert initial.machine_state.heap.current_slots == 0
+
+
+def test_nested_updates_can_resume_from_same_snapshot():
+    program = compile_source(
+        r"main = (\x -> (\y -> y + 1) x) (20 + 1)"
+    )
+    config = make_cbneed_config()
+
+    initial = create_initial_core_state(
+        program,
+        config,
+        session_id="cbneed-resumable-nested-updates",
+    )
+
+    entries, _ = advance_to_second_thunk_entry(
+        initial, config
+    )
+
+    checkpoint = entries[-1][1]
+    checkpoint_machine = checkpoint.machine_state
+
+    x_frame = checkpoint_machine.stack.frames[-1]
+    y_frame = checkpoint_machine.stack.frames[-2]
+
+    assert isinstance(x_frame, UpdateFrame)
+    assert isinstance(y_frame, UpdateFrame)
+
+    x_ref = x_frame.thunk_reference
+    y_ref = y_frame.thunk_reference
+
+    assert isinstance(
+        checkpoint_machine.heap.get(x_ref).value,
+        EvaluatingThunk,
+    )
+    assert isinstance(
+        checkpoint_machine.heap.get(y_ref).value,
+        EvaluatingThunk,
+    )
+
+    original_depth = checkpoint_machine.stack.depth
+    original_slots = checkpoint_machine.heap.current_slots
+    original_index = checkpoint.transition_index
+
+    # Both executions resume independently from the same state.
+    first = run_batch(checkpoint, config, max_steps=100)
+    second = run_batch(checkpoint, config, max_steps=100)
+
+    assert first.stop_reason is BatchStopReason.WHNF_PENDING
+    assert second.stop_reason is BatchStopReason.WHNF_PENDING
+
+    assert first.trace == second.trace
+
+    left = first.state.machine_state
+    right = second.state.machine_state
+
+    assert left.control == right.control
+    assert left.control == Return(ImmediateInteger(22))
+
+    assert left.stack.depth == right.stack.depth == 0
+
+    assert (
+        left.evaluator_transition_count
+        == right.evaluator_transition_count
+    )
+
+    assert (
+        first.state.transition_index
+        == second.state.transition_index
+    )
+
+    for machine in (left, right):
+        assert machine.heap.get(x_ref).value == Indirection(
+            ImmediateInteger(21)
+        )
+        assert machine.heap.get(y_ref).value == Indirection(
+            ImmediateInteger(21)
+        )
+
+    assert left.heap.current_slots == right.heap.current_slots
+    assert left.heap.next_object_id == right.heap.next_object_id
+
+    main_ref = checkpoint_machine.global_environment.lookup("main")
+    anchors = thunk_transition_anchors(checkpoint, config, first.trace)
+    assert anchors[RuleId.CORE_FORCE_THUNK_ENTER] == []
+    assert anchors[RuleId.CORE_THUNK_REQUIRE_WHNF] == [x_ref, main_ref]
+    assert anchors[RuleId.CORE_THUNK_UPDATE_WHNF] == [x_ref, y_ref, main_ref]
+
+    # The checkpoint is still an active, resumable computation.
+    assert checkpoint.transition_index == original_index
+    assert checkpoint_machine.stack.depth == original_depth
+    assert checkpoint_machine.heap.current_slots == original_slots
+
+    assert checkpoint_machine.stack.frames[-1] is x_frame
+    assert checkpoint_machine.stack.frames[-2] is y_frame
+
+    assert isinstance(
+        checkpoint_machine.heap.get(x_ref).value,
+        EvaluatingThunk,
+    )
+    assert isinstance(
+        checkpoint_machine.heap.get(y_ref).value,
+        EvaluatingThunk,
+    )

@@ -19,6 +19,7 @@ from .references import (
     ImmediateBoolean,
     HeapReference,
 )
+from .thunks import PendingThunk, EvaluatingThunk
 
 
 @dataclass(frozen=True, slots=True)
@@ -82,7 +83,13 @@ def observe_whnf(
 
     if isinstance(
         value,
-        (Reserved, PendingGlobal, Indirection),
+        (
+            Reserved,
+            PendingGlobal,
+            Indirection,
+            PendingThunk,
+            EvaluatingThunk,
+        ),
     ):
         raise UnresolvedObservationError(
             f"{type(value).__name__} has not reached WHNF"

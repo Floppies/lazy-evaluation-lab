@@ -3,7 +3,7 @@
 - **Status:** Accepted
 - **Recorded:** 2026-10-19 (documents an earlier design decision)
 - **Scope:** Surface v0.1, Surface-to-Core lowering, future evaluators
-- **Related:** [Language specification, §6](../specifications/language-specification.md), [Core IR](../core-ir.md), [B02.8 audit](../audits/b02.8-audit.md)
+- **Related:** [Language specification, §6](../specifications/language-specification.md), [Core IR](../core-ir.md), [B02.8 audit](../audits/b02.8-audit.md), [ADR-007 — Thunk Identity and Payload](ADR-007-separate-thunk-identity-from-evaluation-payload.md)
 
 ## Context
 
@@ -45,6 +45,44 @@ CoreLetRec(
 )
 ```
 
+### Call-by-Need Runtime Integration (B05)
+
+Under Call-by-Need, deferred function arguments, non-lambda
+global bindings in CoreProgram, and non-lambda local bindings
+in CoreLetRec use the same thunk evaluation and memoization
+protocol.
+
+Each deferred computation has a stable one-slot identity
+anchor and a separately allocated ThunkPayload, as defined
+in ADR-007.
+
+Demand follows the common lifecycle:
+
+PendingThunk -> EvaluatingThunk -> Indirection(WHNF)
+
+The evaluator uses the same Force transitions and UpdateFrame
+continuations for all three binding origins. This guarantees
+consistent sharing, WHNF demand, memoization, and blackhole
+detection without implementing separate forcing algorithms
+for global, local, and argument thunks.
+
+Global and local recursive bindings reserve their addresses
+before installing their right-hand sides. Function arguments
+receive fresh thunk anchors when applied under CBNeed.
+
+Top-level lambdas remain directly installed closures, while
+local lambda bindings may retain an Indirection to a separately
+allocated closure. These function representations do not
+require deferred thunk payloads.
+
+This integration does not change the strategy-independent
+CoreLetRec representation or the lexical scoping rules.
+CBV retains strict local initialization, and CBN remains
+a separate nonmemoizing strategy.
+
+The concrete thunk representation and its memory-accounting
+consequences are documented in ADR-007.
+
 ## Alternatives considered
 
 1. **Sequential nonrecursive bindings:** Simpler environments, but incorrectly make binding order control visibility and disallow valid mutual recursion.
@@ -73,4 +111,20 @@ B02.8 tests establish structural lowering of mutually recursive local bindings a
 
 ## Revisit when
 
-Revisit this ADR if the language gains nonrecursive `let`, local pattern equations, a different scoping model, or experimental evidence shows that the representation prevents accurate strategy-specific instrumentation. Changes require corresponding specification and test updates.
+Revisit this ADR if the language gains nonrecursive `let`,
+local pattern equations, or a different scoping model;
+if experimental evidence shows that CoreLetRec prevents
+accurate strategy-specific instrumentation; or if the
+shared CBNeed thunk protocol introduces semantic
+inconsistencies or unacceptable representation costs
+between global bindings, local bindings, and function
+arguments.
+
+Changes to the thunk identity, payload layout, or update
+protocol must also reconsider ADR-007.
+
+Any revision must preserve the intended recursive scope,
+lexical binding identity, and strategy-specific evaluation
+semantics, or explicitly document changes to those contracts.
+Corresponding language specifications, runtime contracts,
+and tests must be updated.

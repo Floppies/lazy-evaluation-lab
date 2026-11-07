@@ -26,6 +26,73 @@ The descriptions follow the **Gantt B** plan and its milestone acceptance criter
 | **B18** | Incremental Report and Analysis | Develop the thesis report and methodology alongside implementation, then analyze the final experimental dataset and consolidate conclusions. |
 | **B19** | Documentation, Demo, and Delivery | Package the software, dataset, scripts, README, user guide, report, appendices, and final demonstration. |
 
+## Implementation Work Breakdown
+
+| ID | Work package | Status |
+|---|---|---|
+| B02 | Language Frontend and Core IR | Completed |
+| B02.1 | Repository Setup and Structure | Completed |
+| B02.2 | Language Syntax Definition | Completed |
+| B02.3 | Surface AST Design | Completed |
+| B02.4 | Lexer | Completed |
+| B02.5 | Parser | Completed |
+| B02.6 | Frontend Tests | Completed |
+| B02.7 | Core IR | Completed |
+| B02.8 | Surface-to-Core Desugaring | Completed |
+| B02.9 | Name Resolution | Completed |
+| B02.10 | Semantic Validation | Completed |
+| B02.11 | Integrated Compilation Pipeline | Completed |
+| B02.12 | Documentation and Examples | Completed |
+| B02.E | First-Class seq Extension | Completed |
+| B02.E.1 | Predefined seq and Lexical Contract | Completed |
+| B02.E.2 | Structural and Shadowing Tests | Completed |
+| B02.E.3 | Specifications and Verification | Completed |
+| B03 | Runtime Infrastructure | Completed |
+| B03.1 | Lexical Environments | Completed |
+| B03.2 | Heap and Basic Objects | Completed |
+| B03.3 | Closures and Continuation Stack | Completed |
+| B03.4 | ExecutionState and Snapshots | Completed |
+| B03.5 | Basic Transitions, Batches and Tracing | Completed |
+| B03.6 | Integration, Regression Tests and Audit | Completed |
+| B04 | First Core Evaluator (CBV) | Completed |
+| B04.1 | Evaluation Semantics and Contract | Completed |
+| B04.2 | Core Program Initialization | Completed |
+| B04.3 | Free Variables and Closure Capture | Completed |
+| B04.4 | Core Function Evaluation (CBV) | Completed |
+| B04.5 | Primitive Operations and Conditionals | Completed |
+| B04.6 | CBV Recursive Local Bindings | Completed |
+| B04.7 | First-Class seq Evaluation | Completed |
+| B04.8 | Canonical Result Observation | Completed |
+| B05 | Call by Need and Sharing | Completed |
+| B05.1 | CBNeed Operational Contract | Completed |
+| B05.2 | Thunk Representation and Allocation | Completed |
+| B05.3 | Lazy Function Application | Completed |
+| B05.4 | Forcing and Update Continuations | Completed |
+| B05.5 | Memoization and Sharing | Completed |
+| B05.6 | Global and Recursive Bindings | Completed |
+| B05.7 | Blackhole Detection | Completed |
+| B05.8 | Non-Strict seq Evaluation | Completed |
+| B05.9 | Observation, Batching and Tracing | Completed |
+| B05.10 | Integration and Regression Tests | Completed |
+| B05.11 | Final Audit | Completed |
+
+### Important notes
+
+The work packages listed above are internal subdivisions of
+the canonical B01–B19 milestones. They do not introduce
+additional Gantt milestones or change the approved scope.
+
+Work packages document implementation sequencing and progress.
+Operational semantics and permanent invariants are defined in
+the corresponding technical contracts.
+
+Audit reports preserve historical verification evidence,
+acceptance decisions, limitations, and milestone-specific
+implementation findings.
+
+Future milestones will receive detailed work packages when
+their implementation plans are established.
+
 ## Scope and naming notes
 
 - **B02.E — First-Class `seq` Extension** is an additional, post-baseline task associated with B02. It introduces `seq` into the language specification, predefined scope, compiler pipeline, and frontend tests. Its operational demand behavior belongs to the evaluator milestones; B02.E alone does not execute `seq`.

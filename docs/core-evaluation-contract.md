@@ -1,13 +1,14 @@
 # Core Evaluation Contract
 
-**Status:** B04 Core CBV evaluation and canonical observation implemented; audited with documented limitations.
+**Status:** Core CBV and CBNeed evaluation and canonical observation implemented; audited with documented limitations.
 
-**Scope:** Implemented Core CBV subset; planned CBN and CBNeed contracts.
+**Scope:** Implemented Core CBV and CBNeed subsets; planned CBN and executable constructors/case.
 
 This document retains the incremental B04 submilestone boundaries.
 Those boundaries describe the responsibility of each stage, not
 missing functionality in the completed B04 subset. See the
-[B04 audit](audits/b04-audit.md) for verification evidence and limitations.
+[B04 audit](audits/b04-audit.md) and [B05 audit](audits/b05-audit.md)
+for verification evidence and limitations of the supported CBV and CBNeed subsets.
 
 ## 1. Evaluation and Demand
 
@@ -51,8 +52,10 @@ A demand for WHNF may originate from:
 
 These contexts may require different continuation frames but share the abstract notion of WHNF demand.
 
-The implemented CBV rules are described below. Non-strict demand
-and constructor matching remain part of B05, B06 and B11.
+The implemented CBV and CBNeed rules are described below. CBNeed
+includes non-strict demand, shared thunk updates and blackhole detection.
+Constructor matching remains part of B06; nonmemoizing CBN evaluation
+remains part of B11.
 
 ## 4. Result Observation
 
@@ -153,22 +156,31 @@ The active `Return` control is consumed according to the top
 continuation frame. A root `Return` with an empty stack belongs
 to the result-observation boundary, not automatic completion.
 
+An interrupted, nonterminal execution retains its control,
+lexical environment, heap, continuation stack and pending
+demand stages.
+
+Provided that the execution budget has not been exhausted,
+subsequent batches may resume from the returned ExecutionState
+without restarting or repeating previously completed work.
+
+Continuation restoration must preserve the original caller
+environment, including across nested applications, primitive
+operations and recursive binding initialization.
+
 ### 6.5 Deferred Frames
 
 The initial B04.1 continuation plan assigned support to the
 following operational milestones:
 
-- Primitive operands and conditionals: B04.5.
-- Recursive local initialization: B04.6.
-- Saturated `seq` applications: B04.7.
-- Result consumption: B04.8.
-- Thunk updates and sharing: B05.
 - Constructors and pattern matching: B06.
 
-The B04 entries are now implemented as described below; saturated
-seq uses the existing application continuations. Thunk updates,
-sharing, constructors and pattern matching remain deferred.
-
+The B04 entries are implemented as described below.
+Thunk updates and sharing for deferred function arguments
+are implemented in B05.5. Global and recursive binding
+integration remains part of B05.6; blackhole detection
+belongs to B05.7. Constructors and pattern matching
+remain part of B06.
 
 ## 7. Evaluation Strategies and Binding Contracts
 
@@ -253,7 +265,7 @@ Local recursive bindings are non-strict.
 Direct aliases must preserve reference identity where required
 without accidentally introducing call-by-need sharing.
 
-The operational representation of suspensions belongs to B05.
+The operational representation of nonmemoizing CBN suspensions belongs to B11.
 
 ### 7.5 Call by Need
 
@@ -323,6 +335,614 @@ list-program execution.
 Dynamic strategy equivalence and experimental cost comparisons
 must be verified independently from these static contracts.
 
+### 7.9 Call-by-Need Demand Contexts
+
+This section defines the demand behavior required by B05.
+It is an operational contract, not an implementation-status
+claim.
+
+#### Evaluation and WHNF Demand
+
+Evaluating a Core expression and demanding the resulting
+runtime reference to WHNF are distinct operations.
+
+`EvaluateCore(expression)` may produce a reference to a
+deferred computation without executing that computation.
+
+`Return(reference)` passes an existing runtime reference
+to the current continuation. It does not guarantee WHNF.
+
+`Force(reference)` requests WHNF and must preserve sharing
+when the reference designates a Call-by-Need thunk.
+
+#### Demand Contexts
+
+Under CBNeed, WHNF is required by:
+
+- Function position before application.
+- Strict primitive arithmetic and comparison operands.
+- Conditional predicates before branch selection.
+- The first argument of a saturated predefined `seq`.
+- Root result observation and other explicit observation
+  requests requiring WHNF.
+
+Ordinary function arguments are not evaluated solely
+because they are applied to a function.
+
+Local recursive bindings are established without strictly
+evaluating their right-hand sides.
+
+Global bindings remain demand-driven. Under CBNeed,
+demanded global computations must participate in
+memoizing evaluation.
+
+#### Non-Demand Operations
+
+The following operations must not independently force a
+deferred computation:
+
+- Resolving a variable to its runtime reference.
+- Capturing a reference in a closure.
+- Binding an ordinary function parameter.
+- Constructing a deferred local binding.
+- Creating a partial application of predefined `seq`.
+- Returning a reference to an enclosing continuation.
+
+These operations may be followed by an explicit demand
+introduced by the surrounding evaluation context.
+
+#### Strategy Independence
+
+Demand contexts are determined by the semantics of Core
+constructs and predefined functions, not by tracing,
+metrics, or result presentation.
+
+CBV retains strict argument evaluation and strict local
+value initialization.
+
+CBNeed introduces deferred evaluation and memoization.
+
+CBN remains a separate B11 implementation and must not
+inherit CBNeed updates implicitly.
+
+Executable constructor inspection and recursive value
+materialization remain outside B05.
+
+### 7.10 Call-by-Need Thunk Lifecycle
+
+This section specifies the semantic lifecycle of Call-by-Need
+thunks. Concrete runtime classes and transition rules are
+introduced incrementally during B05.
+
+#### Thunk States
+
+A deferred computation has three conceptual lifecycle states:
+
+- PENDING: The computation has not been entered.
+- EVALUATING: The computation is currently being evaluated.
+- UPDATED: The computation has reached WHNF and its result
+  is available for sharing.
+
+
+UPDATED is represented by replacing the one-slot thunk
+anchor with an Indirection to the resulting WHNF reference.
+
+No distinct UpdatedThunk heap object is required.
+
+#### First Demand
+
+The first demand of a PENDING thunk initiates evaluation in
+its captured lexical environment.
+
+The thunk becomes EVALUATING before its expression is
+evaluated. The machine must preserve the continuation needed
+to install the result when WHNF is reached.
+
+Merely looking up, passing, or capturing a thunk reference
+does not enter the thunk.
+
+#### Update and Sharing
+
+A successful evaluation updates the original thunk address
+to refer to its WHNF result.
+
+The update must preserve the original ObjectId and allocated
+slot capacity.
+
+Subsequent demands through the original reference must
+reuse the updated result without reevaluating the expression.
+
+A thunk must not be updated with an unresolved result that
+leads back to the same active computation.
+
+#### Heap Representation
+
+Thunk payloads are immutable.
+
+Lifecycle transitions replace heap-cell contents in an
+isolated successor state. They must never mutate payloads
+shared with previous execution snapshots.
+
+Recursive local bindings retain the stable one-slot anchors
+defined by ADR-006. Separately allocated thunk objects may
+be reached through these anchors when required by their
+allocation capacity.
+
+Every CBNeed deferred computation uses a stable one-slot identity anchor and a separately allocated payload.
+
+The anchor preserves the shared identity of the computation.
+The payload stores its Core expression and captured local
+references.
+
+Recursive local bindings may initialize an existing one-slot
+Reserved anchor, as established by ADR-006.
+
+After a successful update, the anchor contains an Indirection
+to the WHNF result. The former payload may become unreachable
+and eligible for future garbage collection.
+
+#### Reentrant Demand
+
+Demanding an EVALUATING thunk constitutes a blackhole
+condition.
+
+The operational detection and failure-reporting rules are
+implemented in B05.7.
+
+Exhausting an execution budget is not itself evidence of a
+blackhole or divergence.
+
+#### Strategy Compatibility
+
+The existing CBV evaluation and global initialization
+semantics must remain unchanged.
+
+Under CBNeed, global computations and local deferred
+bindings must participate in memoizing evaluation.
+
+CBN does not inherit memoization from this contract.
+Its non-sharing behavior remains part of B11.
+
+#### Structural Thunk Representation
+
+The Call-by-Need runtime introduces three immutable heap
+object representations:
+
+- `ThunkPayload` stores a deferred Core expression and a
+  standalone environment of captured local references.
+- `PendingThunk` is a one-slot identity anchor referring
+  to a thunk payload awaiting evaluation.
+- `EvaluatingThunk` is a one-slot identity anchor referring
+  to a payload whose evaluation is in progress.
+
+The abstract allocation cost of a ThunkPayload is one
+base slot plus one slot per captured local reference.
+
+The Core AST is retained by reference; its host memory is
+not counted node by node in the simulated heap.
+
+The anchor representations each require one abstract slot,
+independently of the payload size.
+
+Thunk lifecycle transitions use controlled heap-cell
+replacement, as specified in Section 7.11.
+
+These representations support deferred evaluation,
+memoization and sharing. Blackhole detection and
+additional binding forms are addressed separately.
+
+#### Selective Thunk Capture
+
+Thunk payloads use the existing iterative Core free-variable
+analysis to determine their lexical dependencies.
+
+Capture selection is shared with function closures through
+the runtime capture-selection module.
+
+For each free variable, the runtime determines whether the
+binding is resolved in a local lexical scope above the
+global environment boundary.
+
+Only free local bindings are captured.
+
+Global and predefined bindings are resolved separately
+through the runtime global environment.
+
+Captured bindings preserve their original RuntimeRef
+identity. Capture does not force, dereference, copy, or
+evaluate referenced values.
+
+The resulting captured environment is standalone and
+contains no parent environment chain.
+
+When a thunk is evaluated, its saved local references
+will be layered over the global environment to reconstruct
+the correct lexical scope.
+
+Selection respects nested lambda parameters, recursive
+let bindings, shadowing, and Core case binders.
+
+Capture selection is deterministic and does not allocate
+simulated heap objects, evaluate expressions or force
+captured references.
+
+Allocation and subsequent memoizing evaluation are
+separate runtime operations.
+
+#### Thunk Heap Allocation
+
+Call-by-Need deferred computations use separate heap objects
+for their stable identity anchors and evaluation payloads.
+
+The `allocate_thunk` helper constructs the payload using
+selective local capture and installs a PendingThunk anchor.
+
+For fresh thunks, the runtime allocates the payload first
+and then a new one-slot anchor. The returned reference
+always identifies the anchor, never the payload.
+
+For recursive local bindings, the runtime may provide an
+existing one-slot Reserved anchor. The helper allocates the
+payload and replaces the Reserved contents with PendingThunk,
+preserving the anchor ObjectId and allocated capacity.
+
+The abstract allocation cost of a fresh thunk is:
+
+    2 + number_of_captured_local_references
+
+A preallocated one-slot anchor contributes one of these slots
+before initialization.
+
+Payloads are allocated with exactly their required capacity.
+Anchors always occupy exactly one abstract heap slot.
+
+Expected validation errors are detected before new heap
+allocations are performed.
+
+The helper operates on a caller-owned heap. During evaluation,
+the caller must use an isolated successor-state heap.
+
+No expression is evaluated, forced, or memoized during
+allocation.
+
+Previously initialized anchors cannot be initialized again.
+
+Under CBNeed, non-lambda globals are installed directly as
+PendingThunk values in their reserved anchors, as described
+in Section 7.11, Globals and Aliases.
+
+Payload reclamation is deferred to the future garbage collector.
+Until then, unreachable payloads remain allocated in the
+simulated heap and are included in its slot accounting.
+
+##### Thunk Identity and Snapshot Preservation
+
+Multiple environment bindings may reference the same thunk
+anchor. Such aliases preserve shared identity without copying
+the deferred computation.
+
+Additional heap Indirections may also refer to a thunk anchor.
+Updating the anchor does not eagerly rewrite those Indirections
+or perform path compression.
+
+Thunk lifecycle changes are represented by replacing the
+anchor contents in an isolated successor heap:
+
+- PendingThunk: the deferred computation has not started.
+- EvaluatingThunk: the deferred computation is in progress.
+- Indirection: the computation has been updated to its WHNF
+  result.
+
+Each replacement preserves the anchor ObjectId and its
+one-slot allocation.
+
+Heap snapshots retain their historical cell contents. Since
+thunk payloads and anchors are immutable, successor snapshots
+may safely share unchanged heap objects.
+
+An updated anchor no longer references its former payload.
+However, the payload remains allocated until garbage collection
+reclaims it, provided it is unreachable from the roots that
+must be preserved.
+
+Indirection-path compression and garbage collection
+are not performed by thunk lifecycle transitions.
+
+### 7.11 Thunk Update Continuations
+
+#### UpdateFrame Responsibility
+
+Call-by-Need evaluation uses an explicit UpdateFrame to
+preserve the identity of a thunk undergoing evaluation.
+
+The frame retains:
+
+- The stable thunk reference to update.
+- The lexical environment to restore after completion.
+- The continuation stage distinguishing an initial RHS
+  return from a completed WHNF demand.
+
+The frame does not own or mutate the thunk payload.
+
+The flag is initially False while the thunk RHS is being
+evaluated. After the RHS returns a reference, the forcing
+continuation may replace the frame with an immutable copy
+whose awaiting_whnf flag is True while WHNF demand is pending.
+
+The frame preserves the original thunk identity across
+nested evaluation and does not store or mutate the thunk
+payload.
+
+Stack snapshots may share immutable UpdateFrame instances
+while retaining independent stack storage.
+
+The frame representation alone does not enter, force,
+update, or memoize a thunk. Those operations require
+separate machine transitions.
+
+#### Entering a Thunk
+
+Under CBNeed, `CORE_FORCE_THUNK_ENTER` handles Force(reference)
+when the reference identifies a PendingThunk.
+
+The transition retrieves the separate immutable ThunkPayload
+and reconstructs the evaluation environment from its captured
+local references layered over the global environment.
+
+The caller's lexical environment is retained in an UpdateFrame,
+together with the original thunk anchor reference.
+
+The anchor is replaced with EvaluatingThunk, preserving its
+ObjectId, one-slot capacity, and payload reference.
+
+The machine pushes UpdateFrame and changes its control to
+EvaluateCore(payload.expression).
+
+These changes occur in one evaluator transition on an isolated
+successor ExecutionState. Thunk entry does not allocate new
+heap objects, evaluate the RHS, update the result, or force
+captured references.
+
+The UpdateFrame continuation handles the eventual RHS return
+and subsequent WHNF demand, as specified in the following
+subsections.
+
+Blackhole detection is explained in the subsection
+Blackholes and Execution Limits.
+
+#### Return and WHNF Verification
+
+Returning from a thunk RHS does not guarantee that its
+result reference is in WHNF.
+
+When UpdateFrame receives the initial RHS return
+(awaiting_whnf=False), CORE_THUNK_REQUIRE_WHNF replaces the
+frame with an immutable copy whose awaiting_whnf flag is True
+and changes the control to Force(result_reference).
+
+The thunk anchor remains EvaluatingThunk during this demand.
+No memoizing update or environment restoration occurs.
+
+When the forced reference returns, UpdateFrame requires that
+the result be in WHNF before allowing an update. An unresolved
+result at this stage is an invalid machine state.
+
+Nested forcing must preserve the suspended UpdateFrame and
+all outer continuation frames.
+
+When a thunk RHS returns a reference to another pending
+thunk, the outer UpdateFrame remains suspended with
+awaiting_whnf=True while the nested thunk is entered.
+
+The nested UpdateFrame is pushed above the outer frame.
+Both preserve their respective thunk anchors and lexical
+return environments.
+
+Nested demands follow LIFO continuation ordering. The
+outer update cannot complete until the nested demand has
+produced a verified WHNF result.
+
+Batch boundaries preserve the complete continuation stack
+and demand stages without restarting either computation.
+
+The subsequent update replaces the original anchor with an
+Indirection to the verified WHNF reference, as specified in
+Successful Update.
+
+#### Successful Update
+
+`CORE_THUNK_UPDATE_WHNF` completes an UpdateFrame whose
+awaiting_whnf flag is True and whose returned reference
+has been verified to be in WHNF.
+
+The transition replaces the original EvaluatingThunk anchor
+with Indirection(whnf_reference), preserving its ObjectId
+and one-slot allocated capacity.
+
+The UpdateFrame is then removed, the caller's lexical
+environment is restored, and Return(whnf_reference) resumes
+the suspended continuation.
+
+The update does not allocate new heap objects or release
+the original thunk payload. Unreachable payload reclamation
+belongs to garbage collection.
+
+All changes occur in an isolated successor ExecutionState.
+Previous snapshots retain their original heap cells and
+continuation stack.
+
+Nested thunk updates complete in LIFO order. An inner
+UpdateFrame installs its result and restores its caller
+environment before the suspended outer UpdateFrame can
+complete its own update.
+
+An update targets only its original thunk anchor. Other
+anchors and aliases retain their identities.
+
+Force follows heap Indirection chains one reference per
+CORE_FORCE_INDIRECTION transition until WHNF is reached.
+This traversal does not allocate new objects, rewrite
+existing aliases, or compress indirection paths.
+
+#### Globals and Aliases
+
+Under CBNeed, non-lambda global RHS expressions are
+installed as PendingThunk values in their previously
+reserved one-slot global anchors.
+
+The corresponding ThunkPayload is allocated separately.
+Global references are resolved through the shared global
+environment rather than captured as local bindings.
+
+Root evaluation may explicitly force a PendingThunk global
+through CORE_ROOT_REQUIRE_WHNF.
+
+Global thunk demand and update use the same UpdateFrame
+protocol as deferred function arguments.
+
+Top-level lambda bindings remain directly installed
+Closures. CBV retains its existing PendingGlobal demand
+behavior without memoization.
+
+Global aliases and forward references preserve the
+pre-reserved binding identities. A global RHS may demand
+another global thunk through the shared global environment.
+
+Nested global demands use the ordinary UpdateFrame protocol
+and complete in LIFO order. Each successfully evaluated
+global thunk is memoized at its own stable anchor.
+
+Subsequent demands reuse the updated result, including
+demands originating from different applications of a
+top-level closure. Unreferenced global thunks remain
+pending.
+
+#### Blackholes and Execution Limits
+
+A demand of an already EVALUATING thunk is a reentrant
+demand and must be detected as a blackhole.
+
+A Force demand targeting an EvaluatingThunk under CBNeed
+detects a blackhole when the thunk has an active UpdateFrame.
+
+CORE_BLACKHOLE_DETECTED transitions the machine to the
+terminal ExecutionStatus.BLACKHOLE_DETECTED state.
+
+Detection preserves the current Force control, thunk
+anchor, heap contents, continuation stack and lexical
+environments. The ordinary evaluator transition counters
+advance, and the transition is available to tracing.
+
+The terminal state retains the suspended execution context
+for inspection but cannot be resumed.
+
+run_batch reports BatchStopReason.TERMINAL_STATUS for this
+state. Blackhole detection is distinct from evaluator
+budget exhaustion and does not require a general
+dependency-graph traversal.
+
+A suspended execution with an active UpdateFrame remains
+resumable. Reaching the execution-step budget is not
+equivalent to detecting a blackhole.
+
+Evaluator budget exhaustion does not change the machine
+status and does not imply a blackhole.
+
+A RUNNING execution suspended with active UpdateFrames
+may resume when the cumulative execution-step limit is
+increased. Its existing heap, control, stack and
+continuations are preserved.
+
+If the budget is reached before a reentrant Force
+transition executes, run_batch reports EVALUATOR_BUDGET.
+The blackhole is detected only when that transition is
+subsequently allowed to execute.
+
+Once BLACKHOLE_DETECTED is reached, the execution is
+terminal. TERMINAL_STATUS takes precedence over the
+evaluator budget in batch stopping.
+
+Failed transitions must not partially mutate their input
+ExecutionState.
+
+Blackhole detection also applies to indirect recursive
+dependencies. If forcing a thunk eventually demands an
+anchor that is still EvaluatingThunk with an active
+UpdateFrame, the machine detects a blackhole.
+
+No dependency-graph traversal is required. Recursive
+bindings and mutually recursive closures are not
+themselves blackholes; detection occurs only upon an
+actual reentrant demand.
+
+#### Implementation Boundaries
+
+Concrete UpdateFrame types, RuleIds and forcing transitions
+are introduced during B05.4.
+
+Heap updates and observable sharing are implemented in B05.5.
+
+Recursive local and global binding integration belongs to
+B05.6.
+
+Advanced metrics and garbage collection are deferred to
+B07 and B12 respectively.
+
+### 7.12 Reference Programs and Acceptance
+
+The B05 implementation must preserve the operational contracts
+defined in Sections 7.9–7.11.
+
+#### Reference Scenarios
+
+The Call-by-Need regression suite must cover:
+
+- Unused function arguments are not evaluated.
+- Repeated demand of an argument shares its WHNF result.
+- Unused local recursive bindings remain unevaluated.
+- Mutually dependent local bindings resolve lexically.
+- Repeated demand of a global RHS shares its result.
+- Reentrant demand of an EVALUATING thunk detects a blackhole.
+- Partial application of seq does not demand its first argument.
+- Saturated seq demands its first argument to WHNF.
+- Interrupted thunk evaluation resumes deterministically.
+- Comparable terminating CBV and CBNeed programs produce
+  equivalent canonical observable results.
+
+#### Identity and Allocation
+
+Each deferred computation has a stable one-slot identity
+anchor and a separately allocated payload.
+
+The payload retains the expression and the necessary lexical
+references for evaluation.
+
+Thunk lifecycle changes replace immutable anchor contents
+without changing ObjectId or allocated slot capacity.
+
+After a successful update, the anchor contains an
+Indirection to the WHNF result. The former payload may
+become unreachable.
+
+Payload allocation and capture-slot accounting are specified
+during B05.2.
+
+#### Operational Verification
+
+Tests must verify more than final result equality.
+
+They must inspect appropriate RuleIds, thunk entry and update
+behavior, reference identity, heap invariants, preserved
+historical snapshots and resumed execution.
+
+The same thunk must not evaluate its RHS more than once
+after successful memoization.
+
+CBV regression tests must continue to pass.
+
+B05 does not claim complete constructor evaluation, CBN,
+garbage collection or comparable experimental metrics.
+
 ## 8. Operational Invariants and Acceptance Criteria
 
 ### 8.1 Transition Invariants
@@ -343,6 +963,17 @@ A transition may update the control, environment, heap and stack
 as required by its operational rule.
 
 Instrumentation must not determine the selected semantic rule.
+
+`TraceMode` affects the recording of execution information,
+not the selection or outcome of operational rules.
+
+For the same initial state and execution configuration,
+changing between FULL, EVENTS and METRICS_ONLY must preserve
+semantic results, operational RuleId sequences, transition
+counts and simulated heap allocation behavior.
+
+Different trace modes may retain different amounts or forms
+of instrumentation data without changing machine semantics.
 
 ### 8.2 Reference Return and WHNF Demand
 
@@ -392,9 +1023,6 @@ If no valid execution entry has been selected, execution
 initialization must fail with an explicit diagnostic rather
 than silently selecting an unrelated definition.
 
-The exact initialization API and diagnostic types are defined
-during B04.2.
-
 ### 8.5 Error and Unsupported-State Handling
 
 An unsupported operational construct must not be treated
@@ -408,44 +1036,6 @@ input execution state.
 
 Step and result limits must not be classified as proof of
 program divergence.
-
-### 8.6 B04.1 Acceptance Criteria
-
-B04.1 is complete when:
-
-- The responsibilities of `EvaluateCore`, `Return`, `Force`
-  and `InitializeCoreBindings` are documented.
-- WHNF demand and result observation are distinguished.
-- Continuation responsibilities and lexical environments
-  are documented.
-- CBV, CBN and CBNeed contracts are explicitly separated.
-- Recursive global initialization is demand-driven.
-- Local CBV `CoreLetRec` initialization is strict.
-- The invariant between successful forcing and continuation
-  resumption is recorded.
-- Milestone boundaries for B04, B05 and B06 remain intact.
-- Existing B03 regression tests pass.
-
-Completing these contracts does not establish operational
-correctness of rules that have not yet been implemented.
-
-### 8.7 B04.2 Readiness
-
-B04.2 may begin by implementing the operational initialization
-of a Core program:
-
-- Establish the predefined identifier scope.
-- Make the complete recursive global group addressable.
-- Preserve source-order and lexical binding identities.
-- Select an explicit or default execution entry.
-- Avoid evaluating unrelated global RHS expressions.
-- Produce a valid initial `ExecutionState`.
-- Keep initialization transitions observable.
-
-The concrete representation of pending global computations
-must satisfy the strategy contracts without prematurely
-implementing B05 thunk updates or sharing.
-
 
 ## 9. Core Program Initialization
 
@@ -541,23 +1131,27 @@ transitions are described in Sections 9.5 and 9.6.
 After every global binding has a stable reserved address, the
 runtime installs RHS representations without evaluating them.
 
-A non-lambda global RHS is represented by `PendingGlobal`,
-which retains the original Core expression.
+Under CBV and CBN, a non-lambda global RHS is represented
+by PendingGlobal, which retains the original Core expression.
 
-A top-level lambda RHS is installed directly as a `Closure`.
-Its body is not evaluated, and the closure captures no local
-bindings. Global references are resolved through the separate
-global environment when the function is applied.
+Under CBNeed, a non-lambda global RHS is installed as
+PendingThunk in its existing reserved one-slot anchor.
+A separate ThunkPayload stores the original Core expression
+without capturing global references as local bindings.
 
-Installation preserves the original heap address and its
-allocated slot capacity. It does not allocate a second object
-for the global binding.
+A top-level lambda RHS is installed directly as a Closure
+under all strategies. Its body is not evaluated, and the
+closure captures no local bindings. Global references are
+resolved through the global environment when it is applied.
 
-`PendingGlobal` uses one abstract heap slot. The host memory
-occupied by its Core AST is outside the simulated heap.
+Installation preserves the original binding address and its
+allocated slot capacity. CBNeed allocates a separate payload
+for each non-lambda RHS; CBV and CBN install PendingGlobal
+without allocating an additional heap object.
 
-`PendingGlobal` does not implement forcing, memoization,
-updates or strategy-specific sharing.
+PendingGlobal uses one abstract heap slot and does not
+implement forcing, memoization, updates or strategy-specific
+sharing. Core AST host memory is outside the simulated heap.
 
 Global RHS demand remains independent from argument
 strictness and local `CoreLetRec` initialization.
@@ -606,9 +1200,7 @@ evaluated through the ordinary Core machine rules.
 For a program with N global bindings, initialization
 requires N + 2 machine transitions.
 
-These B04.2 initialization rules do not themselves force variables
-or evaluate pending global RHS expressions. Demand-driven evaluation
-is implemented separately by the B04.4 rules in Section 11.7.
+Demand-driven evaluation is implemented separately in Section 11.7.
 
 ## 10. Free Variables and Closure Capture
 
@@ -652,11 +1244,11 @@ are implemented as described in Sections 10.3 and 10.4.
 ### 10.3 Selective Local Capture
 
 `select_free_local_names()` identifies which free variables
-of a `CoreLam` resolve to local lexical bindings.
+of a `CoreLam` or a `CoreExpr` resolve to local lexical bindings.
 
 The analysis receives:
 
-- The lambda expression.
+- The expression.
 - Its definition-site environment.
 - The global environment used as the lexical boundary.
 
@@ -681,8 +1273,8 @@ deterministic capture order and closure allocation sizes.
 The operation does not evaluate references, allocate heap
 objects, or modify lexical environments.
 
-Runtime closure construction and allocation are completed
-in B04.3.3.
+Runtime closure construction and allocation are explained
+in Section 11.2
 
 ### 10.4 Closure Construction and Heap Allocation
 
@@ -720,7 +1312,7 @@ Recursive local binding groups require additional reservation
 and installation rules, introduced in B04.6. This helper does
 not itself initialize recursive binding groups.
 
-Integration with `EvaluateCore(CoreLam)` belongs to B04.4.
+Integration with `EvaluateCore(CoreLam)` belongs in section 13.
 
 ### 10.5 Nested Closures and Lexical Scope
 
@@ -757,28 +1349,6 @@ The caller's unrelated local environment is not inherited.
 
 Closure construction does not evaluate lambda bodies or
 dereference captured heap references.
-
-### 10.6 B04.3 Completion Criteria
-
-B04.3 establishes the infrastructure for selective Core
-closure allocation:
-
-- Iterative free-variable analysis.
-- Correct handling of nested lexical scopes.
-- Separation of local captures from global references.
-- Deterministic capture selection.
-- Heap allocation with exact abstract slot capacity.
-- Stable captured reference identity.
-- Independent execution-state snapshots.
-- Integration tests with compiled nested lambdas.
-
-The B04.3 capture/allocation stage does not itself apply functions.
-
-Evaluation of `CoreLam` and `CoreApp`, continuation handling,
-and CBV argument demand are implemented in B04.4 (Section 11).
-
-Local recursive binding initialization is implemented in B04.6
-(Section 13). Non-strict argument demand remains deferred.
 
 ## 11. Initial Core Expression Evaluation
 
@@ -830,7 +1400,7 @@ Successful transitions:
 
 Heap mutations take place on isolated successor storage.
 
-### 11.4 Current Operational Boundary
+### 11.4 Variable and Lambda Rule Boundaries
 
 Variable lookup and lambda evaluation are supported.
 
@@ -870,6 +1440,9 @@ first pushes the frame for `b`, then the frame for `a`.
 
 The frame for `a` must be consumed before the frame for `b`
 during continuation processing.
+
+Applying a non-function value produces an explicit runtime
+error.
 
 ### 11.6 Pending Application Continuations
 
@@ -912,8 +1485,13 @@ WHNF demand from the stage after successful forcing.
 Global RHS evaluation does not eagerly evaluate unrelated
 globals.
 
-No sharing, memoization or update to `PendingGlobal` is
-performed by these rules.
+Under CBV, demand-driven evaluation of a PendingGlobal
+does not memoize its result or update the global binding.
+
+Under CBNeed, memoizing global demand is implemented through
+the thunk update protocol defined in Section 7.11.
+
+CBN remains nonmemoizing and is implemented in B11.
 
 A root `Return(reference)` is not ready for result observation
 until the reference is recognized as WHNF.
@@ -922,8 +1500,10 @@ These demand rules preserve pending application continuations.
 Their consumption is implemented by the separate B04.4.4
 application rules in Section 11.8.
 
-Full CBNeed sharing, thunk updates and blackhole detection
-remain responsibilities of B05.
+CBNeed argument-thunk updates and sharing are implemented
+in B05.5. Memoizing global demand, recursive bindings,
+and blackhole detection have separate implementation
+boundaries within B05.
 
 ### 11.8 Call-by-Value Function Application
 
@@ -966,36 +1546,84 @@ and full thunk machinery are implemented in later milestones.
 Nested curried applications preserve lexical capture and
 LIFO continuation order.
 
-### 11.9 B04.4 Integration and Acceptance
+Attempting to apply a runtime value that is not a supported
+callable object produces an explicit runtime error.
 
-The initial Core function evaluator supports ordinary
-call-by-value closure applications.
+Such a failure must preserve the input ExecutionState
+without partially consuming or mutating its continuation
+stack, lexical environment or heap.
 
-The implemented transitions preserve:
 
-- Left-to-right function and argument evaluation.
-- Strict WHNF demand for CBV arguments.
-- Lexical closure capture and shadowing.
-- Argument evaluation in the original call-site environment.
-- Restoration of the caller environment after body execution.
-- Global-function lookup and demand-driven global aliases.
-- Explicit continuation order.
-- Independent execution-state snapshots.
-- Semantically equivalent execution across trace modes.
+### 11.9 Call-by-Need Closure Application
 
-Global RHS evaluation remains demand-driven and does not
-introduce sharing updates.
+Under CBNeed, function application evaluates and demands the
+function position to WHNF before allocating an argument thunk.
+This may involve lexical lookup, heap Indirections, or
+demand-driven global bindings.
 
-Applying a non-function value produces an explicit runtime
-error.
+A non-callable value in WHNF raises an explicit runtime error
+before argument allocation. A pending thunk in function position
+must instead be forced to WHNF; this behavior is implemented
+in B05.4.
 
-Function application under CBN and CBNeed is not yet supported.
-Their complete argument representations and demand behavior
-remain responsibilities of later milestones.
+#### Deferred Argument Binding
 
-Predefined function application, primitive operators,
-conditionals and local recursive bindings are outside the
-completed B04.4 scope.
+When the function resolves to a Closure, its argument expression
+is neither evaluated nor forced.
+
+The evaluator allocates a thunk containing the argument Core
+expression and the free local references captured from its
+original call-site environment, retained by ApplyFunctionFrame.
+
+Captures preserve RuntimeRef identity, including references to
+other pending thunks. Global and predefined identifiers are
+resolved separately through the global environment.
+
+Capturing occurs before introducing the callee's parameter,
+ensuring that parameter shadowing does not alter the lexical
+meaning of the argument.
+
+The thunk's stable one-slot anchor is bound to the parameter.
+The argument remains pending until explicitly demanded.
+
+#### Closure Execution and Environment Restoration
+
+The closure body executes using its definition-site captured
+environment, extended with the deferred parameter binding and
+the global environment. It does not inherit unrelated local
+bindings from the caller.
+
+A RestoreEnvironmentFrame preserves the caller's lexical
+environment and restores it after the body returns.
+
+CORE_CBNEED_ENTER_BODY performs thunk allocation, parameter
+binding, and body entry in an isolated successor ExecutionState,
+preserving previous snapshots.
+
+#### Returned Closures and Curried Applications
+
+A closure returned from a function body captures only its
+required free local references, which may include pending
+argument thunks created by earlier applications.
+
+Restoring the caller's environment does not invalidate or
+force those references. A returned closure is in WHNF even
+when its captured thunks remain unevaluated.
+
+Curried applications preserve captured reference identities
+and defer each ordinary argument independently.
+
+#### Strategy and Implementation Boundaries
+
+CBV retains strict argument evaluation and WHNF demand.
+CBN application remains part of B11.
+
+Thunk forcing and update continuations are implemented in B05.4;
+memoization and sharing are completed in B05.5.
+
+Non-strict predefined function application, including
+first-class seq, belongs to B05.8.
+
 
 ## 12. Primitive Operations and Conditionals
 
@@ -1020,18 +1648,12 @@ from subsequent WHNF demand through an explicit demand flag.
 
 ### 12.2 Operational Boundary
 
-B04.5.1 establishes the initial primitive evaluation
-continuation.
-
 The following rules are implemented separately:
 
 - WHNF demand and operand continuation.
 - Primitive operation execution and type checking.
 - Conditional evaluation and branch selection.
 - End-to-end primitive and conditional regression tests.
-
-B04.5 does not introduce thunk memoization, shared updates
-or recursive constructor evaluation.
 
 ### 12.3 Primitive Operand Demand
 
@@ -1164,46 +1786,12 @@ A RuleId does not necessarily correspond to a source-level
 semantic reduction. This distinction will be addressed
 explicitly in B07 instrumentation.
 
-### 12.7 B04.5 Integration and Acceptance
-
-B04.5 completes the initial operational implementation
-of primitive expressions and conditionals.
-
-The evaluator supports:
-
-- Strict, left-to-right primitive operand evaluation.
-- Explicit WHNF demand for primitive operands.
-- Integer arithmetic and unary negation.
-- Integer ordering comparisons.
-- Equality and inequality on supported primitive values.
-- Explicit runtime type and arity errors.
-- Strict evaluation of conditional predicates.
-- Evaluation of exactly one conditional branch.
-- Preservation of lexical environments across continuations.
-
-Operational rules have stable identifiers represented by
-the RuleId StrEnum.
-
-Trace modes do not influence semantic execution.
-
-Interrupted executions retain their control, heap,
-environment and continuation stack, allowing evaluation
-to resume from an existing ExecutionState.
-
-Primitive evaluation and conditional selection do not
-introduce thunk memoization or sharing updates.
-
-The B04.5 primitive/conditional stage does not itself implement
-local recursive bindings, predefined seq application or canonical
-result observation. These are implemented in B04.6-B04.8,
-respectively (Sections 13-15).
-
 ## 13. Local Recursive Bindings
 
-### 13.1 CBV Local Scope Reservation
+### 13.1 Local Scope Reservation (CBV and CBNeed)
 
-`CORE_LETREC_RESERVE_SCOPE` begins evaluation of a
-CoreLetRec expression under Call by Value.
+`CORE_LETREC_RESERVE_SCOPE` begins evaluation of a CoreLetRec
+expression under CBV or CBNeed.
 
 The rule reserves one stable heap address for each local
 binding before evaluating any right-hand side.
@@ -1232,11 +1820,14 @@ with captured references.
 Strict RHS initialization and recursive dependency handling
 are implemented as described in Sections 13.2-13.4.
 
-CBN and CBNeed local bindings remain unsupported by this
-CBV-specific rule.
+Under CBV, initialization proceeds through the strict rules
+defined in Sections 13.2–13.4.
 
-The reservation rule does not implement thunk allocation,
-sharing updates or blackhole detection.
+Under CBNeed, reservation reaches InitializeLocalBindings.
+Deferred initialization of the reserved bindings is
+implemented and explained in section 13.5.
+
+CBN local recursive bindings remain unsupported until B11.
 
 ### 13.2 CBV Local Function Initialization
 
@@ -1363,48 +1954,53 @@ Error classification concerns operational behavior. The
 chosen stable binding-cell representation is documented
 separately in ADR-006.
 
-### 13.5 B04.6 Integration and Acceptance
+### 13.5 CBNeed Deferred Local Initialization
 
-B04.6 completes the initial CBV operational support
-for local recursive CoreLetRec binding groups.
+Under CBNeed, InitializeLocalBindings installs each local
+binding in source order without evaluating its RHS.
 
-The evaluator supports:
+All binding identities have already been reserved by
+CORE_LETREC_RESERVE_SCOPE.
 
-- Simultaneous reservation of local binding references.
-- Stable one-slot binding anchors.
-- Lexical shadowing of enclosing bindings.
-- Recursive closure installation without body evaluation.
-- Source-ordered strict initialization of non-lambda RHSs.
-- Explicit WHNF demand before storing local values.
-- Indirections preserving original binding addresses.
-- Detection of premature demands on uninitialized bindings.
-- Restoration of enclosing lexical environments.
-- Execution through nested application and primitive frames.
+For a CoreLam RHS, CORE_LETREC_INSTALL_FUNCTION allocates
+a Closure capturing the required free local references
+and installs an Indirection in the original reserved anchor.
+The function body is not evaluated.
 
-Function-valued RHSs may capture other reserved bindings.
-Their bodies are not evaluated during initialization.
+For a non-lambda RHS, CORE_LETREC_INSTALL_THUNK allocates a
+separate ThunkPayload and replaces the existing Reserved
+anchor with PendingThunk.
 
-Non-function RHSs are evaluated strictly to WHNF before
-the corresponding binding is initialized.
+The payload captures only the required free local references
+from the complete recursive environment. Those references
+may designate bindings whose initialization is still pending.
 
-The machine preserves snapshot isolation across all
-local initialization transitions.
+Initialization preserves each reserved ObjectId and its
+one-slot capacity. It does not force captured references,
+evaluate RHS expressions or allocate additional anchors.
 
-An execution interrupted during local initialization can
-resume using the same ExecutionState and execution
-configuration, subject to the remaining step budget.
+When all bindings are installed, CORE_LETREC_ENTER_BODY
+begins evaluating the let body in the recursive environment.
 
-Executing the same program in multiple batches must not
-change its semantic result, allocation accounting, or
-operational transition sequence.
+Mutually recursive local closures preserve references to
+all members of their binding group, including forward
+references. Capturing a reference does not demand it.
 
-Stable binding cells and indirection overhead are defined
-by ADR-006.
+Nested recursive scopes may shadow outer bindings without
+changing references captured by existing closures.
+Deferred arguments capture their call-site lexical
+references independently of the function's definition scope.
 
-B04.6 does not introduce lazy local bindings, thunk
-memoization, sharing updates or general blackhole detection.
+Unused recursive bindings remain deferred. Reentrant
+demands of an EvaluatingThunk are handled separately
+by the blackhole protocol specified for B05.7.
 
-These remain outside the completed CBV local-binding scope.
+Subsequent demands use the ordinary CBNeed forcing,
+memoization and update protocol defined in Sections
+7.10–7.11.
+
+CBV retains its strict initialization rules from Sections
+13.2–13.4. CBN remains unsupported until B11.
 
 ## 14. First-Class Predefined `seq`
 
@@ -1439,13 +2035,15 @@ Under CBV, applied arguments must reach WHNF before
 the partial application is constructed.
 
 Under CBN and CBNeed, arguments may remain deferred.
-Those strategies require their later runtime machinery.
+CBNeed partial application and saturation are implemented
+as specified in Sections 14.5 and 14.6. CBN support
+remains deferred to B11.
+
+The CBV operational rules are defined in Sections 14.2
+and 14.3, and the CBNeed rules in Sections 14.5 and 14.6.
 
 Saturated applications do not produce
 `PartialPredefinedFunction values`.
-
-The operational rules for application and saturation
-are defined in subsequent B04.7 sections.
 
 ### 14.2 CBV Partial Application of Predefined Functions
 
@@ -1515,8 +2113,8 @@ This rule is specific to CBV. Under CBN and CBNeed,
 seq must explicitly demand its first argument at
 saturation because partial application does not force it.
 
-The non-strict operational rules will be implemented
-with their corresponding evaluator strategies.
+The CBNeed operational rules are implemented in
+Sections 14.5 and 14.6. CBN remains deferred to B11.
 
 The sequence of operational transitions remains observable
 through the existing RuleId and trace infrastructure.
@@ -1549,36 +2147,57 @@ existing Indirection representation.
 
 The frontend does not introduce a dedicated `CoreSeq` node.
 
-These guarantees apply to the initial CBV evaluator.
-Non-strict application semantics belong to B05 and B11.
+### 14.5 CBNeed Partial Application of `seq`
 
-### 14.5 B04.7 Integration and Acceptance
+Under CBNeed, the first application of the predefined
+seq function is non-strict.
 
-B04.7 completes first-class predefined seq application under CBV
-using the existing application, Force and Return continuations.
-Both arguments reach WHNF through ordinary strict application;
-saturation returns the second reference without forcing the first
-argument again or allocating another heap object.
+The function position is demanded to WHNF. The argument
+expression is captured in a fresh PendingThunk using its
+original lexical call-site environment.
 
-Partial applications are function values in WHNF. They can be
-stored, returned, passed as arguments and applied through aliases
-and indirections. Runtime object dispatch preserves lexical
-shadowing and ordinary closure application.
+`CORE_PREDEFINED_PARTIAL_APPLY` allocates a
+PartialPredefinedFunction retaining the thunk anchor
+reference, restores the caller environment, and returns
+the partial application as a function value in WHNF.
 
-Integration tests cover single-step batch resumption, preservation
-of earlier heap and stack snapshots, caller-environment restoration,
-reference identity and declared abstract allocation sizes. FULL,
-EVENTS and METRICS_ONLY preserve semantic results and operational
-transition counts; FULL and EVENTS currently retain the same basic
-trace entries.
+Neither the argument expression nor its thunk is forced
+during partial application.
 
-Acceptance is limited to the current CBV runtime. Evaluation stops
-at the WHNF_PENDING observation boundary; canonical result
-observation belongs to B04.8. Non-strict seq rules, thunk updates,
-sharing and blackholes remain outside B04.7, as do constructor
-execution, advanced experimental metrics, replay and trace
-serialization. This integration review is not the final B04 audit
-or evidence of experimental validity.
+The argument remains pending even when its evaluation
+would diverge or detect a blackhole.
+
+### 14.6 CBNeed Saturated `seq`
+
+Under CBNeed, applying a PartialPredefinedFunction
+representing seq to its second argument initiates an
+explicit WHNF demand of the stored first argument.
+
+CORE_SEQ_REQUIRE_FIRST_WHNF installs a
+SeqFirstArgumentFrame and changes the control to
+Force(first_argument_reference).
+
+The continuation preserves the unevaluated second
+expression and its lexical call-site environment.
+
+Once the first argument reaches WHNF, CORE_SEQ_SATURATE
+allocates a fresh thunk for the second expression,
+removes the continuation, restores the caller environment,
+and returns the second thunk reference.
+
+Saturation does not force the second argument. Any
+subsequent demand belongs to the surrounding evaluation
+context.
+
+If forcing the first argument detects a blackhole,
+saturation does not occur.
+
+The deferred second argument may evaluate to an atomic
+value or a function value. In both cases, forcing and
+memoization follow the ordinary CBNeed thunk protocol.
+
+A failure or blackhole originating from the second argument
+occurs only if a subsequent evaluation context demands it.
 
 ## 15. Canonical Result Observation
 
@@ -1610,8 +2229,14 @@ It is a passive operation that:
 - Does not follow unresolved indirections.
 - Does not consume evaluator or result-consumer transitions.
 
-References to `Reserved`, `PendingGlobal` or `Indirection` objects
-must be resolved by the evaluator before canonical observation.
+References to `Reserved`, `PendingGlobal`, `PendingThunk`,
+`EvaluatingThunk`, or `Indirection` objects have not reached
+observable WHNF and must be rejected by passive observation
+with UnresolvedObservationError.
+
+The evaluator is responsible for resolving such references
+before result consumption. Observation must not force,
+evaluate, or update them.
 
 Unsupported runtime objects must not silently produce
 fabricated canonical values.
@@ -1639,7 +2264,7 @@ The initial result consumer supports an explicit
 4. Converts the returned reference using passive `observe_whnf`.
 5. Records the reference and resolved result mode in `ResultState`.
 6. Stores the canonical result separately from `MachineState`.
-7. Changes ExecutionStatus to `` COMPLETED .
+7. Changes ExecutionStatus to `COMPLETED` .
 
 The transition has kind `RESULT_CONSUMER`.
 
@@ -1802,39 +2427,21 @@ constructor support is implemented.
 Full and chunked executions must produce equivalent
 canonical results and operational transitions.
 
+For equivalent terminating executions, changing batch
+boundaries must not change the canonical result, simulated
+allocation accounting or operational transition sequence.
+
+Result-consumer transitions use the session batch capacity
+but do not consume the evaluator transition budget.
+
+Consequently, an already-WHNF result may be consumed even
+when the evaluator budget is exhausted, provided that the
+session batch has remaining transition capacity.
+
+Completed results cannot be consumed again, and result
+consumption must preserve previously returned execution
+snapshots.
+
 Result consumption does not modify earlier snapshots,
 allocate simulated heap objects or alter the evaluation
 strategy.
-
-### 15.6 B04.8 Integration and Acceptance
-
-B04.8 integrates passive canonical observation with the current
-Core CBV evaluator. Supported results are CanonicalInteger,
-CanonicalBoolean and OpaqueFunction; canonical values expose no
-runtime references or heap addresses. Unresolved references must
-reach WHNF through evaluator transitions before observation.
-
-WHNF_ONLY completes an already-WHNF result. ASK_AT_WHNF waits
-without transitions for an explicit, one-time ResultPolicy selection,
-preserving the original configuration. MATERIALIZE_COMPLETE_VALUE,
-whether fixed or selected, completes the currently supported atomic
-and opaque values; a result_node_limit of one is sufficient.
-
-Result-consumer transitions advance state_id and transition_index
-without advancing evaluator_transition_count. An already-WHNF result
-can therefore be consumed at an exhausted evaluator budget.
-run_batch remains evaluator-only; run_session_batch coordinates
-evaluation and observation within a total max_steps budget. Result
-consumption is deferred when that batch has no remaining capacity.
-
-Integration tests cover equivalent results, transition accounting
-and traces across large and single-step batches, including explicit
-ASK_AT_WHNF selection. FULL, EVENTS and METRICS_ONLY preserve semantic
-results and step accounting. Earlier snapshots and terminal states
-remain intact; completed results cannot be consumed again.
-
-Recursive constructor/list materialization, partial materialization
-and RESULT_LIMIT_REACHED handling remain for B06. This acceptance
-does not include non-strict evaluation, advanced metrics, replay or
-serialization, and is not the final B04 audit or evidence of
-experimental validity.

@@ -1,4 +1,4 @@
-"""Small-step Core CBV evaluation with explicit WHNF demand and continuations."""
+"""Small-step Core CBV and CBNeed evaluation with explicit WHNF demand and continuations."""
 
 from __future__ import annotations
 
@@ -50,6 +50,8 @@ from lazy_lab.runtime.stack import (
     PrimitiveOperandsFrame,
     IfFrame,
     LocalValueInitializationFrame,
+    UpdateFrame,
+    SeqFirstArgumentFrame,
 )
 from lazy_lab.runtime.predefined import PredefinedFunction
 from lazy_lab.runtime.state import (
@@ -76,6 +78,13 @@ from lazy_lab.runtime.closures import (
     Closure,
 )
 from lazy_lab.runtime.global_bindings import PendingGlobal
+from lazy_lab.runtime.thunks import (
+    allocate_thunk,
+    ThunkPayload,
+    PendingThunk,
+    EvaluatingThunk,
+)
+
 
 class UnsupportedTransitionError(NotImplementedError):
     """The requested transition is not implemented yet."""
@@ -438,6 +447,7 @@ def _install_global_rhs(
     heap: Heap,
     global_environment: Environment,
     binding: CoreBinding,
+    strategy: Strategy,
 ) -> HeapReference:
     """Install one global RHS without evaluating its expression.
 
@@ -477,21 +487,33 @@ def _install_global_rhs(
         )
 
     if isinstance(binding.rhs, CoreLam):
-        # A top-level lambda has no free local bindings to capture.
-        # References to globals are resolved through the separate
-        # global environment when the closure is applied.
+        # Top-level functions remain ready closures.
         value = capture_closure(
             binding.rhs,
             Environment(),
             free_local_names=(),
         )
-    else:
-        value = PendingGlobal(binding.rhs)
+        heap.replace(reference, value)
 
-    heap.replace(reference, value)
+    elif strategy is Strategy.CBNEED:
+        # Initialize the existing reserved global anchor
+        # using the ordinary Call-by-Need thunk protocol.
+        allocate_thunk(
+            heap,
+            binding.rhs,
+            global_environment,
+            global_environment,
+            anchor_reference=reference,
+        )
+
+    else:
+        # Preserve the existing CBV/CBN initialization path.
+        heap.replace(
+            reference,
+            PendingGlobal(binding.rhs),
+        )
 
     return reference
-
 
 def _advance_global_initialization(
     machine: MachineState,
@@ -564,6 +586,7 @@ def _advance_global_initialization(
             machine.heap,
             machine.global_environment,
             binding,
+            machine.strategy,
         )
 
         return (
@@ -594,9 +617,9 @@ def _advance_local_initialization(
     control: InitializeLocalBindings,
 ) -> tuple[MachineState, RuleId]:
     """Initialize local recursive bindings in source order."""
-    if machine.strategy is not Strategy.CBV:
+    if machine.strategy not in (Strategy.CBV, Strategy.CBNEED):
         raise UnsupportedTransitionError(
-            "Non-strict local initialization is not implemented"
+            "Local initialization is not implemented for this strategy"
         )
 
     if machine.phase is not ExecutionPhase.EVALUATION:
@@ -665,6 +688,29 @@ def _advance_local_initialization(
             RuleId.CORE_LETREC_INSTALL_FUNCTION,
         )
 
+    if machine.strategy is Strategy.CBNEED:
+        # All local anchors were reserved before initialization.
+        # Capture free local references from the complete
+        # recursive environment without evaluating the RHS.
+        allocate_thunk(
+            machine.heap,
+            binding.rhs,
+            machine.local_environment,
+            machine.global_environment,
+            anchor_reference=reference,
+        )
+
+        return (
+            replace(
+                machine,
+                control=replace(
+                    control,
+                    next_index=control.next_index + 1,
+                ),
+            ),
+            RuleId.CORE_LETREC_INSTALL_THUNK,
+        )
+
     # Non-lambda RHS: evaluate it strictly and wait
     # for WHNF before initializing its reserved cell.
     machine.stack.push(
@@ -712,7 +758,11 @@ def _advance_force(
     machine: MachineState,
     control: Force,
 ) -> tuple[MachineState, RuleId]:
-    """Demand WHNF without implementing thunk updates."""
+    """Demand WHNF, entering CBNeed thunks or detecting reentrant demand.
+
+    Thunk entry installs an UpdateFrame; its return continuation
+    verifies WHNF and performs the memoizing update.
+    """
     reference = control.reference
 
     if isinstance(
@@ -743,6 +793,94 @@ def _advance_force(
             replace(machine, control=Return(reference)),
             RuleId.CORE_FORCE_FUNCTION_WHNF,
         )
+
+    if isinstance(value, PendingThunk):
+        if machine.strategy is not Strategy.CBNEED:
+            raise UnsupportedTransitionError(
+                "Thunk forcing requires Call-by-Need"
+            )
+
+        # The anchor must retain its one-slot identity.
+        anchor_cell = machine.heap.get(reference)
+
+        if anchor_cell.allocated_slots != 1:
+            raise InvalidMachineStateError(
+                "Thunk anchor must occupy exactly one slot"
+            )
+
+        # Resolve and validate the separate immutable payload
+        # before changing the heap or continuation stack.
+        payload_cell = machine.heap.get(
+            value.payload_reference
+        )
+        payload = payload_cell.value
+
+        if not isinstance(payload, ThunkPayload):
+            raise InvalidMachineStateError(
+                "PendingThunk does not reference a ThunkPayload"
+            )
+
+        # Reconstruct the definition-site lexical environment.
+        # Captured locals shadow global and predefined names.
+        thunk_environment = machine.global_environment.extend(
+            payload.captured_locals.bindings
+        )
+
+        update_frame = UpdateFrame(
+            thunk_reference=reference,
+            return_environment=machine.local_environment,
+        )
+
+        # The original anchor changes state, not identity.
+        # This heap already belongs to an isolated successor.
+        machine.heap.replace(
+            reference,
+            EvaluatingThunk(
+                payload_reference=value.payload_reference,
+            ),
+        )
+
+        machine.stack.push(update_frame)
+
+        return (
+            replace(
+                machine,
+                local_environment=thunk_environment,
+                control=EvaluateCore(payload.expression),
+            ),
+            RuleId.CORE_FORCE_THUNK_ENTER,
+        )
+
+    if isinstance(value, EvaluatingThunk):
+        if machine.strategy is not Strategy.CBNEED:
+            raise InvalidMachineStateError(
+                "EvaluatingThunk requires Call-by-Need"
+            )
+
+        # A legitimate evaluating thunk must have an
+        # active update continuation for its stable anchor.
+        active_update = any(
+            isinstance(frame, UpdateFrame)
+            and frame.thunk_reference == reference
+            for frame in machine.stack.frames
+        )
+
+        if not active_update:
+            raise InvalidMachineStateError(
+                "EvaluatingThunk has no active UpdateFrame"
+            )
+
+        # Preserve the control, heap, stack and environments.
+        # The enclosing step() owns the isolated successor state
+        # and advances the transition counters.
+        return (
+            replace(
+                machine,
+                status=ExecutionStatus.BLACKHOLE_DETECTED,
+            ),
+            RuleId.CORE_BLACKHOLE_DETECTED,
+        )
+
 
     if isinstance(value, PendingGlobal):
         machine.stack.push(
@@ -799,7 +937,15 @@ def _advance_return(
     if machine.stack.depth > 0:
         frame = machine.stack.peek()
 
-        # 1. Resume a pending global RHS evaluation.
+        # 1. Resume updating a frame.
+        if isinstance(frame, UpdateFrame):
+            return _resume_update_frame(
+                machine,
+                control,
+                frame,
+            )
+
+        # 2. Resume a pending global RHS evaluation.
         if isinstance(frame, GlobalDemandFrame):
             if not frame.awaiting_whnf:
                 machine.stack.pop()
@@ -831,7 +977,7 @@ def _advance_return(
                 RuleId.CORE_GLOBAL_DEMAND_RETURN,
             )
 
-        # 2. Initializing ocal bindings
+        # 3. Initializing ocal bindings
         if isinstance(frame, LocalValueInitializationFrame):
             return _resume_local_value(
                 machine,
@@ -839,7 +985,7 @@ def _advance_return(
                 frame,
             )
 
-        # 3. Primitive operand evaluation.
+        # 4. Primitive operand evaluation.
         if isinstance(frame, PrimitiveOperandsFrame):
             return _resume_primitive_operand(
                 machine,
@@ -847,7 +993,7 @@ def _advance_return(
                 frame,
             )
         
-        # 4. If evaluation.
+        # 5. If evaluation.
         if isinstance(frame, IfFrame):
             return _resume_if_condition(
                 machine,
@@ -855,7 +1001,7 @@ def _advance_return(
                 frame,
             )
 
-        # 5. Function position has returned.
+        # 6. Function position has returned.
         # Demand the function and prepare its argument.
         if isinstance(frame, ApplyFunctionFrame):
             return _resume_apply_function(
@@ -864,7 +1010,7 @@ def _advance_return(
                 frame,
             )
 
-        # 6. Argument has returned.
+        # 7. Argument has returned.
         # Under CBV, demand WHNF and enter the closure body.
         if isinstance(frame, ApplyArgumentFrame):
             return _resume_apply_argument(
@@ -873,10 +1019,17 @@ def _advance_return(
                 frame,
             )
 
-        # 7. Function body has returned.
+        # 8. Function body has returned.
         # Restore the caller's lexical environment.
         if isinstance(frame, RestoreEnvironmentFrame):
             return _resume_caller_environment(
+                machine,
+                control,
+                frame,
+            )
+        # 9. First seq argument has returned
+        if isinstance(frame, SeqFirstArgumentFrame):
+            return _resume_seq_first_argument(
                 machine,
                 control,
                 frame,
@@ -887,12 +1040,12 @@ def _advance_return(
             f"{type(frame).__name__}"
         )
 
-    # 8. No continuation remains: handle the root result.
+    # 10. No continuation remains: handle the root result.
     # A root reference to a pending object still requires WHNF.
     if isinstance(reference, HeapReference):
         value = machine.heap.get(reference).value
 
-        if isinstance(value, (PendingGlobal, Indirection)):
+        if isinstance(value, (PendingGlobal, Indirection, PendingThunk)):
             return (
                 replace(
                     machine,
@@ -1126,7 +1279,11 @@ def _resume_apply_function(
     control: Return,
     frame: ApplyFunctionFrame,
 ) -> tuple[MachineState, RuleId]:
-    """Demand the function, then begin strict CBV argument evaluation."""
+    """Demand the function, then dispatch CBV or CBNeed application.
+
+    CBV evaluates its argument strictly. CBNeed defers closure arguments
+    and partial seq arguments; saturated seq first demands its stored argument.
+    """
     reference = control.reference
 
     if not frame.awaiting_whnf:
@@ -1145,7 +1302,7 @@ def _resume_apply_function(
             "Function demand returned without WHNF"
         )
 
-    if machine.strategy is not Strategy.CBV:
+    if machine.strategy is Strategy.CBN:
         raise UnsupportedTransitionError(
             "Non-strict application is not implemented yet"
         )
@@ -1154,7 +1311,7 @@ def _resume_apply_function(
         raise TypeError("Cannot apply a non-function value")
 
     function_value = machine.heap.get(reference).value
-    
+
     if not isinstance(
         function_value,
         (
@@ -1164,6 +1321,108 @@ def _resume_apply_function(
         ),
     ):
         raise TypeError("Cannot apply a non-function value")
+
+    if machine.strategy is Strategy.CBNEED:
+        if isinstance(function_value, PredefinedFunction):
+            if function_value.name != "seq" or function_value.arity != 2:
+                raise UnsupportedTransitionError(
+                    "Unsupported CBNeed predefined function"
+                )
+
+            # Preserve the original call-site lexical context.
+            # The argument is neither evaluated nor forced.
+            argument_reference = allocate_thunk(
+                machine.heap,
+                frame.argument,
+                frame.environment,
+                machine.global_environment,
+            )
+
+            partial = PartialPredefinedFunction(
+                name="seq",
+                applied_arguments=(argument_reference,),
+            )
+
+            partial_reference = machine.heap.allocate(
+                partial,
+                allocated_slots=partial.required_slots,
+            )
+
+            machine.stack.pop()
+
+            return (
+                replace(
+                    machine,
+                    local_environment=frame.environment,
+                    control=Return(partial_reference),
+                ),
+                RuleId.CORE_PREDEFINED_PARTIAL_APPLY,
+            )
+
+        if isinstance(function_value, PartialPredefinedFunction):
+            if (
+                function_value.name != "seq"
+                or function_value.remaining_arity != 1
+            ):
+                raise UnsupportedTransitionError(
+                    "Unsupported CBNeed predefined saturation"
+                )
+
+            first_reference = function_value.applied_arguments[0]
+
+            machine.stack.pop()
+            machine.stack.push(
+                SeqFirstArgumentFrame(
+                    first_argument_reference=first_reference,
+                    second_expression=frame.argument,
+                    return_environment=frame.environment,
+                )
+            )
+
+            return (
+                replace(machine, control=Force(first_reference)),
+                RuleId.CORE_SEQ_REQUIRE_FIRST_WHNF,
+            )
+
+        if not isinstance(function_value, Closure):
+            raise TypeError("Cannot apply a non-function value")
+
+        # Capture the argument's original lexical call-site
+        # references without evaluating its Core expression.
+        argument_reference = allocate_thunk(
+            machine.heap,
+            frame.argument,
+            frame.environment,
+            machine.global_environment,
+        )
+
+        # The closure body uses the definition-site captures,
+        # the global environment and the new parameter binding.
+        call_environment = function_value.call_environment(
+            argument_reference,
+            machine.global_environment,
+        )
+
+        machine.stack.pop()
+        machine.stack.push(
+            RestoreEnvironmentFrame(frame.environment)
+        )
+
+        return (
+            replace(
+                machine,
+                local_environment=call_environment,
+                control=EvaluateCore(
+                    function_value.lambda_expression.body
+                ),
+            ),
+            RuleId.CORE_CBNEED_ENTER_BODY,
+        )
+
+    if machine.strategy is not Strategy.CBV:
+        raise UnsupportedTransitionError(
+            "Unsupported evaluation strategy for application"
+        )
 
     # The function is ready. CBV evaluates its argument
     # in the original call-site environment.
@@ -1182,6 +1441,42 @@ def _resume_apply_function(
             control=EvaluateCore(frame.argument),
         ),
         RuleId.CORE_CBV_EVAL_ARGUMENT,
+    )
+
+def _resume_seq_first_argument(
+    machine: MachineState,
+    control: Return,
+    frame: SeqFirstArgumentFrame,
+) -> tuple[MachineState, RuleId]:
+    """Complete CBNeed seq without forcing its second argument."""
+
+    if machine.strategy is not Strategy.CBNEED:
+        raise InvalidMachineStateError(
+            "SeqFirstArgumentFrame requires Call-by-Need"
+        )
+
+    if not _reference_is_whnf(machine, control.reference):
+        raise InvalidMachineStateError(
+            "seq first argument did not reach WHNF"
+        )
+
+    # Only now construct the deferred second argument.
+    second_reference = allocate_thunk(
+        machine.heap,
+        frame.second_expression,
+        frame.return_environment,
+        machine.global_environment,
+    )
+
+    machine.stack.pop()
+
+    return (
+        replace(
+            machine,
+            local_environment=frame.return_environment,
+            control=Return(second_reference),
+        ),
+        RuleId.CORE_SEQ_SATURATE,
     )
 
 def _resume_apply_argument(
@@ -1518,15 +1813,87 @@ def _resume_local_value(
         RuleId.CORE_LETREC_STORE_VALUE,
     )
 
+def _resume_update_frame(
+    machine: MachineState,
+    control: Return,
+    frame: UpdateFrame,
+) -> tuple[MachineState, RuleId]:
+    """Demand a thunk RHS result before its memoizing update."""
+
+    if machine.strategy is not Strategy.CBNEED:
+        raise InvalidMachineStateError(
+            "UpdateFrame requires Call-by-Need"
+        )
+
+    anchor_value = machine.heap.get(
+        frame.thunk_reference
+    ).value
+
+    if not isinstance(anchor_value, EvaluatingThunk):
+        raise InvalidMachineStateError(
+            "UpdateFrame requires an evaluating thunk anchor"
+        )
+
+    reference = control.reference
+
+    # Stage 1: the RHS returned a reference, which may not
+    # yet denote a WHNF value.
+    if not frame.awaiting_whnf:
+        machine.stack.pop()
+        machine.stack.push(
+            replace(frame, awaiting_whnf=True)
+        )
+
+        return (
+            replace(
+                machine,
+                control=Force(reference),
+            ),
+            RuleId.CORE_THUNK_REQUIRE_WHNF,
+        )
+
+    # Stage 2: Force has returned. Its result must be WHNF.
+    if not _reference_is_whnf(machine, reference):
+        raise InvalidMachineStateError(
+            "Thunk demand resumed without WHNF"
+        )
+
+    # The RHS result has reached WHNF.
+    # Memoize it in the original stable thunk anchor.
+    if reference == frame.thunk_reference:
+        raise InvalidMachineStateError(
+            "Thunk cannot update to itself"
+        )
+
+    machine.heap.replace(
+        frame.thunk_reference,
+        Indirection(reference),
+    )
+
+    # The update is complete. Resume the suspended caller.
+    machine.stack.pop()
+
+    return (
+        replace(
+            machine,
+            local_environment=frame.return_environment,
+            control=Return(reference),
+        ),
+        RuleId.CORE_THUNK_UPDATE_WHNF,
+    )
+
 
 def _enter_local_letrec(
     machine: MachineState,
     expression: CoreLetRec,
 ) -> tuple[MachineState, RuleId]:
     """Reserve every local binding before evaluating any RHS."""
-    if machine.strategy is not Strategy.CBV:
+    if machine.strategy not in (
+        Strategy.CBV,
+        Strategy.CBNEED,
+    ):
         raise UnsupportedTransitionError(
-            "Non-strict local bindings are not implemented yet"
+            "Local recursive bindings are not implemented for this strategy"
         )
 
     bindings = expression.bindings

@@ -4,7 +4,7 @@
 
 Core is the intermediate representation intended to sit between the surface Abstract Syntax Tree (AST) and evaluation. It makes functions, applications, recursive bindings, and constructor inspection explicit.
 
-The current implementation provides immutable nodes, explicit structural validation, and Surface-to-Core desugaring. Separate Surface and Core name checkers verify lexical visibility; see [Name resolution](name-resolution.md). The B04 Core CBV evaluator executes the supported subset and provides canonical result observation; see the [Core evaluation contract](core-evaluation-contract.md). Non-strict evaluation and executable constructors/case remain deferred.
+The current implementation provides immutable nodes, explicit structural validation, and Surface-to-Core desugaring. Separate Surface and Core name checkers verify lexical visibility; see [Name resolution](name-resolution.md). The Core evaluator executes the supported CBV and CBNeed subsets and provides canonical result observation; see the [Core evaluation contract](core-evaluation-contract.md). CBNeed includes deferred evaluation, memoization, sharing and blackhole detection. CBN evaluation and executable constructors/case remain deferred.
 
 Core does not select an evaluation strategy. The same expression can be used by call-by-value (CBV), call-by-name (CBN), and call-by-need (CBNeed) evaluators.
 
@@ -195,7 +195,7 @@ Desugaring does not evaluate expressions, perform name resolution, eliminate unu
 - Validation does not perform type checking; `CoreApp(CoreInt(1), CoreInt(2))` is structurally valid.
 - Validation does not check pattern-match exhaustiveness or reachability.
 - Constructors are restricted to `Nil` and `Cons`.
-- Name checking is implemented separately in `lazy_lab.semantics`. Runtime evaluation supports the B04 CBV subset; CBN, CBNeed, constructors and case execution remain outside that subset.
+- Name checking is implemented separately in `lazy_lab.semantics`. Runtime evaluation supports the CBV and CBNeed subsets; CBN, constructors and case execution remain deferred.
 - Structural tests verify generated Core shapes; operational equivalence and the instrumentation cost of generated aliases still require evaluator tests.
 
 ## Surface-to-Core Desugaring
@@ -256,5 +256,5 @@ The desugaring stage:
 - Does not allocate runtime closures or thunks.
 - Does not implement CBV, CBN, or CBNeed.
 
-The B04 runtime tests cover the supported CBV behavior. Operational equivalence across evaluation strategies remains to be tested when the non-strict evaluators are implemented.
+The runtime tests cover the supported CBV and CBNeed behavior. The [B04 audit](audits/b04-audit.md) and [B05 audit](audits/b05-audit.md) record verification evidence and limitations, including matching canonical results for sampled terminating programs under both strategies. This bounded evidence does not establish general equivalence across strategies or identical operational traces and costs. CBN execution remains deferred.
 

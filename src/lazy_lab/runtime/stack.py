@@ -50,6 +50,41 @@ class GlobalDemandFrame(StackFrame):
 
 
 @dataclass(frozen=True, slots=True)
+class UpdateFrame(StackFrame):
+    """Track evaluation of a Call-by-Need thunk.
+
+    thunk_reference identifies the stable one-slot anchor
+    that must eventually receive the WHNF update.
+
+    return_environment is the caller's lexical environment,
+    restored after the update continuation completes.
+
+    awaiting_whnf distinguishes the initial RHS return
+    from a return following explicit WHNF demand.
+    """
+
+    thunk_reference: HeapReference
+    return_environment: Environment
+    awaiting_whnf: bool = False
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.thunk_reference, HeapReference):
+            raise TypeError(
+                "UpdateFrame requires a thunk HeapReference"
+            )
+
+        if not isinstance(self.return_environment, Environment):
+            raise TypeError(
+                "UpdateFrame requires a return Environment"
+            )
+
+        if type(self.awaiting_whnf) is not bool:
+            raise TypeError(
+                "awaiting_whnf must be a boolean"
+            )
+
+
+@dataclass(frozen=True, slots=True)
 class RestoreEnvironmentFrame(StackFrame):
     environment: Environment
 
@@ -73,6 +108,15 @@ class LocalValueInitializationFrame(StackFrame):
     continuation: InitializeLocalBindings
     environment: Environment
     awaiting_whnf: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class SeqFirstArgumentFrame(StackFrame):
+    """Resume CBNeed seq after its first argument reaches WHNF."""
+
+    first_argument_reference: RuntimeRef
+    second_expression: CoreExpr
+    return_environment: Environment
 
 
 class EmptyStackError(LookupError):

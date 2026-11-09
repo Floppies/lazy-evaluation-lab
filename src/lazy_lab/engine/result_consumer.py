@@ -5,8 +5,10 @@ from __future__ import annotations
 
 from dataclasses import replace
 
+from lazy_lab.runtime.constructors import ConstructorValue
 from lazy_lab.runtime.control import Return
 from lazy_lab.runtime.observation import observe_whnf
+from lazy_lab.runtime.references import HeapReference
 from lazy_lab.runtime.state import (
     ExecutionConfig,
     ExecutionPhase,
@@ -291,6 +293,17 @@ def consume_materialized_result(
     else:
         raise InvalidResultObservationError(
             "MATERIALIZE_COMPLETE_VALUE policy is required"
+        )
+
+    if (
+        isinstance(reference, HeapReference)
+        and isinstance(
+            machine.heap.get(reference).value,
+            ConstructorValue,
+        )
+    ):
+        raise InvalidResultObservationError(
+            "Complete constructor materialization is not implemented yet"
         )
 
     # The current runtime supports only atomic or opaque

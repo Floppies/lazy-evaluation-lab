@@ -978,3 +978,28 @@ def test_ask_single_step_batches_preserve_snapshots_and_terminal_state(selected_
         assert previous.machine_state.stack.frames == snapshot.machine_state.stack.frames
     assert waiting.machine_state.result_state.resolved_result_mode is None
     assert selected.machine_state.result_state.resolved_result_mode is selected_mode
+
+
+def test_constructor_is_not_considered_fully_materialized():
+    config = make_config(
+        policy=ResultPolicy.MATERIALIZE_COMPLETE_VALUE
+    )
+
+    initial = create_initial_core_state(
+        compile_source("main = []"),
+        config,
+        session_id="constructor-materialization-boundary",
+    )
+
+    result = run_batch(initial, config, max_steps=100)
+
+    assert result.stop_reason is BatchStopReason.WHNF_PENDING
+
+    with pytest.raises(
+        InvalidResultObservationError,
+        match="Complete constructor materialization",
+    ):
+        consume_materialized_result(result.state, config)
+
+    assert result.state.canonical_result is None
+    assert result.state.machine_state.status is ExecutionStatus.RUNNING

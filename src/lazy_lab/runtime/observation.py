@@ -20,6 +20,7 @@ from .references import (
     HeapReference,
 )
 from .thunks import PendingThunk, EvaluatingThunk
+from .constructors import ConstructorValue
 
 
 @dataclass(frozen=True, slots=True)
@@ -37,10 +38,19 @@ class OpaqueFunction:
     """A function value without exposed runtime identity."""
 
 
+@dataclass(frozen=True, slots=True)
+class ConstructorWHNF:
+    """Canonical observation of a constructor in WHNF."""
+
+    tag: str
+    arity: int
+
+
 CanonicalValue: TypeAlias = (
     CanonicalInteger
     | CanonicalBoolean
     | OpaqueFunction
+    | ConstructorWHNF
 )
 
 
@@ -80,6 +90,12 @@ def observe_whnf(
         ),
     ):
         return OpaqueFunction()
+
+    if isinstance(value, ConstructorValue):
+        return ConstructorWHNF(
+            tag=value.tag,
+            arity=len(value.fields),
+        )
 
     if isinstance(
         value,

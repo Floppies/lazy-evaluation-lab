@@ -13,6 +13,7 @@ from lazy_lab.core.nodes import (
 )
 from lazy_lab.pipeline import compile_source
 from lazy_lab.engine.core_machine import (
+    PatternMatchError,
     create_initial_core_state,
     run_batch,
     step,
@@ -440,3 +441,102 @@ def test_case_constructor_demand_differs_between_strategies():
     )
 
     assert cbv_result.stop_reason is BatchStopReason.EVALUATOR_BUDGET
+
+
+@pytest.mark.parametrize(
+    "strategy",
+    [Strategy.CBV, Strategy.CBNEED],
+)
+@pytest.mark.parametrize(
+    "source",
+    [
+        (
+            "onlyNil [] = 0\n"
+            "main = onlyNil [7]"
+        ),
+        (
+            "onlyCons (h:t) = 1\n"
+            "main = onlyCons []"
+        ),
+        (
+            "onlyNil [] = 0\n"
+            "main = onlyNil True"
+        ),
+    ],
+)
+def test_non_exhaustive_patterns_raise_explicit_error(
+    strategy,
+    source,
+):
+    config = replace(
+        make_config(strategy=strategy),
+        execution_step_limit=200,
+    )
+
+    initial = create_initial_core_state(
+        compile_source(source),
+        config,
+        session_id="non-exhaustive-case",
+    )
+
+    with pytest.raises(
+        PatternMatchError,
+        match="Non-exhaustive CoreCase",
+    ):
+        run_batch(initial, config, max_steps=200)
+
+
+@pytest.mark.parametrize(
+    "strategy",
+    [Strategy.CBV, Strategy.CBNEED],
+)
+@pytest.mark.parametrize(
+    "source, expected",
+    [
+        (
+            "inner [] = 10\n"
+            "inner (h:t) = h\n"
+            "outer [] = 0\n"
+            "outer (h:t) = inner t\n"
+            "main = outer [1, 2]",
+            2,
+        ),
+        (
+            "choose [] = \\ignored -> 0\n"
+            "choose (h:t) = \\ignored -> h\n"
+            "main = (choose [(1 + 2)]) 0",
+            3,
+        ),
+    ],
+)
+def test_case_nested_scopes_and_escaping_closures(
+    strategy,
+    source,
+    expected,
+):
+    config = replace(
+        make_config(strategy=strategy),
+        execution_step_limit=400,
+    )
+
+    initial = create_initial_core_state(
+        compile_source(source),
+        config,
+        session_id="case-scope-regression",
+    )
+
+    result = run_batch(
+        initial,
+        config,
+        max_steps=400,
+    )
+
+    assert result.stop_reason is BatchStopReason.WHNF_PENDING
+
+    machine = result.state.machine_state
+
+    assert machine.control == Return(
+        ImmediateInteger(expected)
+    )
+
+    assert machine.stack.depth == 0

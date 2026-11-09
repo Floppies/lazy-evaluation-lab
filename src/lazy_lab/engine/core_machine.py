@@ -1102,12 +1102,20 @@ def _advance_return(
                 frame,
             )
 
+        # 10. Constructor evaluation
+        if isinstance(frame, ConstructorFieldsFrame):
+            return _resume_constructor_field(
+                machine,
+                control,
+                frame,
+            )
+
         raise UnsupportedTransitionError(
             "Unsupported return continuation: "
             f"{type(frame).__name__}"
         )
 
-    # 10. No continuation remains: handle the root result.
+    # 11. No continuation remains: handle the root result.
     # A root reference to a pending object still requires WHNF.
     if isinstance(reference, HeapReference):
         value = machine.heap.get(reference).value
@@ -1949,6 +1957,85 @@ def _resume_update_frame(
         RuleId.CORE_THUNK_UPDATE_WHNF,
     )
 
+def _resume_constructor_field(
+    machine: MachineState,
+    control: Return,
+    frame: ConstructorFieldsFrame,
+) -> tuple[MachineState, RuleId]:
+    """Resume left-to-right strict constructor field evaluation."""
+
+    if machine.strategy is not Strategy.CBV:
+        raise InvalidMachineStateError(
+            "ConstructorFieldsFrame requires Call-by-Value"
+        )
+
+    reference = control.reference
+
+    # Stage 1: the field returned a reference.
+    # Explicitly demand its WHNF.
+    if not frame.awaiting_whnf:
+        machine.stack.pop()
+        machine.stack.push(
+            replace(frame, awaiting_whnf=True)
+        )
+
+        return (
+            replace(
+                machine,
+                control=Force(reference),
+            ),
+            RuleId.CORE_CBV_REQUIRE_CONSTRUCTOR_FIELD_WHNF,
+        )
+
+    # Stage 2: Force returned.
+    if not _reference_is_whnf(machine, reference):
+        raise InvalidMachineStateError(
+            "Constructor field returned without WHNF"
+        )
+
+    evaluated_fields = (
+        frame.evaluated_fields + (reference,)
+    )
+
+    machine.stack.pop()
+
+    # Stage 3: evaluate the next field, if any.
+    if frame.remaining_fields:
+        next_field = frame.remaining_fields[0]
+
+        machine.stack.push(
+            replace(
+                frame,
+                remaining_fields=frame.remaining_fields[1:],
+                evaluated_fields=evaluated_fields,
+                awaiting_whnf=False,
+            )
+        )
+
+        return (
+            replace(
+                machine,
+                local_environment=frame.environment,
+                control=EvaluateCore(next_field),
+            ),
+            RuleId.CORE_CBV_EVAL_NEXT_CONSTRUCTOR_FIELD,
+        )
+
+    # Stage 4: every field is in WHNF.
+    constructor_reference = allocate_constructor(
+        machine.heap,
+        frame.constructor,
+        evaluated_fields,
+    )
+
+    return (
+        replace(
+            machine,
+            local_environment=frame.environment,
+            control=Return(constructor_reference),
+        ),
+        RuleId.CORE_CBV_ALLOCATE_CONSTRUCTOR,
+    )
 
 def _enter_local_letrec(
     machine: MachineState,

@@ -1,7 +1,7 @@
 import pytest
 
 from lazy_lab.runtime.constructors import ConstructorValue, allocate_constructor
-from lazy_lab.runtime.heap import Heap
+from lazy_lab.runtime.heap import Heap, InvalidHeapAddressError
 from lazy_lab.runtime.references import (
     ImmediateInteger,
     HeapReference,
@@ -78,3 +78,56 @@ def test_invalid_constructor_does_not_allocate():
     assert heap.current_slots == 0
     assert heap.next_object_id == 0
     assert len(heap.cells) == 0
+
+
+def test_constructors_preserve_shared_references():
+    heap = Heap()
+
+    shared_tail = allocate_constructor(heap, "Nil", ())
+
+    first = allocate_constructor(
+        heap,
+        "Cons",
+        (ImmediateInteger(1), shared_tail),
+    )
+
+    second = allocate_constructor(
+        heap,
+        "Cons",
+        (ImmediateInteger(2), shared_tail),
+    )
+
+    first_value = heap.get(first).value
+    second_value = heap.get(second).value
+
+    assert first_value.fields[1] == shared_tail
+    assert second_value.fields[1] == shared_tail
+
+    # One Nil and two Cons objects.
+    assert len(heap.cells) == 3
+    assert heap.current_slots == 7
+
+
+def test_constructor_allocation_preserves_heap_snapshot():
+    heap = Heap()
+
+    nil_ref = allocate_constructor(heap, "Nil", ())
+
+    snapshot = heap.clone()
+
+    cons_ref = allocate_constructor(
+        heap,
+        "Cons",
+        (ImmediateInteger(1), nil_ref),
+    )
+
+    assert snapshot.current_slots == 1
+    assert snapshot.next_object_id == 1
+
+    assert heap.current_slots == 4
+    assert heap.next_object_id == 2
+
+    assert snapshot.get(nil_ref).value is heap.get(nil_ref).value
+
+    with pytest.raises(InvalidHeapAddressError):
+        snapshot.get(cons_ref)

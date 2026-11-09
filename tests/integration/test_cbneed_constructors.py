@@ -231,3 +231,32 @@ def test_constructor_field_shares_global_result():
 
     shared_cons = updated_heap.get(tail_value.target).value
     assert isinstance(shared_cons, ConstructorValue)
+
+
+def test_cbneed_nil_reaches_whnf_without_fields():
+    config = make_cbneed_config()
+
+    initial = create_initial_core_state(
+        compile_source("main = []"),
+        config,
+        session_id="cbneed-nil",
+    )
+
+    result = run_batch(
+        initial,
+        config,
+        max_steps=100,
+    )
+
+    assert result.stop_reason is BatchStopReason.WHNF_PENDING
+
+    machine = result.state.machine_state
+    constructor_ref = machine.control.reference
+
+    constructor_cell = machine.heap.get(constructor_ref)
+    constructor = constructor_cell.value
+
+    assert isinstance(constructor, ConstructorValue)
+    assert constructor.tag == "Nil"
+    assert constructor.fields == ()
+    assert constructor_cell.allocated_slots == 1

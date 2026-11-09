@@ -75,6 +75,19 @@ The descriptions follow the **Gantt B** plan and its milestone acceptance criter
 | B05.9 | Observation, Batching and Tracing | Completed |
 | B05.10 | Integration and Regression Tests | Completed |
 | B05.11 | Final Audit | Completed |
+| B06 | Lists, Pattern Matching, and Recursion | In Progress |
+| B06.1 | Constructor and Pattern-Matching Contract | Completed |
+| B06.2 | Runtime Constructor Representation | Completed |
+| B06.3 | CBNeed Constructor Evaluation | Completed |
+| B06.4 | CBV Constructor Evaluation | In Progress |
+| B06.5 | CoreCase Evaluation and Matching | Pending |
+| B06.6 | Pattern-Matching Errors and Edge Cases | Pending |
+| B06.7 | Constructor WHNF Observation | Pending |
+| B06.8 | Complete List Materialization | Pending |
+| B06.9 | Recursive List Operations | Pending |
+| B06.10 | Folds and Strictness | Pending |
+| B06.11 | Infinite Lists and Bounded Evaluation | Pending |
+| B06.12 | Integration, Regressions and Audit | Pending |
 
 ### Important notes
 

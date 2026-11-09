@@ -44,6 +44,7 @@ from lazy_lab.runtime.heap import (
     Indirection,
 )
 from lazy_lab.runtime.stack import (
+    ConstructorFieldsFrame,
     Stack,
     ApplyFunctionFrame,
     ApplyArgumentFrame,
@@ -244,30 +245,56 @@ def _dispatch_core_evaluation(
         )
 
     elif isinstance(expression, CoreCon):
-        if machine.strategy is not Strategy.CBNEED:
-            raise UnsupportedTransitionError(
-                "Constructor evaluation currently requires Call-by-Need"
+        if machine.strategy is Strategy.CBNEED:
+            field_references = tuple(
+                allocate_thunk(
+                    machine.heap,
+                    field,
+                    machine.local_environment,
+                    machine.global_environment,
+                )
+                for field in expression.fields
             )
 
-        field_references = tuple(
-            allocate_thunk(
+            constructor_reference = allocate_constructor(
                 machine.heap,
-                field,
-                machine.local_environment,
-                machine.global_environment,
+                expression.constructor,
+                field_references,
             )
-            for field in expression.fields
-        )
 
-        constructor_reference = allocate_constructor(
-            machine.heap,
-            expression.constructor,
-            field_references,
-        )
+            next_control = Return(constructor_reference)
+            rule_id = RuleId.CORE_CBNEED_EVAL_CONSTRUCTOR
 
-        next_control = Return(constructor_reference)
-        rule_id = RuleId.CORE_CBNEED_EVAL_CONSTRUCTOR
-    
+        elif machine.strategy is Strategy.CBV:
+            if not expression.fields:
+                # Nil has no fields to evaluate.
+                reference = allocate_constructor(
+                    machine.heap,
+                    expression.constructor,
+                    (),
+                )
+
+                next_control = Return(reference)
+                rule_id = RuleId.CORE_CBV_ALLOCATE_CONSTRUCTOR
+
+            else:
+                # Start evaluating the first field.
+                machine.stack.push(
+                    ConstructorFieldsFrame(
+                        constructor=expression.constructor,
+                        remaining_fields=expression.fields[1:],
+                        evaluated_fields=(),
+                        environment=machine.local_environment,
+                    )
+                )
+
+                next_control = EvaluateCore(expression.fields[0])
+                rule_id = RuleId.CORE_CBV_EVAL_CONSTRUCTOR_START
+
+        else:
+            raise UnsupportedTransitionError(
+                "Unsupported constructor evaluation strategy"
+            )
     else:
         raise UnsupportedTransitionError(
             f"Unsupported Core expression: "
@@ -278,7 +305,6 @@ def _dispatch_core_evaluation(
         replace(machine, control=next_control),
         rule_id,
     )
-
 
 def step(
     state: ExecutionState,

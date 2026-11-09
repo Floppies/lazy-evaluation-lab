@@ -118,6 +118,16 @@ class SeqFirstArgumentFrame(StackFrame):
     second_expression: CoreExpr
     return_environment: Environment
 
+@dataclass(frozen=True, slots=True)
+class ConstructorFieldsFrame(StackFrame):
+    """Track left-to-right strict constructor field evaluation."""
+
+    constructor: str
+    remaining_fields: tuple[CoreExpr, ...]
+    evaluated_fields: tuple[RuntimeRef, ...]
+    environment: Environment
+    awaiting_whnf: bool = False
+
 
 class EmptyStackError(LookupError):
     """Raised when accessing an empty stack."""

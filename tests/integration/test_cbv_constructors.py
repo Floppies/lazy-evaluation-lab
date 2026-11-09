@@ -1,3 +1,5 @@
+from dataclasses import replace
+
 from lazy_lab.pipeline import compile_source
 from lazy_lab.engine.core_machine import (
     create_initial_core_state,
@@ -137,3 +139,97 @@ def test_cbv_constructor_evaluates_head_expression():
 
     assert isinstance(constructor, ConstructorValue)
     assert constructor.fields[0] == ImmediateInteger(3)
+
+
+def test_cbv_nested_lists_are_evaluated():
+    config = replace(
+        make_config(strategy=Strategy.CBV),
+        execution_step_limit=300,
+    )
+
+    initial = create_initial_core_state(
+        compile_source("main = [[1], [2]]"),
+        config,
+        session_id="cbv-nested-lists",
+    )
+
+    result = run_batch(initial, config, max_steps=300)
+
+    assert result.stop_reason is BatchStopReason.WHNF_PENDING
+
+    machine = result.state.machine_state
+    heap = machine.heap
+
+    outer = heap.get(machine.control.reference).value
+    assert isinstance(outer, ConstructorValue)
+    assert outer.tag == "Cons"
+
+    first_inner = heap.get(outer.fields[0]).value
+    outer_tail = heap.get(outer.fields[1]).value
+
+    assert isinstance(first_inner, ConstructorValue)
+    assert first_inner.tag == "Cons"
+    assert first_inner.fields[0] == ImmediateInteger(1)
+
+    assert isinstance(outer_tail, ConstructorValue)
+    assert outer_tail.tag == "Cons"
+
+    second_inner = heap.get(outer_tail.fields[0]).value
+
+    assert isinstance(second_inner, ConstructorValue)
+    assert second_inner.tag == "Cons"
+    assert second_inner.fields[0] == ImmediateInteger(2)
+
+    outer_end = heap.get(outer_tail.fields[1]).value
+
+    assert isinstance(outer_end, ConstructorValue)
+    assert outer_end.tag == "Nil"
+
+
+def test_cbv_constructor_evaluates_head_before_tail():
+    config = make_config(strategy=Strategy.CBV)
+
+    initial = create_initial_core_state(
+        compile_source("main = (1 + 2) : (4 : [])"),
+        config,
+        session_id="cbv-constructor-order",
+    )
+
+    result = run_batch(initial, config, max_steps=100)
+
+    assert result.stop_reason is BatchStopReason.WHNF_PENDING
+
+    rules = [entry.rule_id for entry in result.trace]
+
+    # The head computation completes before any constructor
+    # from the tail is allocated.
+    assert (
+        rules.index(RuleId.CORE_PRIM_EXECUTE)
+        < rules.index(RuleId.CORE_CBV_ALLOCATE_CONSTRUCTOR)
+    )
+
+
+def test_cbv_constructor_requires_tail_whnf():
+    config = replace(
+        make_config(strategy=Strategy.CBV),
+        execution_step_limit=80,
+    )
+
+    initial = create_initial_core_state(
+        compile_source(
+            "loop = loop\n"
+            "main = 1 : loop"
+        ),
+        config,
+        session_id="cbv-strict-tail",
+    )
+
+    result = run_batch(initial, config, max_steps=80)
+
+    assert result.stop_reason is BatchStopReason.EVALUATOR_BUDGET
+
+    rules = [entry.rule_id for entry in result.trace]
+
+    # The outer Cons cannot be allocated until the tail
+    # reaches WHNF.
+    assert RuleId.CORE_CBV_ALLOCATE_CONSTRUCTOR not in rules

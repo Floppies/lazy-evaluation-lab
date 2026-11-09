@@ -6,6 +6,7 @@ from dataclasses import replace
 
 from lazy_lab.core.nodes import (
     CoreBool,
+    CoreCase,
     CoreCon,
     CoreInt,
     CoreExpr,
@@ -45,6 +46,7 @@ from lazy_lab.runtime.heap import (
 )
 from lazy_lab.runtime.stack import (
     ConstructorFieldsFrame,
+    CoreCaseFrame,
     Stack,
     ApplyFunctionFrame,
     ApplyArgumentFrame,
@@ -243,6 +245,17 @@ def _dispatch_core_evaluation(
             machine,
             expression,
         )
+
+    elif isinstance(expression, CoreCase):
+        machine.stack.push(
+            CoreCaseFrame(
+                alternatives=expression.alternatives,
+                environment=machine.local_environment,
+            )
+        )
+
+        next_control = EvaluateCore(expression.scrutinee)
+        rule_id = RuleId.CORE_EVAL_CASE_SCRUTINEE
 
     elif isinstance(expression, CoreCon):
         if machine.strategy is Strategy.CBNEED:

@@ -79,8 +79,8 @@ The descriptions follow the **Gantt B** plan and its milestone acceptance criter
 | B06.1 | Constructor and Pattern-Matching Contract | Completed |
 | B06.2 | Runtime Constructor Representation | Completed |
 | B06.3 | CBNeed Constructor Evaluation | Completed |
-| B06.4 | CBV Constructor Evaluation | In Progress |
-| B06.5 | CoreCase Evaluation and Matching | Pending |
+| B06.4 | CBV Constructor Evaluation | Completed |
+| B06.5 | CoreCase Evaluation and Matching | In Progress |
 | B06.6 | Pattern-Matching Errors and Edge Cases | Pending |
 | B06.7 | Constructor WHNF Observation | Pending |
 | B06.8 | Complete List Materialization | Pending |

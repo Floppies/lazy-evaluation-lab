@@ -5,7 +5,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from lazy_lab.core.nodes import CoreExpr
+from lazy_lab.core.nodes import CoreAlt, CoreExpr
 
 from .environment import Environment
 from .references import RuntimeRef, HeapReference
@@ -118,6 +118,7 @@ class SeqFirstArgumentFrame(StackFrame):
     second_expression: CoreExpr
     return_environment: Environment
 
+
 @dataclass(frozen=True, slots=True)
 class ConstructorFieldsFrame(StackFrame):
     """Track left-to-right strict constructor field evaluation."""
@@ -127,6 +128,16 @@ class ConstructorFieldsFrame(StackFrame):
     evaluated_fields: tuple[RuntimeRef, ...]
     environment: Environment
     awaiting_whnf: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class CoreCaseFrame(StackFrame):
+    """Track Core case evaluation and ordered alternatives."""
+
+    alternatives: tuple[CoreAlt, ...]
+    environment: Environment
+    awaiting_whnf: bool = False
+    scrutinee_reference: RuntimeRef | None = None
 
 
 class EmptyStackError(LookupError):

@@ -8,6 +8,8 @@ from lazy_lab.core.nodes import (
     CoreBool,
     CoreCase,
     CoreCon,
+    CoreConAlt,
+    CoreDefaultAlt,
     CoreInt,
     CoreExpr,
     CoreProgram,
@@ -105,6 +107,10 @@ class UninitializedLocalBindingError(InvalidMachineStateError):
 
 class EvaluatorBudgetExhaustedError(RuntimeError):
     """No evaluator transitions remain in the execution budget."""
+
+
+class PatternMatchError(RuntimeError):
+    """No CoreCase alternative matches the scrutinee WHNF."""
 
 
 def _validate_configuration(
@@ -1123,12 +1129,20 @@ def _advance_return(
                 frame,
             )
 
+        #11 . Core case evaluation
+        if isinstance(frame, CoreCaseFrame):
+            return _resume_core_case(
+                machine,
+                control,
+                frame,
+            )
+
         raise UnsupportedTransitionError(
             "Unsupported return continuation: "
             f"{type(frame).__name__}"
         )
 
-    # 11. No continuation remains: handle the root result.
+    # 12. No continuation remains: handle the root result.
     # A root reference to a pending object still requires WHNF.
     if isinstance(reference, HeapReference):
         value = machine.heap.get(reference).value
@@ -2048,6 +2062,105 @@ def _resume_constructor_field(
             control=Return(constructor_reference),
         ),
         RuleId.CORE_CBV_ALLOCATE_CONSTRUCTOR,
+    )
+
+def _resume_core_case(
+    machine: MachineState,
+    control: Return,
+    frame: CoreCaseFrame,
+) -> tuple[MachineState, RuleId]:
+    """Demand the case scrutinee before matching alternatives."""
+
+    reference = control.reference
+
+    # Stage 1: preserve the original reference and demand WHNF.
+    if not frame.awaiting_whnf:
+        machine.stack.pop()
+
+        machine.stack.push(
+            replace(
+                frame,
+                awaiting_whnf=True,
+                scrutinee_reference=reference,
+            )
+        )
+
+        return (
+            replace(
+                machine,
+                control=Force(reference),
+            ),
+            RuleId.CORE_CASE_REQUIRE_SCRUTINEE_WHNF,
+        )
+
+    # Stage 2: the demand must have completed.
+    if frame.scrutinee_reference is None:
+        raise InvalidMachineStateError(
+            "CoreCase lost its original scrutinee reference"
+        )
+
+    if not _reference_is_whnf(machine, reference):
+        raise InvalidMachineStateError(
+            "CoreCase scrutinee returned without WHNF"
+        )
+
+    # The selected alternative will be executed in B06.5.4.
+    if frame.selected_alternative is not None:
+        raise UnsupportedTransitionError(
+            "CoreCase selected alternative execution is not implemented yet"
+        )
+
+    # Inspect only the outer constructor, if present.
+    constructor = None
+
+    if isinstance(reference, HeapReference):
+        value = machine.heap.get(reference).value
+
+        if isinstance(value, ConstructorValue):
+            constructor = value
+
+    selected = None
+    selection_rule = None
+
+    for alternative in frame.alternatives:
+        if isinstance(alternative, CoreConAlt):
+            if (
+                constructor is not None
+                and constructor.tag == alternative.constructor
+            ):
+                selected = alternative
+                selection_rule = RuleId.CORE_CASE_SELECT_CONSTRUCTOR
+                break
+
+        elif isinstance(alternative, CoreDefaultAlt):
+            selected = alternative
+            selection_rule = RuleId.CORE_CASE_SELECT_DEFAULT
+            break
+
+        else:
+            raise InvalidMachineStateError(
+                "Unsupported CoreCase alternative"
+            )
+
+    if selected is None:
+        raise PatternMatchError(
+            "Non-exhaustive CoreCase: no alternative matches"
+        )
+
+    machine.stack.pop()
+    machine.stack.push(
+        replace(
+            frame,
+            selected_alternative=selected,
+        )
+    )
+
+    return (
+        replace(
+            machine,
+            control=Return(reference),
+        ),
+        selection_rule,
     )
 
 def _enter_local_letrec(

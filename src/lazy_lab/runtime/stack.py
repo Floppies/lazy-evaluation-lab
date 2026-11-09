@@ -138,6 +138,7 @@ class CoreCaseFrame(StackFrame):
     environment: Environment
     awaiting_whnf: bool = False
     scrutinee_reference: RuntimeRef | None = None
+    selected_alternative: CoreAlt | None = None
 
 
 class EmptyStackError(LookupError):

@@ -1,3 +1,5 @@
+from dataclasses import replace
+
 import pytest
 
 from lazy_lab.core.nodes import (
@@ -339,3 +341,102 @@ def test_default_preserve_original_refence(strategy):
     final_machine = result.state.machine_state
     assert final_machine.local_environment is original_environment
     assert final_machine.stack.depth == 0
+
+
+@pytest.mark.parametrize(
+    "strategy",
+    [Strategy.CBV, Strategy.CBNEED],
+)
+@pytest.mark.parametrize(
+    "argument, expected",
+    [
+        ("[]", 0),
+        ("((1 + 2) : [])", 3),
+        ("True", 99),
+    ],
+)
+def test_surface_pattern_matching_end_to_end(
+    strategy,
+    argument,
+    expected,
+):
+    source = (
+        "choose [] = 0\n"
+        "choose (h:t) = h\n"
+        "choose other = 99\n"
+        f"main = choose {argument}"
+    )
+
+    config = replace(
+        make_config(strategy=strategy),
+        execution_step_limit=300,
+    )
+
+    initial = create_initial_core_state(
+        compile_source(source),
+        config,
+        session_id="case-end-to-end",
+    )
+
+    result = run_batch(initial, config, max_steps=300)
+
+    assert result.stop_reason is BatchStopReason.WHNF_PENDING
+
+    machine = result.state.machine_state
+
+    assert machine.control == Return(
+        ImmediateInteger(expected)
+    )
+    assert machine.stack.depth == 0
+
+
+def test_case_constructor_demand_differs_between_strategies():
+    source = (
+        "loop = loop\n"
+        "isCons [] = 0\n"
+        "isCons (h:t) = 1\n"
+        "main = isCons (42 : loop)"
+    )
+
+    program = compile_source(source)
+
+    need_config = replace(
+        make_config(strategy=Strategy.CBNEED),
+        execution_step_limit=100,
+    )
+
+    need_initial = create_initial_core_state(
+        program,
+        need_config,
+        session_id="case-lazy-demand",
+    )
+
+    need_result = run_batch(
+        need_initial,
+        need_config,
+        max_steps=100,
+    )
+
+    assert need_result.stop_reason is BatchStopReason.WHNF_PENDING
+    assert need_result.state.machine_state.control == Return(
+        ImmediateInteger(1)
+    )
+
+    cbv_config = replace(
+        make_config(strategy=Strategy.CBV),
+        execution_step_limit=100,
+    )
+
+    cbv_initial = create_initial_core_state(
+        program,
+        cbv_config,
+        session_id="case-strict-demand",
+    )
+
+    cbv_result = run_batch(
+        cbv_initial,
+        cbv_config,
+        max_steps=100,
+    )
+
+    assert cbv_result.stop_reason is BatchStopReason.EVALUATOR_BUDGET

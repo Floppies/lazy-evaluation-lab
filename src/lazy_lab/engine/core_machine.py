@@ -6,6 +6,7 @@ from dataclasses import replace
 
 from lazy_lab.core.nodes import (
     CoreBool,
+    CoreCon,
     CoreInt,
     CoreExpr,
     CoreProgram,
@@ -17,6 +18,7 @@ from lazy_lab.core.nodes import (
     CoreIf,
     CoreLetRec,
 )
+from lazy_lab.runtime.constructors import allocate_constructor
 from lazy_lab.semantics.predefined import PREDEFINED_IDENTIFIERS
 from lazy_lab.runtime.predefined import (
     PredefinedFunction,
@@ -240,6 +242,31 @@ def _dispatch_core_evaluation(
             machine,
             expression,
         )
+
+    elif isinstance(expression, CoreCon):
+        if machine.strategy is not Strategy.CBNEED:
+            raise UnsupportedTransitionError(
+                "Constructor evaluation currently requires Call-by-Need"
+            )
+
+        field_references = tuple(
+            allocate_thunk(
+                machine.heap,
+                field,
+                machine.local_environment,
+                machine.global_environment,
+            )
+            for field in expression.fields
+        )
+
+        constructor_reference = allocate_constructor(
+            machine.heap,
+            expression.constructor,
+            field_references,
+        )
+
+        next_control = Return(constructor_reference)
+        rule_id = RuleId.CORE_CBNEED_EVAL_CONSTRUCTOR
     
     else:
         raise UnsupportedTransitionError(

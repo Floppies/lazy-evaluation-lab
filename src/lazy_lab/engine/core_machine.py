@@ -18,7 +18,7 @@ from lazy_lab.core.nodes import (
     CoreIf,
     CoreLetRec,
 )
-from lazy_lab.runtime.constructors import allocate_constructor
+from lazy_lab.runtime.constructors import ConstructorValue, allocate_constructor
 from lazy_lab.semantics.predefined import PREDEFINED_IDENTIFIERS
 from lazy_lab.runtime.predefined import (
     PredefinedFunction,
@@ -778,7 +778,12 @@ def _reference_is_whnf(
 
     return isinstance(
         value,
-        (Closure, PredefinedFunction, PartialPredefinedFunction),
+        (
+            Closure,
+            PredefinedFunction,
+            PartialPredefinedFunction,
+            ConstructorValue,
+        ),
     )
 
 def _advance_force(
@@ -819,6 +824,15 @@ def _advance_force(
         return (
             replace(machine, control=Return(reference)),
             RuleId.CORE_FORCE_FUNCTION_WHNF,
+        )
+
+    if isinstance(value, ConstructorValue):
+        return (
+            replace(
+                machine,
+                control=Return(reference),
+            ),
+            RuleId.CORE_FORCE_CONSTRUCTOR_WHNF,
         )
 
     if isinstance(value, PendingThunk):

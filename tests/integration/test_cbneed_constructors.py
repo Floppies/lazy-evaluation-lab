@@ -1,13 +1,14 @@
 from lazy_lab.pipeline import compile_source
 from lazy_lab.engine.core_machine import (
     create_initial_core_state,
+    run_batch,
     step,
 )
 from lazy_lab.runtime.constructors import ConstructorValue
 from lazy_lab.runtime.control import Return
 from lazy_lab.runtime.references import HeapReference
 from lazy_lab.runtime.thunks import PendingThunk
-from lazy_lab.runtime.transitions import RuleId
+from lazy_lab.runtime.transitions import BatchStopReason, RuleId
 
 from tests.integration.test_cbneed_application import (
     make_cbneed_config,
@@ -55,3 +56,46 @@ def test_cbneed_constructor_allocates_deferred_fields():
             machine.heap.get(field_ref).value,
             PendingThunk,
         )
+
+
+def test_cbneed_constructor_reaches_whnf_without_forcing_fields():
+    config = make_cbneed_config()
+
+    program = compile_source(
+        "loop = loop\n"
+        "main = 1 : loop"
+    )
+
+    initial = create_initial_core_state(
+        program,
+        config,
+        session_id="constructor-whnf",
+    )
+
+    result = run_batch(
+        initial,
+        config,
+        max_steps=150,
+    )
+
+    assert result.stop_reason is BatchStopReason.WHNF_PENDING
+
+    machine = result.state.machine_state
+    assert isinstance(machine.control, Return)
+
+    constructor_ref = machine.control.reference
+    constructor = machine.heap.get(constructor_ref).value
+
+    assert isinstance(constructor, ConstructorValue)
+    assert constructor.tag == "Cons"
+
+    for field_ref in constructor.fields:
+        assert isinstance(
+            machine.heap.get(field_ref).value,
+            PendingThunk,
+        )
+
+    rule_ids = tuple(entry.rule_id for entry in result.trace)
+
+    assert RuleId.CORE_FORCE_CONSTRUCTOR_WHNF in rule_ids
+    assert RuleId.CORE_THUNK_UPDATE_WHNF in rule_ids

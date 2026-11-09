@@ -2104,10 +2104,62 @@ def _resume_core_case(
             "CoreCase scrutinee returned without WHNF"
         )
 
-    # The selected alternative will be executed in B06.5.4.
     if frame.selected_alternative is not None:
-        raise UnsupportedTransitionError(
-            "CoreCase selected alternative execution is not implemented yet"
+        alternative = frame.selected_alternative
+
+        if isinstance(alternative, CoreConAlt):
+            if not isinstance(reference, HeapReference):
+                raise InvalidMachineStateError(
+                    "Constructor alternative requires a heap reference"
+                )
+
+            value = machine.heap.get(reference).value
+
+            if (
+                not isinstance(value, ConstructorValue)
+                or value.tag != alternative.constructor
+                or len(value.fields) != len(alternative.binders)
+            ):
+                raise InvalidMachineStateError(
+                    "Selected constructor alternative is inconsistent"
+                )
+
+            bindings = dict(
+                zip(alternative.binders, value.fields)
+            )
+            rule_id = RuleId.CORE_CASE_ENTER_CONSTRUCTOR_BODY
+
+        elif isinstance(alternative, CoreDefaultAlt):
+            original_reference = frame.scrutinee_reference
+
+            if original_reference is None:
+                raise InvalidMachineStateError(
+                    "CoreCase lost its original scrutinee reference"
+                )
+
+            bindings = {
+                alternative.binder: original_reference
+            }
+            rule_id = RuleId.CORE_CASE_ENTER_DEFAULT_BODY
+
+        else:
+            raise InvalidMachineStateError(
+                "Unsupported selected CoreCase alternative"
+            )
+
+        machine.stack.pop()
+
+        machine.stack.push(
+            RestoreEnvironmentFrame(frame.environment)
+        )
+
+        return (
+            replace(
+                machine,
+                local_environment=frame.environment.extend(bindings),
+                control=EvaluateCore(alternative.body),
+            ),
+            rule_id,
         )
 
     # Inspect only the outer constructor, if present.

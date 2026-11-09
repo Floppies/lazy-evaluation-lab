@@ -6,18 +6,22 @@ from lazy_lab.core.nodes import (
     CoreConAlt,
     CoreDefaultAlt,
     CoreInt,
+    CorePrimOp,
     CoreVar,
 )
 from lazy_lab.pipeline import compile_source
 from lazy_lab.engine.core_machine import (
     create_initial_core_state,
+    run_batch,
     step,
 )
 from lazy_lab.runtime.constructors import ConstructorValue
 from lazy_lab.runtime.control import EvaluateCore, Force, Return
-from lazy_lab.runtime.stack import CoreCaseFrame
+from lazy_lab.runtime.references import ImmediateInteger
+from lazy_lab.runtime.stack import CoreCaseFrame, RestoreEnvironmentFrame
 from lazy_lab.runtime.state import Strategy
-from lazy_lab.runtime.transitions import RuleId
+from lazy_lab.runtime.thunks import PendingThunk
+from lazy_lab.runtime.transitions import BatchStopReason, RuleId
 
 from tests.integration.test_core_runtime import make_config
 
@@ -221,3 +225,117 @@ def test_case_default_precedes_constructor(strategy):
 
     assert isinstance(frame, CoreCaseFrame)
     assert frame.selected_alternative is case.alternatives[0]
+
+
+def test_cons_binders_preserve_reference():
+    config = make_config(strategy=Strategy.CBNEED)
+
+    case = CoreCase(
+        scrutinee=CoreCon("Cons", (CoreVar("loop"), CoreVar("loop"))),
+        alternatives=(
+            CoreConAlt("Cons", ("h", "t"), CoreInt(99)),
+        ),
+    )
+
+    current = create_initial_core_state(
+        compile_source("loop = loop"),
+        config,
+        session_id="case-cons-binders",
+        entry=case,
+    )
+
+    for _ in range(100):
+        control = current.machine_state.control
+        transition = step(current, config)
+        current = transition.next_state
+
+        if (
+            transition.rule_id
+            is RuleId.CORE_CASE_ENTER_CONSTRUCTOR_BODY
+        ):
+            break
+    else:
+        raise AssertionError("Constructor alternative body was not entered")
+
+    machine = current.machine_state
+
+    assert isinstance(control, Return)
+    constructor = machine.heap.get(control.reference).value
+    assert isinstance(constructor, ConstructorValue)
+    assert constructor.tag == "Cons"
+    assert len(constructor.fields) == 2
+
+    assert machine.local_environment.lookup("h") is constructor.fields[0]
+    assert machine.local_environment.lookup("t") is constructor.fields[1]
+
+    for field_ref in constructor.fields:
+        assert isinstance(machine.heap.get(field_ref).value, PendingThunk)
+
+    assert machine.control == EvaluateCore(CoreInt(99))
+    assert isinstance(machine.stack.peek(), RestoreEnvironmentFrame)
+
+    result = run_batch(current, config, max_steps=100)
+
+    assert result.stop_reason is BatchStopReason.WHNF_PENDING
+    final_machine = result.state.machine_state
+    assert final_machine.control == Return(ImmediateInteger(99))
+
+    for field_ref in constructor.fields:
+        assert isinstance(final_machine.heap.get(field_ref).value, PendingThunk)
+
+
+@pytest.mark.parametrize(
+    "strategy",
+    [Strategy.CBV, Strategy.CBNEED],
+)
+def test_default_preserve_original_refence(strategy):
+    config = make_config(strategy=strategy)
+
+    case = CoreCase(
+        scrutinee=CoreVar("xs"),
+        alternatives=(
+            CoreDefaultAlt("whole", CoreVar("whole")),
+        ),
+    )
+
+    current = create_initial_core_state(
+        compile_source("xs = []"),
+        config,
+        session_id="case-default-original-reference",
+        entry=case,
+    )
+    original_environment = None
+
+    for _ in range(100):
+        before = current.machine_state
+        transition = step(current, config)
+        current = transition.next_state
+
+        if transition.rule_id is RuleId.CORE_EVAL_CASE_SCRUTINEE:
+            original_environment = before.local_environment
+
+        if transition.rule_id is RuleId.CORE_CASE_ENTER_DEFAULT_BODY:
+            break
+    else:
+        raise AssertionError("Default alternative body was not entered")
+
+    machine = current.machine_state
+
+    assert (
+        machine.local_environment.lookup("whole")
+        == machine.global_environment.lookup("xs")
+    )
+    assert machine.control == EvaluateCore(CoreVar("whole"))
+
+    frame = machine.stack.peek()
+    assert isinstance(frame, RestoreEnvironmentFrame)
+    assert original_environment is not None
+    assert frame.environment is original_environment
+    assert machine.local_environment.parent is original_environment
+
+    result = run_batch(current, config, max_steps=100)
+
+    assert result.stop_reason is BatchStopReason.WHNF_PENDING
+    final_machine = result.state.machine_state
+    assert final_machine.local_environment is original_environment
+    assert final_machine.stack.depth == 0

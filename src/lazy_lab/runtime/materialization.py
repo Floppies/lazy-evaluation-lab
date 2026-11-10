@@ -87,6 +87,27 @@ def advance_materialization(
     except UnresolvedObservationError:
         return replace(state, awaiting_whnf=True)
 
+    # A Cons tail must evaluate to Nil or Cons.
+    # The parent's first field has already been completed,
+    # and its second (tail) field is now pending.
+    if state.frames:
+        parent = state.frames[-1]
+
+        is_cons_tail = (
+            parent.tag == "Cons"
+            and len(parent.completed_fields) == 1
+            and not parent.remaining_fields
+        )
+
+        if is_cons_tail and (
+            not isinstance(observed, ConstructorWHNF)
+            or observed.tag not in ("Nil", "Cons")
+        ):
+            raise TypeError(
+                "Cons tail must evaluate to a list constructor "
+                "(Nil or Cons)"
+            )
+
     visited_nodes = state.visited_nodes + 1
 
     if isinstance(observed, ConstructorWHNF):

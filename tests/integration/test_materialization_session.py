@@ -15,6 +15,7 @@ from lazy_lab.runtime.observation import (
     CanonicalInteger,
     CanonicalPartialConstructor,
     CanonicalPending,
+    ConstructorWHNF,
 )
 from lazy_lab.runtime.state import (
     ExecutionConfig,
@@ -286,3 +287,103 @@ def test_interactive_selection_materializes_constructor():
 
     assert result.machine_state.status is ExecutionStatus.COMPLETED
     assert result.canonical_result == expected_list()
+
+
+@pytest.mark.parametrize(
+    "strategy",
+    [Strategy.CBV, Strategy.CBNEED],
+)
+@pytest.mark.parametrize(
+    "source",
+    [
+        "main = 1 : 2",
+        "main = 1 : (2 : 3)",
+        "main = [1 : 2]",
+    ],
+)
+def test_materialization_rejects_incompatible_cons_tail(
+    strategy, source
+):
+    config = make_config(strategy=strategy)
+
+    initial = create_initial_core_state(
+        compile_source(source),
+        config,
+        session_id="invalid-cons-tail",
+    )
+
+    with pytest.raises(
+        TypeError,
+        match="Cons tail must evaluate to a list constructor",
+    ):
+        complete_in_batches(
+            initial,
+            config,
+            batch_size=500,
+        )
+
+
+@pytest.mark.parametrize(
+    "strategy",
+    [Strategy.CBV, Strategy.CBNEED],
+)
+def test_whnf_observation_does_not_validate_cons_tail(strategy):
+    config = make_config(
+        strategy=strategy,
+        policy=ResultPolicy.WHNF_ONLY,
+    )
+
+    initial = create_initial_core_state(
+        compile_source("main = 1 : 2"),
+        config,
+        session_id="invalid-tail-whnf-only",
+    )
+
+    result, _ = complete_in_batches(
+        initial,
+        config,
+        batch_size=500,
+    )
+
+    assert result.machine_state.status is ExecutionStatus.COMPLETED
+    assert result.canonical_result == ConstructorWHNF("Cons", 2)
+
+
+@pytest.mark.parametrize(
+    "strategy",
+    [Strategy.CBV, Strategy.CBNEED],
+)
+def test_result_limit_stops_before_invalid_cons_tail(strategy):
+    config = replace(
+        make_config(strategy=strategy),
+        result_node_limit=2,
+    )
+
+    initial = create_initial_core_state(
+        compile_source("main = 1 : 2"),
+        config,
+        session_id="invalid-tail-node-budget",
+    )
+
+    result, _ = complete_in_batches(
+        initial,
+        config,
+        batch_size=500,
+    )
+
+    assert (
+        result.machine_state.status
+        is ExecutionStatus.RESULT_LIMIT_REACHED
+    )
+
+    assert result.canonical_result == CanonicalPartialConstructor(
+        "Cons",
+        (
+            CanonicalInteger(1),
+            CanonicalPending(),
+        ),
+    )
+
+    progress = result.machine_state.result_state.materialization
+    assert progress is not None
+    assert progress.visited_nodes == 2

@@ -46,11 +46,20 @@ class ConstructorWHNF:
     arity: int
 
 
+@dataclass(frozen=True, slots=True)
+class CanonicalConstructor:
+    """A constructor whose fields are fully materialized."""
+
+    tag: str
+    fields: tuple[CanonicalValue, ...]
+
+
 CanonicalValue: TypeAlias = (
     CanonicalInteger
     | CanonicalBoolean
     | OpaqueFunction
     | ConstructorWHNF
+    | CanonicalConstructor
 )
 
 

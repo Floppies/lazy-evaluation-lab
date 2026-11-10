@@ -1,5 +1,5 @@
 
-from dataclasses import fields
+from dataclasses import FrozenInstanceError, fields
 
 import pytest
 
@@ -10,6 +10,7 @@ from lazy_lab.runtime.environment import Environment
 from lazy_lab.runtime.global_bindings import PendingGlobal
 from lazy_lab.runtime.heap import Heap, Indirection, Reserved
 from lazy_lab.runtime.observation import (
+    CanonicalConstructor,
     CanonicalInteger,
     CanonicalBoolean,
     ConstructorWHNF,
@@ -155,3 +156,26 @@ def test_observe_cons_does_not_inspect_fields():
     assert dict(heap.cells) == before_cells
     assert heap.current_slots == before_slots
     assert heap.next_object_id == before_next_id
+
+
+def test_canonical_constructor_represents_materialized_tree():
+    result = CanonicalConstructor(
+        tag="Cons",
+        fields=(
+            CanonicalInteger(1),
+            CanonicalConstructor("Nil", ()),
+        ),
+    )
+
+    assert result == CanonicalConstructor(
+        tag="Cons",
+        fields=(
+            CanonicalInteger(1),
+            CanonicalConstructor("Nil", ()),
+        ),
+    )
+
+    assert result.fields[1].tag == "Nil"
+
+    with pytest.raises(FrozenInstanceError):
+        result.tag = "Nil"

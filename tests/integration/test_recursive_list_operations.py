@@ -28,6 +28,12 @@ map f (h:t) = f h : map f t
 double x = x * 2
 """
 
+TAKE_DEFINITION = """
+take n xs = if n <= 0 then [] else takePositive n xs
+takePositive n [] = []
+takePositive n (h:t) = h : take (n - 1) t
+"""
+
 
 def make_config(strategy: Strategy) -> ExecutionConfig:
     return ExecutionConfig(
@@ -113,3 +119,53 @@ def test_recursive_map_materializes_finite_list(
             is ExecutionPhase.RESULT_MATERIALIZATION
             for entry in local_initializations
         )
+
+
+@pytest.mark.parametrize(
+    "strategy",
+    [Strategy.CBV, Strategy.CBNEED],
+)
+@pytest.mark.parametrize(
+    "count, source_list, expected",
+    [
+        ("0", "[1, 2, 3]", ()),
+        ("(-2)", "[1, 2, 3]", ()),
+        ("2", "[]", ()),
+        ("2", "[1, 2, 3]", (1, 2)),
+        ("5", "[1, 2]", (1, 2)),
+        ("3", "[1, 2, 3]", (1, 2, 3)),
+    ],
+)
+def test_recursive_take_materializes_finite_prefix(
+    strategy,
+    count,
+    source_list,
+    expected,
+):
+    config = make_config(strategy)
+
+    source = (
+        TAKE_DEFINITION
+        + f"main = take {count} {source_list}"
+    )
+
+    initial = create_initial_core_state(
+        compile_source(source),
+        config,
+        session_id="recursive-take",
+    )
+
+    batch = run_session_batch(
+        initial,
+        config,
+        max_steps=4000,
+    )
+
+    assert batch.stop_reason is BatchStopReason.TERMINAL_STATUS
+    assert batch.state.machine_state.status is ExecutionStatus.COMPLETED
+
+    assert batch.state.canonical_result == canonical_integer_list(
+        expected
+    )
+
+    assert batch.state.machine_state.stack.depth == 0

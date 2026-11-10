@@ -83,8 +83,8 @@ The descriptions follow the **Gantt B** plan and its milestone acceptance criter
 | B06.5 | CoreCase Evaluation and Matching | Completed |
 | B06.6 | Pattern-Matching Errors and Edge Cases | Completed |
 | B06.7 | Constructor WHNF Observation | Completed |
-| B06.8 | Complete List Materialization | In Progress |
-| B06.9 | Recursive List Operations | Pending |
+| B06.8 | Complete List Materialization | Completed |
+| B06.9 | Recursive List Operations | In Progress |
 | B06.10 | Folds and Strictness | Pending |
 | B06.11 | Infinite Lists and Bounded Evaluation | Pending |
 | B06.12 | Integration, Regressions and Audit | Pending |

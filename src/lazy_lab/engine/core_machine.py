@@ -696,9 +696,13 @@ def _advance_local_initialization(
             "Local initialization is not implemented for this strategy"
         )
 
-    if machine.phase is not ExecutionPhase.EVALUATION:
+    if machine.phase not in (
+        ExecutionPhase.EVALUATION,
+        ExecutionPhase.RESULT_MATERIALIZATION,
+    ):
         raise InvalidMachineStateError(
-            "Local initialization requires EVALUATION phase"
+            "Local initialization requires EVALUATION "
+            "or RESULT_MATERIALIZATION phase"
         )
 
     if (

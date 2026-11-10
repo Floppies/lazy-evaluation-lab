@@ -13,7 +13,7 @@ from .environment import Environment
 from .heap import Heap
 from .references import RuntimeRef
 from .stack import Stack
-from .observation import CanonicalValue
+from .observation import PartialCanonicalValue
 
 
 class MachineKind(str, Enum):
@@ -155,7 +155,7 @@ class ExecutionState:
     session_id: str
     transition_index: int
     machine_state: MachineState
-    canonical_result: CanonicalValue | None = None
+    canonical_result: PartialCanonicalValue | None = None
     instrumentation_state: InstrumentationState = field(
         default_factory=InstrumentationState
     )

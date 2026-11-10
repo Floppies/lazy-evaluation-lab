@@ -2481,4 +2481,39 @@ This section defines the agreed operational rules for B06.
 - Batch boundaries preserve materialization progress and support deterministic resumption.
 - Infinite or cyclic values are bounded by the existing execution and result limits.
 
+### Constructor Consumer Transitions
+
+The constructor consumer exposes separate administrative transitions for
+starting, advancing and finishing a materialization. These transitions use
+independent execution snapshots and do not increment the evaluator transition
+counter or allocate simulated heap objects.
+
+- `RESULT_MATERIALIZE_START` requires a running evaluation at a constructor
+  root `Return` with an empty stack and no existing materialization progress.
+  It accepts the fixed complete-value policy or an explicit complete-value
+  selection under `ASK_AT_WHNF`. It stores the root reference, initializes
+  DFS progress and enters `RESULT_MATERIALIZATION` without visiting a node.
+- `RESULT_MATERIALIZE_ADVANCE` performs one DFS operation subject to
+  `result_node_limit` and stores the new progress. An unresolved field sets
+  `awaiting_whnf`; requesting evaluator demand is a separate transition.
+- `RESULT_MATERIALIZE_COMPLETE` publishes the existing `completed_value`
+  and sets `COMPLETED` without traversing the tree again.
+- `RESULT_MATERIALIZE_RESULT_LIMIT` publishes the saved `partial_value`
+  when the DFS reports its node limit and sets `RESULT_LIMIT_REACHED`.
+- `RESULT_MATERIALIZE_EXECUTION_LIMIT` builds a partial tree from the
+  current DFS continuation when evaluator demand is pending and its budget
+  is exhausted, then sets `STEP_LIMIT_REACHED`. This also applies during
+  field evaluation, preserving its control and stack. Budget exhaustion
+  alone does not prevent administrative traversal or completion.
+
+Both limit transitions preserve materialization progress. All advance and
+finish transitions retain `RESULT_MATERIALIZATION` and the runtime data.
+`ExecutionState.canonical_result` accepts `PartialCanonicalValue`, while
+`CanonicalValue` continues to represent complete observations only.
+Incomplete constructor trees use `CanonicalPartialConstructor` and
+`CanonicalPending`, never `CanonicalConstructor`.
+
+These consumer entry points can be invoked directly; coordinating them in
+the session runner is a separate integration concern.
+
 These rules do not introduce new language syntax, evaluation strategies, garbage collection, or experimental metrics.

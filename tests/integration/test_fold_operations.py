@@ -292,3 +292,58 @@ def test_foldl_strict_forces_intermediate_accumulator_cbneed():
             config,
             max_steps=4000,
         )
+
+
+@pytest.mark.parametrize(
+    "fold_name, should_fail",
+    [
+        ("foldr", False),
+        ("foldl", True),
+        ("foldlStrict", True),
+    ],
+)
+def test_folds_differ_in_list_spine_demand(
+    fold_name,
+    should_fail,
+):
+    config = make_config(Strategy.CBNEED)
+
+    definitions = {
+        "foldr": FOLDR_DEFINITION,
+        "foldl": FOLDL_DEFINITION,
+        "foldlStrict": FOLDL_STRICT_DEFINITION,
+    }
+
+    source = (
+        definitions[fold_name]
+        + IGNORE_DEFINITION
+        + "poison xs = if 1 + True then xs else []\n"
+        + f"main = {fold_name} ignore 0 (1 : poison [])"
+    )
+
+    initial = create_initial_core_state(
+        compile_source(source),
+        config,
+        session_id=f"{fold_name}-spine-demand",
+    )
+
+    if should_fail:
+        with pytest.raises(
+            TypeError,
+            match="requires integer operands",
+        ):
+            run_session_batch(
+                initial,
+                config,
+                max_steps=4000,
+            )
+    else:
+        batch = run_session_batch(
+            initial,
+            config,
+            max_steps=4000,
+        )
+
+        assert batch.stop_reason is BatchStopReason.TERMINAL_STATUS
+        assert batch.state.machine_state.status is ExecutionStatus.COMPLETED
+        assert batch.state.canonical_result == CanonicalInteger(1)

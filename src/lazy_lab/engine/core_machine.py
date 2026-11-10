@@ -6,6 +6,10 @@ from dataclasses import replace
 
 from lazy_lab.core.nodes import (
     CoreBool,
+    CoreCase,
+    CoreCon,
+    CoreConAlt,
+    CoreDefaultAlt,
     CoreInt,
     CoreExpr,
     CoreProgram,
@@ -17,6 +21,8 @@ from lazy_lab.core.nodes import (
     CoreIf,
     CoreLetRec,
 )
+from lazy_lab.runtime.constructors import ConstructorValue, allocate_constructor
+from lazy_lab.runtime.materialization import resume_materialization
 from lazy_lab.semantics.predefined import PREDEFINED_IDENTIFIERS
 from lazy_lab.runtime.predefined import (
     PredefinedFunction,
@@ -42,6 +48,9 @@ from lazy_lab.runtime.heap import (
     Indirection,
 )
 from lazy_lab.runtime.stack import (
+    ConstructorFieldsFrame,
+    CoreCaseFrame,
+    MaterializationDemandFrame,
     Stack,
     ApplyFunctionFrame,
     ApplyArgumentFrame,
@@ -100,6 +109,10 @@ class UninitializedLocalBindingError(InvalidMachineStateError):
 
 class EvaluatorBudgetExhaustedError(RuntimeError):
     """No evaluator transitions remain in the execution budget."""
+
+
+class PatternMatchError(RuntimeError):
+    """No CoreCase alternative matches the scrutinee WHNF."""
 
 
 def _validate_configuration(
@@ -240,7 +253,69 @@ def _dispatch_core_evaluation(
             machine,
             expression,
         )
-    
+
+    elif isinstance(expression, CoreCase):
+        machine.stack.push(
+            CoreCaseFrame(
+                alternatives=expression.alternatives,
+                environment=machine.local_environment,
+            )
+        )
+
+        next_control = EvaluateCore(expression.scrutinee)
+        rule_id = RuleId.CORE_EVAL_CASE_SCRUTINEE
+
+    elif isinstance(expression, CoreCon):
+        if machine.strategy is Strategy.CBNEED:
+            field_references = tuple(
+                allocate_thunk(
+                    machine.heap,
+                    field,
+                    machine.local_environment,
+                    machine.global_environment,
+                )
+                for field in expression.fields
+            )
+
+            constructor_reference = allocate_constructor(
+                machine.heap,
+                expression.constructor,
+                field_references,
+            )
+
+            next_control = Return(constructor_reference)
+            rule_id = RuleId.CORE_CBNEED_EVAL_CONSTRUCTOR
+
+        elif machine.strategy is Strategy.CBV:
+            if not expression.fields:
+                # Nil has no fields to evaluate.
+                reference = allocate_constructor(
+                    machine.heap,
+                    expression.constructor,
+                    (),
+                )
+
+                next_control = Return(reference)
+                rule_id = RuleId.CORE_CBV_ALLOCATE_CONSTRUCTOR
+
+            else:
+                # Start evaluating the first field.
+                machine.stack.push(
+                    ConstructorFieldsFrame(
+                        constructor=expression.constructor,
+                        remaining_fields=expression.fields[1:],
+                        evaluated_fields=(),
+                        environment=machine.local_environment,
+                    )
+                )
+
+                next_control = EvaluateCore(expression.fields[0])
+                rule_id = RuleId.CORE_CBV_EVAL_CONSTRUCTOR_START
+
+        else:
+            raise UnsupportedTransitionError(
+                "Unsupported constructor evaluation strategy"
+            )
     else:
         raise UnsupportedTransitionError(
             f"Unsupported Core expression: "
@@ -251,7 +326,6 @@ def _dispatch_core_evaluation(
         replace(machine, control=next_control),
         rule_id,
     )
-
 
 def step(
     state: ExecutionState,
@@ -622,9 +696,13 @@ def _advance_local_initialization(
             "Local initialization is not implemented for this strategy"
         )
 
-    if machine.phase is not ExecutionPhase.EVALUATION:
+    if machine.phase not in (
+        ExecutionPhase.EVALUATION,
+        ExecutionPhase.RESULT_MATERIALIZATION,
+    ):
         raise InvalidMachineStateError(
-            "Local initialization requires EVALUATION phase"
+            "Local initialization requires EVALUATION "
+            "or RESULT_MATERIALIZATION phase"
         )
 
     if (
@@ -751,7 +829,12 @@ def _reference_is_whnf(
 
     return isinstance(
         value,
-        (Closure, PredefinedFunction, PartialPredefinedFunction),
+        (
+            Closure,
+            PredefinedFunction,
+            PartialPredefinedFunction,
+            ConstructorValue,
+        ),
     )
 
 def _advance_force(
@@ -792,6 +875,15 @@ def _advance_force(
         return (
             replace(machine, control=Return(reference)),
             RuleId.CORE_FORCE_FUNCTION_WHNF,
+        )
+
+    if isinstance(value, ConstructorValue):
+        return (
+            replace(
+                machine,
+                control=Return(reference),
+            ),
+            RuleId.CORE_FORCE_CONSTRUCTOR_WHNF,
         )
 
     if isinstance(value, PendingThunk):
@@ -1035,12 +1127,36 @@ def _advance_return(
                 frame,
             )
 
+        # 10. Constructor evaluation
+        if isinstance(frame, ConstructorFieldsFrame):
+            return _resume_constructor_field(
+                machine,
+                control,
+                frame,
+            )
+
+        #11 . Core case evaluation
+        if isinstance(frame, CoreCaseFrame):
+            return _resume_core_case(
+                machine,
+                control,
+                frame,
+            )
+
+        #12. Continueation for materailization
+        if isinstance(frame, MaterializationDemandFrame):
+            return _resume_materialization_field(
+                machine,
+                control,
+                frame,
+            )
+
         raise UnsupportedTransitionError(
             "Unsupported return continuation: "
             f"{type(frame).__name__}"
         )
 
-    # 10. No continuation remains: handle the root result.
+    # 13. No continuation remains: handle the root result.
     # A root reference to a pending object still requires WHNF.
     if isinstance(reference, HeapReference):
         value = machine.heap.get(reference).value
@@ -1882,6 +1998,283 @@ def _resume_update_frame(
         RuleId.CORE_THUNK_UPDATE_WHNF,
     )
 
+def _resume_constructor_field(
+    machine: MachineState,
+    control: Return,
+    frame: ConstructorFieldsFrame,
+) -> tuple[MachineState, RuleId]:
+    """Resume left-to-right strict constructor field evaluation."""
+
+    if machine.strategy is not Strategy.CBV:
+        raise InvalidMachineStateError(
+            "ConstructorFieldsFrame requires Call-by-Value"
+        )
+
+    reference = control.reference
+
+    # Stage 1: the field returned a reference.
+    # Explicitly demand its WHNF.
+    if not frame.awaiting_whnf:
+        machine.stack.pop()
+        machine.stack.push(
+            replace(frame, awaiting_whnf=True)
+        )
+
+        return (
+            replace(
+                machine,
+                control=Force(reference),
+            ),
+            RuleId.CORE_CBV_REQUIRE_CONSTRUCTOR_FIELD_WHNF,
+        )
+
+    # Stage 2: Force returned.
+    if not _reference_is_whnf(machine, reference):
+        raise InvalidMachineStateError(
+            "Constructor field returned without WHNF"
+        )
+
+    evaluated_fields = (
+        frame.evaluated_fields + (reference,)
+    )
+
+    machine.stack.pop()
+
+    # Stage 3: evaluate the next field, if any.
+    if frame.remaining_fields:
+        next_field = frame.remaining_fields[0]
+
+        machine.stack.push(
+            replace(
+                frame,
+                remaining_fields=frame.remaining_fields[1:],
+                evaluated_fields=evaluated_fields,
+                awaiting_whnf=False,
+            )
+        )
+
+        return (
+            replace(
+                machine,
+                local_environment=frame.environment,
+                control=EvaluateCore(next_field),
+            ),
+            RuleId.CORE_CBV_EVAL_NEXT_CONSTRUCTOR_FIELD,
+        )
+
+    # Stage 4: every field is in WHNF.
+    constructor_reference = allocate_constructor(
+        machine.heap,
+        frame.constructor,
+        evaluated_fields,
+    )
+
+    return (
+        replace(
+            machine,
+            local_environment=frame.environment,
+            control=Return(constructor_reference),
+        ),
+        RuleId.CORE_CBV_ALLOCATE_CONSTRUCTOR,
+    )
+
+def _resume_core_case(
+    machine: MachineState,
+    control: Return,
+    frame: CoreCaseFrame,
+) -> tuple[MachineState, RuleId]:
+    """Demand the case scrutinee before matching alternatives."""
+
+    reference = control.reference
+
+    # Stage 1: preserve the original reference and demand WHNF.
+    if not frame.awaiting_whnf:
+        machine.stack.pop()
+
+        machine.stack.push(
+            replace(
+                frame,
+                awaiting_whnf=True,
+                scrutinee_reference=reference,
+            )
+        )
+
+        return (
+            replace(
+                machine,
+                control=Force(reference),
+            ),
+            RuleId.CORE_CASE_REQUIRE_SCRUTINEE_WHNF,
+        )
+
+    # Stage 2: the demand must have completed.
+    if frame.scrutinee_reference is None:
+        raise InvalidMachineStateError(
+            "CoreCase lost its original scrutinee reference"
+        )
+
+    if not _reference_is_whnf(machine, reference):
+        raise InvalidMachineStateError(
+            "CoreCase scrutinee returned without WHNF"
+        )
+
+    if frame.selected_alternative is not None:
+        alternative = frame.selected_alternative
+
+        if isinstance(alternative, CoreConAlt):
+            if not isinstance(reference, HeapReference):
+                raise InvalidMachineStateError(
+                    "Constructor alternative requires a heap reference"
+                )
+
+            value = machine.heap.get(reference).value
+
+            if (
+                not isinstance(value, ConstructorValue)
+                or value.tag != alternative.constructor
+                or len(value.fields) != len(alternative.binders)
+            ):
+                raise InvalidMachineStateError(
+                    "Selected constructor alternative is inconsistent"
+                )
+
+            bindings = dict(
+                zip(alternative.binders, value.fields)
+            )
+            rule_id = RuleId.CORE_CASE_ENTER_CONSTRUCTOR_BODY
+
+        elif isinstance(alternative, CoreDefaultAlt):
+            original_reference = frame.scrutinee_reference
+
+            if original_reference is None:
+                raise InvalidMachineStateError(
+                    "CoreCase lost its original scrutinee reference"
+                )
+
+            bindings = {
+                alternative.binder: original_reference
+            }
+            rule_id = RuleId.CORE_CASE_ENTER_DEFAULT_BODY
+
+        else:
+            raise InvalidMachineStateError(
+                "Unsupported selected CoreCase alternative"
+            )
+
+        machine.stack.pop()
+
+        machine.stack.push(
+            RestoreEnvironmentFrame(frame.environment)
+        )
+
+        return (
+            replace(
+                machine,
+                local_environment=frame.environment.extend(bindings),
+                control=EvaluateCore(alternative.body),
+            ),
+            rule_id,
+        )
+
+    # Inspect only the outer constructor, if present.
+    constructor = None
+
+    if isinstance(reference, HeapReference):
+        value = machine.heap.get(reference).value
+
+        if isinstance(value, ConstructorValue):
+            constructor = value
+
+    selected = None
+    selection_rule = None
+
+    for alternative in frame.alternatives:
+        if isinstance(alternative, CoreConAlt):
+            if (
+                constructor is not None
+                and constructor.tag == alternative.constructor
+            ):
+                selected = alternative
+                selection_rule = RuleId.CORE_CASE_SELECT_CONSTRUCTOR
+                break
+
+        elif isinstance(alternative, CoreDefaultAlt):
+            selected = alternative
+            selection_rule = RuleId.CORE_CASE_SELECT_DEFAULT
+            break
+
+        else:
+            raise InvalidMachineStateError(
+                "Unsupported CoreCase alternative"
+            )
+
+    if selected is None:
+        raise PatternMatchError(
+            "Non-exhaustive CoreCase: no alternative matches"
+        )
+
+    machine.stack.pop()
+    machine.stack.push(
+        replace(
+            frame,
+            selected_alternative=selected,
+        )
+    )
+
+    return (
+        replace(
+            machine,
+            control=Return(reference),
+        ),
+        selection_rule,
+    )
+
+def _resume_materialization_field(
+    machine: MachineState,
+    control: Return,
+    frame: MaterializationDemandFrame,
+) -> tuple[MachineState, RuleId]:
+    """Return a demanded WHNF field to the result materializer."""
+
+    if machine.phase is not ExecutionPhase.RESULT_MATERIALIZATION:
+        raise InvalidMachineStateError(
+            "Materialization continuation in an invalid phase"
+        )
+
+    reference = control.reference
+
+    if not _reference_is_whnf(machine, reference):
+        raise InvalidMachineStateError(
+            "Materialization field returned without WHNF"
+        )
+
+    progress = machine.result_state.materialization
+
+    if (
+        progress is None
+        or not progress.awaiting_whnf
+        or progress.root_reference != frame.root_reference
+    ):
+        raise InvalidMachineStateError(
+            "Invalid materialization continuation state"
+        )
+
+    resumed = resume_materialization(progress, reference)
+
+    machine.stack.pop()
+
+    return (
+        replace(
+            machine,
+            local_environment=frame.return_environment,
+            control=Return(frame.root_reference),
+            result_state=replace(
+                machine.result_state,
+                materialization=resumed,
+            ),
+        ),
+        RuleId.CORE_MATERIALIZATION_FIELD_RESUME,
+    )
 
 def _enter_local_letrec(
     machine: MachineState,

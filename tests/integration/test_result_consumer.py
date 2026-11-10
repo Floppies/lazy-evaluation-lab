@@ -17,6 +17,7 @@ from lazy_lab.pipeline import compile_source
 from lazy_lab.runtime.observation import (
     CanonicalInteger,
     CanonicalBoolean,
+    ConstructorWHNF,
     OpaqueFunction,
 )
 from lazy_lab.runtime.state import (
@@ -978,3 +979,144 @@ def test_ask_single_step_batches_preserve_snapshots_and_terminal_state(selected_
         assert previous.machine_state.stack.frames == snapshot.machine_state.stack.frames
     assert waiting.machine_state.result_state.resolved_result_mode is None
     assert selected.machine_state.result_state.resolved_result_mode is selected_mode
+
+
+def test_constructor_is_not_considered_fully_materialized():
+    config = make_config(
+        policy=ResultPolicy.MATERIALIZE_COMPLETE_VALUE
+    )
+
+    initial = create_initial_core_state(
+        compile_source("main = []"),
+        config,
+        session_id="constructor-materialization-boundary",
+    )
+
+    result = run_batch(initial, config, max_steps=100)
+
+    assert result.stop_reason is BatchStopReason.WHNF_PENDING
+
+    with pytest.raises(
+        InvalidResultObservationError,
+        match="Complete constructor materialization",
+    ):
+        consume_materialized_result(result.state, config)
+
+    assert result.state.canonical_result is None
+    assert result.state.machine_state.status is ExecutionStatus.RUNNING
+
+
+@pytest.mark.parametrize(
+    "strategy, source, expected",
+    [
+        (Strategy.CBV, "main = []", ConstructorWHNF("Nil", 0)),
+        (Strategy.CBNEED, "main = []", ConstructorWHNF("Nil", 0)),
+        (Strategy.CBV, "main = [1, 2]", ConstructorWHNF("Cons", 2)),
+        (Strategy.CBNEED, "main = [1, 2]", ConstructorWHNF("Cons", 2)),
+        (
+            Strategy.CBNEED,
+            "loop = loop\nmain = 1 : loop",
+            ConstructorWHNF("Cons", 2),
+        ),
+    ],
+)
+def test_constructor_whnf_result_consumption(
+    strategy, source, expected
+):
+    config = replace(
+        make_config(policy=ResultPolicy.WHNF_ONLY),
+        strategy=strategy,
+        execution_step_limit=300,
+    )
+
+    initial = create_initial_core_state(
+        compile_source(source),
+        config,
+        session_id="constructor-whnf-consumer",
+    )
+
+    evaluated = run_batch(initial, config, max_steps=300)
+    assert evaluated.stop_reason is BatchStopReason.WHNF_PENDING
+
+    before = evaluated.state
+    before_heap = dict(before.machine_state.heap.cells)
+    before_count = before.machine_state.evaluator_transition_count
+
+    consumed = run_session_batch(before, config, max_steps=1)
+
+    assert consumed.stop_reason is BatchStopReason.TERMINAL_STATUS
+    assert len(consumed.trace) == 1
+    assert consumed.trace[0].rule_id is RuleId.RESULT_OBSERVE_WHNF
+    assert consumed.trace[0].transition_kind is TransitionKind.RESULT_CONSUMER
+
+    final = consumed.state
+
+    assert final.canonical_result == expected
+    assert final.machine_state.status is ExecutionStatus.COMPLETED
+    assert final.machine_state.evaluator_transition_count == before_count
+    assert dict(final.machine_state.heap.cells) == before_heap
+    assert final.transition_index == before.transition_index + 1
+
+    # The earlier snapshot remains unchanged.
+    assert before.canonical_result is None
+    assert before.machine_state.status is ExecutionStatus.RUNNING
+
+
+@pytest.mark.parametrize(
+    "strategy",
+    [Strategy.CBV, Strategy.CBNEED],
+)
+def test_constructor_ask_at_whnf_selection(strategy):
+    config = replace(
+        make_config(policy=ResultPolicy.ASK_AT_WHNF),
+        strategy=strategy,
+        execution_step_limit=300,
+    )
+
+    initial = create_initial_core_state(
+        compile_source("main = [1, 2]"),
+        config,
+        session_id="constructor-ask-whnf",
+    )
+
+    waiting = run_session_batch(initial, config, max_steps=300)
+
+    assert waiting.stop_reason is BatchStopReason.WHNF_PENDING
+    assert waiting.state.canonical_result is None
+
+    checkpoint = waiting.state
+    before_heap = dict(checkpoint.machine_state.heap.cells)
+    before_count = checkpoint.machine_state.evaluator_transition_count
+
+    # Waiting for the user's choice must be passive.
+    repeated = run_session_batch(checkpoint, config, max_steps=1)
+
+    assert repeated.stop_reason is BatchStopReason.WHNF_PENDING
+    assert repeated.state is checkpoint
+    assert repeated.trace == ()
+
+    selected = select_result_mode(
+        checkpoint,
+        config,
+        ResultPolicy.WHNF_ONLY,
+    ).next_state
+
+    assert selected.canonical_result is None
+
+    completed = run_session_batch(selected, config, max_steps=1)
+
+    assert completed.stop_reason is BatchStopReason.TERMINAL_STATUS
+    assert completed.state.canonical_result == ConstructorWHNF(
+        "Cons", 2
+    )
+    assert completed.state.machine_state.status is ExecutionStatus.COMPLETED
+
+    assert (
+        completed.state.machine_state.evaluator_transition_count
+        == before_count
+    )
+    assert dict(completed.state.machine_state.heap.cells) == before_heap
+
+    # The checkpoint is independently inspectable.
+    assert checkpoint.canonical_result is None
+    assert checkpoint.machine_state.status is ExecutionStatus.RUNNING

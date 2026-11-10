@@ -6,12 +6,14 @@ from __future__ import annotations
 from dataclasses import dataclass, field, replace
 from enum import Enum
 
+from lazy_lab.runtime.materialization import MaterializationState
+
 from .control import CoreControl
 from .environment import Environment
 from .heap import Heap
 from .references import RuntimeRef
 from .stack import Stack
-from .observation import CanonicalValue
+from .observation import PartialCanonicalValue
 
 
 class MachineKind(str, Enum):
@@ -109,6 +111,7 @@ class ResultState:
 
     result_reference: RuntimeRef | None = None
     resolved_result_mode: ResultPolicy | None = None
+    materialization: MaterializationState | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -152,7 +155,7 @@ class ExecutionState:
     session_id: str
     transition_index: int
     machine_state: MachineState
-    canonical_result: CanonicalValue | None = None
+    canonical_result: PartialCanonicalValue | None = None
     instrumentation_state: InstrumentationState = field(
         default_factory=InstrumentationState
     )

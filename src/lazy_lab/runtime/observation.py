@@ -20,6 +20,7 @@ from .references import (
     HeapReference,
 )
 from .thunks import PendingThunk, EvaluatingThunk
+from .constructors import ConstructorValue
 
 
 @dataclass(frozen=True, slots=True)
@@ -37,10 +38,49 @@ class OpaqueFunction:
     """A function value without exposed runtime identity."""
 
 
+@dataclass(frozen=True, slots=True)
+class ConstructorWHNF:
+    """Canonical observation of a constructor in WHNF."""
+
+    tag: str
+    arity: int
+
+
+@dataclass(frozen=True, slots=True)
+class CanonicalConstructor:
+    """A constructor whose fields are fully materialized."""
+
+    tag: str
+    fields: tuple[CanonicalValue, ...]
+
+
 CanonicalValue: TypeAlias = (
     CanonicalInteger
     | CanonicalBoolean
     | OpaqueFunction
+    | ConstructorWHNF
+    | CanonicalConstructor
+)
+
+
+@dataclass(frozen=True, slots=True)
+class CanonicalPending:
+    """An occurrence not visited during materialization."""
+
+
+@dataclass(frozen=True, slots=True)
+class CanonicalPartialConstructor:
+    """A constructor with an incomplete canonical field tree."""
+
+    tag: str
+    fields: tuple[PartialCanonicalValue, ...]
+    unvisited_fields: int = 0
+
+
+PartialCanonicalValue: TypeAlias = (
+    CanonicalValue
+    | CanonicalPending
+    | CanonicalPartialConstructor
 )
 
 
@@ -80,6 +120,12 @@ def observe_whnf(
         ),
     ):
         return OpaqueFunction()
+
+    if isinstance(value, ConstructorValue):
+        return ConstructorWHNF(
+            tag=value.tag,
+            arity=len(value.fields),
+        )
 
     if isinstance(
         value,

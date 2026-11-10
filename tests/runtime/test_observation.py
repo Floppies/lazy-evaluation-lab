@@ -1,16 +1,19 @@
 
-from dataclasses import fields
+from dataclasses import FrozenInstanceError, fields
 
 import pytest
 
 from lazy_lab.core.nodes import CoreInt, CoreLam, CoreVar
 from lazy_lab.runtime.closures import Closure
+from lazy_lab.runtime.constructors import allocate_constructor
 from lazy_lab.runtime.environment import Environment
 from lazy_lab.runtime.global_bindings import PendingGlobal
 from lazy_lab.runtime.heap import Heap, Indirection, Reserved
 from lazy_lab.runtime.observation import (
+    CanonicalConstructor,
     CanonicalInteger,
     CanonicalBoolean,
+    ConstructorWHNF,
     OpaqueFunction,
     UnresolvedObservationError,
     observe_whnf,
@@ -116,3 +119,63 @@ def test_observation_preserves_heap_snapshot():
     assert dict(heap.cells) == dict(snapshot.cells)
     assert heap.current_slots == snapshot.current_slots
     assert heap.next_object_id == snapshot.next_object_id
+
+
+def test_observe_nil_constructor():
+    heap = Heap()
+
+    reference = allocate_constructor(heap, "Nil", ())
+    before = dict(heap.cells)
+
+    result = observe_whnf(heap, reference)
+
+    assert result == ConstructorWHNF("Nil", 0)
+    assert dict(heap.cells) == before
+
+
+def test_observe_cons_does_not_inspect_fields():
+    heap = Heap()
+
+    head_ref = heap.allocate(Reserved(), allocated_slots=1)
+    tail_ref = heap.allocate(Reserved(), allocated_slots=1)
+
+    constructor_ref = allocate_constructor(
+        heap,
+        "Cons",
+        (head_ref, tail_ref),
+    )
+
+    before_cells = dict(heap.cells)
+    before_slots = heap.current_slots
+    before_next_id = heap.next_object_id
+
+    result = observe_whnf(heap, constructor_ref)
+
+    assert result == ConstructorWHNF("Cons", 2)
+
+    assert dict(heap.cells) == before_cells
+    assert heap.current_slots == before_slots
+    assert heap.next_object_id == before_next_id
+
+
+def test_canonical_constructor_represents_materialized_tree():
+    result = CanonicalConstructor(
+        tag="Cons",
+        fields=(
+            CanonicalInteger(1),
+            CanonicalConstructor("Nil", ()),
+        ),
+    )
+
+    assert result == CanonicalConstructor(
+        tag="Cons",
+        fields=(
+            CanonicalInteger(1),
+            CanonicalConstructor("Nil", ()),
+        ),
+    )
+
+    assert result.fields[1].tag == "Nil"
+
+    with pytest.raises(FrozenInstanceError):
+        result.tag = "Nil"

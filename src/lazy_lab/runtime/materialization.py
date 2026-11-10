@@ -30,18 +30,6 @@ class MaterializationFrame:
 
 @dataclass(frozen=True, slots=True)
 class MaterializationState:
-    """Persistent progress of a depth-first materialization."""
-
-    root_reference: RuntimeRef
-    pending_reference: RuntimeRef | None
-    frames: tuple[MaterializationFrame, ...] = ()
-    completed_value: CanonicalValue | None = None
-    visited_nodes: int = 0
-    awaiting_whnf: bool = False
-
-
-@dataclass(frozen=True, slots=True)
-class MaterializationState:
     root_reference: RuntimeRef
     pending_reference: RuntimeRef | None
     frames: tuple[MaterializationFrame, ...] = ()

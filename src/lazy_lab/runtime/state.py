@@ -6,6 +6,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field, replace
 from enum import Enum
 
+from lazy_lab.runtime.materialization import MaterializationState
+
 from .control import CoreControl
 from .environment import Environment
 from .heap import Heap
@@ -109,6 +111,7 @@ class ResultState:
 
     result_reference: RuntimeRef | None = None
     resolved_result_mode: ResultPolicy | None = None
+    materialization: MaterializationState | None = None
 
 
 @dataclass(frozen=True, slots=True)

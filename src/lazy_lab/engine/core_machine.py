@@ -22,6 +22,7 @@ from lazy_lab.core.nodes import (
     CoreLetRec,
 )
 from lazy_lab.runtime.constructors import ConstructorValue, allocate_constructor
+from lazy_lab.runtime.materialization import resume_materialization
 from lazy_lab.semantics.predefined import PREDEFINED_IDENTIFIERS
 from lazy_lab.runtime.predefined import (
     PredefinedFunction,
@@ -49,6 +50,7 @@ from lazy_lab.runtime.heap import (
 from lazy_lab.runtime.stack import (
     ConstructorFieldsFrame,
     CoreCaseFrame,
+    MaterializationDemandFrame,
     Stack,
     ApplyFunctionFrame,
     ApplyArgumentFrame,
@@ -1137,12 +1139,20 @@ def _advance_return(
                 frame,
             )
 
+        #12. Continueation for materailization
+        if isinstance(frame, MaterializationDemandFrame):
+            return _resume_materialization_field(
+                machine,
+                control,
+                frame,
+            )
+
         raise UnsupportedTransitionError(
             "Unsupported return continuation: "
             f"{type(frame).__name__}"
         )
 
-    # 12. No continuation remains: handle the root result.
+    # 13. No continuation remains: handle the root result.
     # A root reference to a pending object still requires WHNF.
     if isinstance(reference, HeapReference):
         value = machine.heap.get(reference).value
@@ -2213,6 +2223,53 @@ def _resume_core_case(
             control=Return(reference),
         ),
         selection_rule,
+    )
+
+def _resume_materialization_field(
+    machine: MachineState,
+    control: Return,
+    frame: MaterializationDemandFrame,
+) -> tuple[MachineState, RuleId]:
+    """Return a demanded WHNF field to the result materializer."""
+
+    if machine.phase is not ExecutionPhase.RESULT_MATERIALIZATION:
+        raise InvalidMachineStateError(
+            "Materialization continuation in an invalid phase"
+        )
+
+    reference = control.reference
+
+    if not _reference_is_whnf(machine, reference):
+        raise InvalidMachineStateError(
+            "Materialization field returned without WHNF"
+        )
+
+    progress = machine.result_state.materialization
+
+    if (
+        progress is None
+        or not progress.awaiting_whnf
+        or progress.root_reference != frame.root_reference
+    ):
+        raise InvalidMachineStateError(
+            "Invalid materialization continuation state"
+        )
+
+    resumed = resume_materialization(progress, reference)
+
+    machine.stack.pop()
+
+    return (
+        replace(
+            machine,
+            local_environment=frame.return_environment,
+            control=Return(frame.root_reference),
+            result_state=replace(
+                machine.result_state,
+                materialization=resumed,
+            ),
+        ),
+        RuleId.CORE_MATERIALIZATION_FIELD_RESUME,
     )
 
 def _enter_local_letrec(

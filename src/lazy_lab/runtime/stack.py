@@ -141,6 +141,14 @@ class CoreCaseFrame(StackFrame):
     selected_alternative: CoreAlt | None = None
 
 
+@dataclass(frozen=True, slots=True)
+class MaterializationDemandFrame(StackFrame):
+    """Resume result materialization after a field reaches WHNF."""
+
+    root_reference: RuntimeRef
+    return_environment: Environment
+
+
 class EmptyStackError(LookupError):
     """Raised when accessing an empty stack."""
 

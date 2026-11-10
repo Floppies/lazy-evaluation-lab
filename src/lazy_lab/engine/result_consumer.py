@@ -6,9 +6,10 @@ from __future__ import annotations
 from dataclasses import replace
 
 from lazy_lab.runtime.constructors import ConstructorValue
-from lazy_lab.runtime.control import Return
+from lazy_lab.runtime.control import Force, Return
 from lazy_lab.runtime.observation import observe_whnf
 from lazy_lab.runtime.references import HeapReference
+from lazy_lab.runtime.stack import MaterializationDemandFrame
 from lazy_lab.runtime.state import (
     ExecutionConfig,
     ExecutionPhase,
@@ -338,6 +339,68 @@ def consume_materialized_result(
         previous_state_id=state.state_id,
         next_state=next_state,
         rule_id=RuleId.RESULT_MATERIALIZE_ATOMIC,
+        transition_kind=TransitionKind.RESULT_CONSUMER,
+        phase_before=machine.phase,
+        phase_after=next_machine.phase,
+    )
+
+def request_materialization_field(
+    state: ExecutionState,
+    config: ExecutionConfig,
+) -> TransitionResult:
+    """Request evaluator WHNF demand for a materialization field."""
+
+    machine = state.machine_state
+    progress = machine.result_state.materialization
+
+    if (
+        machine.machine_kind is not MachineKind.CORE
+        or machine.strategy is not config.strategy
+        or machine.status is not ExecutionStatus.RUNNING
+        or machine.phase is not ExecutionPhase.RESULT_MATERIALIZATION
+        or not isinstance(machine.control, Return)
+        or machine.stack.depth != 0
+    ):
+        raise InvalidResultObservationError(
+            "Materialization is not at a field-demand boundary"
+        )
+
+    if (
+        progress is None
+        or not progress.awaiting_whnf
+        or progress.pending_reference is None
+        or progress.root_reference != machine.control.reference
+    ):
+        raise InvalidResultObservationError(
+            "No pending materialization field demand"
+        )
+
+    snapshot = state.snapshot()
+    next_machine = snapshot.machine_state
+
+    next_machine.stack.push(
+        MaterializationDemandFrame(
+            root_reference=progress.root_reference,
+            return_environment=next_machine.local_environment,
+        )
+    )
+
+    next_machine = replace(
+        next_machine,
+        control=Force(progress.pending_reference),
+    )
+
+    next_state = replace(
+        snapshot,
+        state_id=state.state_id + 1,
+        transition_index=state.transition_index + 1,
+        machine_state=next_machine,
+    )
+
+    return TransitionResult(
+        previous_state_id=state.state_id,
+        next_state=next_state,
+        rule_id=RuleId.RESULT_MATERIALIZE_REQUEST_FIELD_WHNF,
         transition_kind=TransitionKind.RESULT_CONSUMER,
         phase_before=machine.phase,
         phase_after=next_machine.phase,

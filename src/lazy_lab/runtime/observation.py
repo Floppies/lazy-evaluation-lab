@@ -63,6 +63,27 @@ CanonicalValue: TypeAlias = (
 )
 
 
+@dataclass(frozen=True, slots=True)
+class CanonicalPending:
+    """An occurrence not visited during materialization."""
+
+
+@dataclass(frozen=True, slots=True)
+class CanonicalPartialConstructor:
+    """A constructor with an incomplete canonical field tree."""
+
+    tag: str
+    fields: tuple[PartialCanonicalValue, ...]
+    unvisited_fields: int = 0
+
+
+PartialCanonicalValue: TypeAlias = (
+    CanonicalValue
+    | CanonicalPending
+    | CanonicalPartialConstructor
+)
+
+
 class UnresolvedObservationError(ValueError):
     """The reference has not reached an observable WHNF."""
 

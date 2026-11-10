@@ -10,6 +10,8 @@ from lazy_lab.runtime.materialization import (
 from lazy_lab.runtime.observation import (
     CanonicalConstructor,
     CanonicalInteger,
+    CanonicalPartialConstructor,
+    CanonicalPending,
 )
 from lazy_lab.runtime.references import ImmediateInteger
 
@@ -110,3 +112,62 @@ def test_materialization_pauses_on_unresolved_field():
     )
 
     assert dict(heap.cells) == original_cells
+
+
+def test_materialization_preserves_partial_value_at_node_limit():
+    heap = Heap()
+
+    nil = allocate_constructor(heap, "Nil", ())
+    inner = allocate_constructor(
+        heap, "Cons", (ImmediateInteger(2), nil)
+    )
+    root = allocate_constructor(
+        heap, "Cons", (ImmediateInteger(1), inner)
+    )
+
+    state = start_materialization(root)
+
+    for _ in range(3):
+        state = advance_materialization(
+            heap, state, node_limit=2
+        )
+
+    assert state.limit_reached
+    assert state.visited_nodes == 2
+    assert state.completed_value is None
+
+    assert state.partial_value == CanonicalPartialConstructor(
+        "Cons",
+        (
+            CanonicalInteger(1),
+            CanonicalPending(),
+        ),
+    )
+
+
+def test_shared_constructor_occurrences_count_separately():
+    heap = Heap()
+
+    shared_nil = allocate_constructor(heap, "Nil", ())
+    root = allocate_constructor(
+        heap,
+        "Cons",
+        (shared_nil, shared_nil),
+    )
+
+    state = start_materialization(root)
+
+    for _ in range(3):
+        state = advance_materialization(
+            heap, state, node_limit=3
+        )
+
+    assert not state.limit_reached
+    assert state.visited_nodes == 3
+    assert state.completed_value == CanonicalConstructor(
+        "Cons",
+        (
+            CanonicalConstructor("Nil", ()),
+            CanonicalConstructor("Nil", ()),
+        ),
+    )

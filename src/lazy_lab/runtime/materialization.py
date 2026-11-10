@@ -8,8 +8,11 @@ from .constructors import ConstructorValue
 from .heap import Heap
 from .observation import (
     CanonicalConstructor,
+    CanonicalPartialConstructor,
+    CanonicalPending,
     CanonicalValue,
     ConstructorWHNF,
+    PartialCanonicalValue,
     UnresolvedObservationError,
     observe_whnf,
 )
@@ -37,6 +40,19 @@ class MaterializationState:
     awaiting_whnf: bool = False
 
 
+@dataclass(frozen=True, slots=True)
+class MaterializationState:
+    root_reference: RuntimeRef
+    pending_reference: RuntimeRef | None
+    frames: tuple[MaterializationFrame, ...] = ()
+    completed_value: CanonicalValue | None = None
+    visited_nodes: int = 0
+    awaiting_whnf: bool = False
+
+    limit_reached: bool = False
+    partial_value: PartialCanonicalValue | None = None
+
+
 def start_materialization(
     reference: RuntimeRef,
 ) -> MaterializationState:
@@ -48,6 +64,8 @@ def start_materialization(
 def advance_materialization(
     heap: Heap,
     state: MaterializationState,
+    *,
+    node_limit: int | None = None,
 ) -> MaterializationState:
     """Visit one WHNF node and advance the explicit DFS traversal."""
 
@@ -57,6 +75,20 @@ def advance_materialization(
     if state.awaiting_whnf:
         raise ValueError("Pending WHNF demand must be resumed first")
 
+    if state.limit_reached:
+        raise ValueError("Materialization node limit already reached")
+
+    if node_limit is not None:
+        if type(node_limit) is not int or node_limit < 1:
+            raise ValueError("node_limit must be a positive integer")
+
+        if state.visited_nodes >= node_limit:
+            return replace(
+                state,
+                limit_reached=True,
+                partial_value=build_partial_value(state),
+            )
+    
     reference = state.pending_reference
 
     if reference is None:
@@ -149,3 +181,22 @@ def resume_materialization(
         pending_reference=whnf_reference,
         awaiting_whnf=False,
     )
+
+def build_partial_value(
+    state: MaterializationState,
+) -> PartialCanonicalValue:
+    """Build a partial tree from the current DFS continuation."""
+
+    if state.completed_value is not None:
+        raise ValueError("Materialization is already complete")
+
+    partial: PartialCanonicalValue = CanonicalPending()
+
+    for frame in reversed(state.frames):
+        partial = CanonicalPartialConstructor(
+            tag=frame.tag,
+            fields=frame.completed_fields + (partial,),
+            unvisited_fields=len(frame.remaining_fields),
+        )
+
+    return partial

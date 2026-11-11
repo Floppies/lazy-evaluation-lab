@@ -89,9 +89,9 @@ The descriptions follow the **Gantt B** plan and its milestone acceptance criter
 | B06.11 | Infinite Lists and Bounded Evaluation | Completed |
 | B06.12 | Integration, Regressions and Audit | Completed |
 | B07 | Instrumentation and Metrics | In Progress |
-| B07.1 | Metrics Contract and Accounting Rules | In Progress |
-| B07.2 | Instrumentation Data Model | Pending |
-| B07.3 | Pure Metrics Reducer | Pending |
+| B07.1 | Metrics Contract and Accounting Rules | Completed |
+| B07.2 | Instrumentation Data Model | Completed |
+| B07.3 | Pure Metrics Reducer | In Progress |
 | B07.4 | Semantic Reductions and Attribution | Pending |
 | B07.5 | Heap and Allocation Metrics | Pending |
 | B07.6 | Stack and Phase Metrics | Pending |

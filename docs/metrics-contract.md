@@ -125,6 +125,29 @@ Typed payloads describe observed operations; their presence
 must not influence evaluation, demand, allocation, or
 execution limits.
 
+### Pure Metrics Reduction
+
+`reduce_metrics(previous, transition)` returns a new immutable
+instrumentation state. It reads the transition's explicit
+metadata and semantic events without modifying the transition,
+the abstract machine, or the previous instrumentation state.
+
+Evaluator transitions increment `evaluatorTransitions`.
+Evaluator transitions whose `phase_before` is
+`RESULT_MATERIALIZATION` additionally increment
+`resultDemandEvaluatorTransitions`. Result-consumer
+transitions increment `resultConsumerTransitions`.
+
+Each supported Core semantic event increments its corresponding
+counter exactly once per occurrence. `semanticReductions` remains
+a derived value and is never incremented directly.
+Source attribution does not alter global event counts.
+
+The initial reducer implementation covers transition counts
+and Core semantic-work counters. Heap, stack, and CBNeed event
+accounting are added incrementally in B07.3.2 and B07.3.3.
+Producer integration is deferred to B07.8.
+
 ## 3. Source Attribution
 
 Every semantic event may carry an `EventOrigin` containing
@@ -199,6 +222,14 @@ The accounting invariants are:
     additionalPeakOverBaseline =
         max(0, peakHeapSlots - baselineSlots)
 
+The metrics reducer processes heap effects in their recorded
+operational order. Each `HeapAllocated` effect increments
+`totalAllocations` and increases `currentHeapSlots` by its
+reserved slot count. `peakHeapSlots` is updated after each
+allocation. `HeapReplaced` preserves allocation and slot
+totals. `HeapBaselineRecorded` establishes the initialization
+baseline exactly once and does not modify the heap counters.
+
 The absolute peak includes initialization and result
 materialization. No garbage collection or physical-memory
 measurement is implied by these abstract counters.
@@ -216,9 +247,13 @@ The accounting invariants, for an initially empty stack, are:
 
     currentFrames = pushes - pops
     peakFrames = max(currentFrames across the execution)
-
-Intermediate depths matter. A pop followed by a push counts
-as two effects even when the final stack depth is unchanged.
+    
+The reducer processes stack effects sequentially.
+`StackPushed` increments pushes and updates the peak after
+the operation; `StackPopped` increments pops. Pops that
+would produce a negative accounted depth are rejected.
+Intermediate stack depths are preserved for peak accounting,
+even when the net depth change of a transition is zero.
 
 `evaluatorTransitions` counts every transition whose kind
 is EVALUATOR, including global initialization and evaluation

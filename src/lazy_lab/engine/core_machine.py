@@ -21,6 +21,7 @@ from lazy_lab.core.nodes import (
     CoreIf,
     CoreLetRec,
 )
+from lazy_lab.metrics.events import SemanticEventKind
 from lazy_lab.runtime.constructors import ConstructorValue, allocate_constructor
 from lazy_lab.runtime.materialization import resume_materialization
 from lazy_lab.semantics.predefined import PREDEFINED_IDENTIFIERS
@@ -207,6 +208,7 @@ def _dispatch_core_evaluation(
             ApplyFunctionFrame(
                 argument=expression.argument,
                 environment=machine.local_environment,
+                application=expression,
             )
         )
 
@@ -1483,6 +1485,11 @@ def _resume_apply_function(
 
             machine.stack.pop()
 
+            recorder.emit(
+                SemanticEventKind.FUNCTION_APPLIED,
+                node=frame.application,
+            )
+
             return (
                 replace(
                     machine,
@@ -1509,7 +1516,13 @@ def _resume_apply_function(
                     first_argument_reference=first_reference,
                     second_expression=frame.argument,
                     return_environment=frame.environment,
+                    application= frame.application,
                 )
+            )
+
+            recorder.emit(
+                SemanticEventKind.FUNCTION_APPLIED,
+                node=frame.application,
             )
 
             return (
@@ -1541,6 +1554,15 @@ def _resume_apply_function(
             RestoreEnvironmentFrame(frame.environment)
         )
 
+        recorder.emit(
+            SemanticEventKind.FUNCTION_APPLIED,
+            node=frame.application,
+        )
+        recorder.emit(
+            SemanticEventKind.BETA_REDUCED,
+            node=function_value.lambda_expression,
+        )
+
         return (
             replace(
                 machine,
@@ -1564,6 +1586,7 @@ def _resume_apply_function(
         ApplyArgumentFrame(
             function=reference,
             return_environment=frame.environment,
+            application=frame.application,
         )
     )
 
@@ -1603,6 +1626,11 @@ def _resume_seq_first_argument(
     )
 
     machine.stack.pop()
+
+    recorder.emit(
+        SemanticEventKind.SEQ_REDUCED,
+        node=frame.application,
+    )
 
     return (
         replace(
@@ -1678,6 +1706,15 @@ def _resume_apply_argument(
         # Saturated seq returns that second argument.
         machine.stack.pop()
 
+        recorder.emit(
+            SemanticEventKind.FUNCTION_APPLIED,
+            node=frame.application,
+        )
+        recorder.emit(
+            SemanticEventKind.SEQ_REDUCED,
+            node=frame.application,
+        )
+
         return (
             replace(
                 machine,
@@ -1708,6 +1745,11 @@ def _resume_apply_argument(
 
         machine.stack.pop()
 
+        recorder.emit(
+            SemanticEventKind.FUNCTION_APPLIED,
+            node=frame.application,
+        )
+
         return (
             replace(
                 machine,
@@ -1731,6 +1773,15 @@ def _resume_apply_argument(
     machine.stack.pop()
     machine.stack.push(
         RestoreEnvironmentFrame(frame.return_environment)
+    )
+
+    recorder.emit(
+        SemanticEventKind.FUNCTION_APPLIED,
+        node=frame.application,
+    )
+    recorder.emit(
+        SemanticEventKind.BETA_REDUCED,
+        node=function_value.lambda_expression,
     )
 
     return (

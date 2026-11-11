@@ -5,7 +5,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from lazy_lab.core.nodes import CoreAlt, CoreExpr
+from lazy_lab.core.nodes import CoreAlt, CoreApp, CoreExpr
 
 from .environment import Environment
 from .references import RuntimeRef, HeapReference
@@ -23,6 +23,7 @@ class ApplyFunctionFrame(StackFrame):
     argument: CoreExpr
     environment: Environment
     awaiting_whnf: bool = False
+    application: CoreApp | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -30,6 +31,7 @@ class ApplyArgumentFrame(StackFrame):
     function: RuntimeRef
     return_environment: Environment | None = None
     awaiting_whnf: bool = False
+    application: CoreApp | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -117,6 +119,7 @@ class SeqFirstArgumentFrame(StackFrame):
     first_argument_reference: RuntimeRef
     second_expression: CoreExpr
     return_environment: Environment
+    application: CoreApp | None = None
 
 
 @dataclass(frozen=True, slots=True)

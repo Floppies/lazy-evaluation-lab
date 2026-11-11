@@ -31,6 +31,7 @@ from lazy_lab.metrics.effects import (
     HeapAllocated,
     StackPushed,
 )
+from lazy_lab.runtime.predefined import PredefinedFunction
 from lazy_lab.runtime.references import ObjectId
 from lazy_lab.runtime.transitions import TransitionResult
 from lazy_lab.runtime.control import (
@@ -108,6 +109,26 @@ def make_state(expression):
         session_id="test-session",
         transition_index=0,
         machine_state=machine,
+    )
+
+
+def collect_until_event(state, config, target_kind):
+    transitions = []
+
+    for _ in range(100):
+        transition = step(state, config)
+        transitions.append(transition)
+
+        if any(
+            event.kind is target_kind
+            for event in transition.semantic_events
+        ):
+            return transitions
+
+        state = transition.next_state
+
+    pytest.fail(
+        f"Expected event {target_kind} was not emitted"
     )
 
 
@@ -1227,3 +1248,90 @@ def test_step_transports_semantic_events(monkeypatch):
 
     assert transition.rule_id is RuleId.CORE_EVAL_INTEGER
     assert transition.next_state.state_id == 1
+
+
+@pytest.mark.parametrize(
+    "strategy",
+    [Strategy.CBV, Strategy.CBNEED],
+)
+def test_seq_emits_two_applications_and_one_reduction(
+    strategy,
+):
+    inner_application = CoreApp(
+        CoreVar("seq"),
+        CoreInt(1),
+        origin=OriginKind.SOURCE,
+    )
+
+    expression = CoreApp(
+        inner_application,
+        CoreInt(2),
+        origin=OriginKind.SOURCE,
+    )
+
+    initial = make_state(expression)
+
+    heap = initial.machine_state.heap
+    seq_reference = heap.allocate(
+        PredefinedFunction("seq"),
+        allocated_slots=1,
+    )
+    environment = Environment({"seq": seq_reference})
+
+    initial = replace(
+        initial,
+        machine_state=replace(
+            initial.machine_state,
+            strategy=strategy,
+            local_environment=environment,
+            global_environment=environment,
+        ),
+    )
+
+    config = replace(
+        make_config(),
+        strategy=strategy,
+    )
+
+    transitions = collect_until_event(
+        initial,
+        config,
+        SemanticEventKind.SEQ_REDUCED,
+    )
+
+    events = [
+        event
+        for transition in transitions
+        for event in transition.semantic_events
+    ]
+
+    kinds = [event.kind for event in events]
+
+    assert kinds.count(
+        SemanticEventKind.FUNCTION_APPLIED
+    ) == 2
+    assert kinds.count(
+        SemanticEventKind.SEQ_REDUCED
+    ) == 1
+    assert kinds.count(
+        SemanticEventKind.BETA_REDUCED
+    ) == 0
+
+    partial = next(
+        transition
+        for transition in transitions
+        if transition.rule_id
+        is RuleId.CORE_PREDEFINED_PARTIAL_APPLY
+    )
+
+    assert [
+        event.kind
+        for event in partial.semantic_events
+    ] == [SemanticEventKind.FUNCTION_APPLIED]
+
+    seq_event = next(
+        event for event in events
+        if event.kind is SemanticEventKind.SEQ_REDUCED
+    )
+
+    assert seq_event.origin.kind is OriginKind.SOURCE

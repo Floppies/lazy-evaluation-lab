@@ -149,14 +149,19 @@ baseline recording, and the six CBNeed lifecycle event counters.
 
 The pure reducer is implemented, and B07.4.3 provides the
 semantic-event transport channel from evaluator rules to
-`TransitionResult`. Actual semantic event producers are added
-in B07.4.4–B07.4.6.
+`TransitionResult`.
+
+B07.4.4 implements emission of `FUNCTION_APPLIED`,
+`BETA_REDUCED`, and `SEQ_REDUCED` for supported CBV and
+CBNeed applications. Variable lookup, let activation,
+primitive reduction, conditional selection, and case
+selection events remain part of B07.4.5–B07.4.6.
 
 Heap and stack effect emission, CBNeed lifecycle emission,
 and integration of accumulated metrics into execution states
 remain deferred to their respective B07 work packages.
-Result-node accounting, per-object lifecycle validation, and
-pending thunk-chain depth tracking are not implemented yet.
+Result-node accounting, per-object lifecycle validation,
+and pending thunk-chain depth tracking are not implemented yet.
 
 ## 3. Source Attribution
 
@@ -205,8 +210,14 @@ B07.4.3 provides a per-transition semantic event recorder
 that transfers Core provenance into immutable `SemanticEvent`
 values and delivers them through `TransitionResult`.
 
-Actual event emission at successful semantic-operation
-boundaries remains part of B07.4.4–B07.4.6.
+Application events are attributed to the originating `CoreApp`,
+while beta-reduction events are attributed to the `CoreLam`
+whose body is entered. Saturated `seq` reductions retain the
+provenance of their saturating application.
+
+B07.4.4 implements these attribution rules. Attribution for
+variable lookup, let activation, primitive execution, and
+conditional/case selection remains part of B07.4.5–B07.4.6.
 
 CoreCase expressions introduced to implement source-level
 pattern matching contribute to `caseReductions` when their

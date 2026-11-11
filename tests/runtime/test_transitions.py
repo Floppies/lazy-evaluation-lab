@@ -2,6 +2,7 @@ from dataclasses import replace
 
 import pytest
 
+from lazy_lab.core.desugar import lower_expression, lower_program
 from lazy_lab.core.nodes import (
     CoreApp,
     CoreBool,
@@ -23,9 +24,11 @@ from lazy_lab.engine.core_machine import (
     InvalidMachineStateError,
     PatternMatchError,
     UnsupportedTransitionError,
+    create_initial_core_state,
     run_batch,
     step,
 )
+from lazy_lab.frontend.parser import parse_expression, parse_program
 from lazy_lab.metrics.events import (
     EventOrigin,
     OriginKind,
@@ -36,6 +39,8 @@ from lazy_lab.metrics.effects import (
     HeapAllocated,
     StackPushed,
 )
+from lazy_lab.metrics.reducer import reduce_metrics
+from lazy_lab.metrics.state import InstrumentationState
 from lazy_lab.runtime.predefined import PredefinedFunction
 from lazy_lab.runtime.references import ObjectId
 from lazy_lab.runtime.transitions import TransitionResult
@@ -1656,3 +1661,127 @@ def test_non_exhaustive_case_does_not_emit_selection():
         current = transition.next_state
     else:
         pytest.fail("Expected non-exhaustive case failure")
+
+
+@pytest.mark.parametrize(
+    "strategy",
+    [Strategy.CBV, Strategy.CBNEED],
+)
+def test_real_core_events_reduce_to_expected_metrics(strategy):
+    expression = lower_expression(
+        parse_expression(
+            "let { x = 1 + 2 } in if True then x else 0"
+        )
+    )
+
+    initial = make_state(expression)
+    current = replace(
+        initial,
+        machine_state=replace(
+            initial.machine_state,
+            strategy=strategy,
+        ),
+    )
+
+    config = replace(
+        make_config(step_limit=200),
+        strategy=strategy,
+    )
+
+    metrics = InstrumentationState()
+    events = []
+
+    for _ in range(120):
+        transition = step(current, config)
+
+        metrics = reduce_metrics(metrics, transition)
+        events.extend(transition.semantic_events)
+        current = transition.next_state
+
+        counters = metrics.counters
+
+        if (
+            counters.let_reductions == 1
+            and counters.conditional_reductions == 1
+            and counters.primitive_reductions == 1
+            and counters.variable_lookups == 1
+        ):
+            break
+    else:
+        pytest.fail("Expected semantic events were not emitted")
+
+    counters = metrics.counters
+
+    assert counters.semantic_reductions == 3
+    assert counters.variable_lookups == 1
+    assert counters.function_applications == 0
+    assert counters.beta_reductions == 0
+
+    assert all(
+        event.origin.kind is OriginKind.SOURCE
+        for event in events
+    )
+
+    assert (
+        counters.evaluator_transitions
+        == current.machine_state.evaluator_transition_count
+    )
+
+    # The reducer must not mutate the initial metrics.
+    assert InstrumentationState().counters.semantic_reductions == 0
+
+
+@pytest.mark.parametrize(
+    "strategy",
+    [Strategy.CBV, Strategy.CBNEED],
+)
+def test_generated_case_counts_as_real_core_reduction(strategy):
+    program = lower_program(
+        parse_program(
+            "f [] = 0\n"
+            "f (h:t) = h\n"
+            "main = f [5]"
+        )
+    )
+
+    config = replace(
+        make_config(step_limit=200),
+        strategy=strategy,
+    )
+
+    current = create_initial_core_state(
+        program,
+        config,
+        session_id="semantic-metrics-test",
+    )
+
+    metrics = InstrumentationState()
+    case_events = []
+
+    for _ in range(150):
+        transition = step(current, config)
+
+        metrics = reduce_metrics(metrics, transition)
+        current = transition.next_state
+
+        case_events.extend(
+            event
+            for event in transition.semantic_events
+            if event.kind
+            is SemanticEventKind.CASE_ALTERNATIVE_SELECTED
+        )
+
+        if case_events:
+            break
+    else:
+        pytest.fail("Generated CoreCase was not selected")
+
+    assert len(case_events) == 1
+    assert case_events[0].origin.kind is OriginKind.GENERATED
+
+    assert metrics.counters.case_reductions == 1
+    assert metrics.counters.function_applications == 1
+    assert metrics.counters.beta_reductions == 1
+
+    # Both reductions contribute to Core semantic work.
+    assert metrics.counters.semantic_reductions >= 2

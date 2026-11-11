@@ -20,6 +20,18 @@ from lazy_lab.engine.core_machine import (
     run_batch,
     step,
 )
+from lazy_lab.metrics.events import (
+    EventOrigin,
+    OriginKind,
+    SemanticEvent,
+    SemanticEventKind,
+)
+from lazy_lab.metrics.effects import (
+    HeapAllocated,
+    StackPushed,
+)
+from lazy_lab.runtime.references import ObjectId
+from lazy_lab.runtime.transitions import TransitionResult
 from lazy_lab.runtime.control import (
     EvaluateCore,
     Return,
@@ -1114,3 +1126,53 @@ def test_cbn_letrec_is_not_implemented_yet(strategy):
     assert original.machine_state.heap.current_slots == 0
     assert original.machine_state.stack.depth == 0
     assert original.transition_index == 0
+
+
+def test_transition_accepts_typed_instrumentation_payloads():
+    # This is a structural contract test; the evaluator does
+    # not emit these events yet.
+    original = step(
+        make_state(CoreInt(42)),
+        make_config(),
+    )
+
+    event = SemanticEvent(
+        kind=SemanticEventKind.BETA_REDUCED,
+        origin=EventOrigin(kind=OriginKind.GENERATED),
+    )
+    allocation = HeapAllocated(
+        object_id=ObjectId(10),
+        allocated_slots=1,
+        object_type="Reserved",
+    )
+    push = StackPushed("ApplyFunctionFrame")
+
+    enriched = replace(
+        original,
+        semantic_events=(event,),
+        heap_effects=(allocation,),
+        stack_effects=(push,),
+        source_origins=(event.origin,),
+    )
+
+    assert enriched.semantic_events == (event,)
+    assert enriched.heap_effects == (allocation,)
+    assert enriched.stack_effects == (push,)
+    assert enriched.source_origins == (event.origin,)
+
+    # Existing transition producers remain compatible.
+    assert original.semantic_events == ()
+    assert original.heap_effects == ()
+    assert original.stack_effects == ()
+
+    # Trace records remain compact.
+    trace = TraceEntry.from_transition(enriched)
+    assert trace.rule_id == original.rule_id
+    assert not hasattr(trace, "semantic_events")
+
+    # Untyped instrumentation payloads are rejected.
+    with pytest.raises(TypeError):
+        replace(
+            original,
+            semantic_events=("BETA_REDUCED",),
+        )

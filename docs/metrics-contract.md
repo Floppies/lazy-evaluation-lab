@@ -98,6 +98,33 @@ One semantic event contributes once to its corresponding
 global counter, regardless of the number of source locations
 associated with it.
 
+### Typed Transition Payloads
+
+`TransitionResult` carries four optional, immutable
+instrumentation payloads:
+
+- `semantic_events`: a tuple of `SemanticEvent` values.
+- `heap_effects`: a tuple of `HeapEffect` values.
+- `stack_effects`: a tuple of `StackEffect` values.
+- `source_origins`: a tuple of `EventOrigin` values.
+
+Each semantic event carries its own provenance. The
+transition-level `source_origins` field provides contextual
+attribution and must not independently increment or duplicate
+metric counters.
+
+All payloads default to empty tuples. This preserves
+compatibility with existing transition producers while
+instrumentation emitters are introduced incrementally.
+
+`TraceEntry` remains a compact operational trace record.
+Metric accounting consumes the original transition data
+independently of trace retention or presentation mode.
+
+Typed payloads describe observed operations; their presence
+must not influence evaluation, demand, allocation, or
+execution limits.
+
 ## 3. Source Attribution
 
 Every semantic event may carry an `EventOrigin` containing

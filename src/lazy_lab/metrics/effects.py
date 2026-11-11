@@ -6,7 +6,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import TypeAlias
 
-from .metric_events import EventOrigin
+from .events import EventOrigin
 from ..runtime.references import ObjectId
 
 

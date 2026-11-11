@@ -5,6 +5,19 @@ from __future__ import annotations
 from dataclasses import dataclass
 from enum import Enum, StrEnum, unique
 
+from lazy_lab.metrics.events import (
+    EventOrigin,
+    SemanticEvent,
+)
+from lazy_lab.metrics.effects import (
+    HeapAllocated,
+    HeapReplaced,
+    HeapBaselineRecorded,
+    HeapEffect,
+    StackPushed,
+    StackPopped,
+    StackEffect,
+)
 from .state import ExecutionPhase, ExecutionState
 
 
@@ -103,6 +116,7 @@ class RuleId(StrEnum):
     RESULT_MATERIALIZE_EXECUTION_LIMIT = "RESULT_MATERIALIZE_EXECUTION_LIMIT"
 
 
+
 @dataclass(frozen=True, slots=True)
 class TransitionResult:
     previous_state_id: int
@@ -111,10 +125,52 @@ class TransitionResult:
     transition_kind: TransitionKind
     phase_before: ExecutionPhase
     phase_after: ExecutionPhase
-    semantic_events: tuple[str, ...] = ()
-    heap_effects: tuple[str, ...] = ()
-    stack_effects: tuple[str, ...] = ()
-    source_origins: tuple[str, ...] = ()
+
+    semantic_events: tuple[SemanticEvent, ...] = ()
+    heap_effects: tuple[HeapEffect, ...] = ()
+    stack_effects: tuple[StackEffect, ...] = ()
+    source_origins: tuple[EventOrigin, ...] = ()
+
+    def __post_init__(self) -> None:
+        payload_types = (
+            (
+                "semantic_events",
+                self.semantic_events,
+                (SemanticEvent,),
+            ),
+            (
+                "heap_effects",
+                self.heap_effects,
+                (
+                    HeapAllocated,
+                    HeapReplaced,
+                    HeapBaselineRecorded,
+                ),
+            ),
+            (
+                "stack_effects",
+                self.stack_effects,
+                (StackPushed, StackPopped),
+            ),
+            (
+                "source_origins",
+                self.source_origins,
+                (EventOrigin,),
+            ),
+        )
+
+        for field_name, values, allowed_types in payload_types:
+            if (
+                not isinstance(values, tuple)
+                or not all(
+                    isinstance(value, allowed_types)
+                    for value in values
+                )
+            ):
+                raise TypeError(
+                    f"{field_name} must contain "
+                    "valid typed instrumentation records"
+                )
 
 
 @dataclass(frozen=True, slots=True)

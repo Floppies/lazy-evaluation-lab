@@ -3,7 +3,7 @@ from dataclasses import FrozenInstanceError
 
 import pytest
 
-from lazy_lab.metrics.metric_effects import (
+from lazy_lab.metrics.effects import (
     HeapAllocated,
     HeapReplaced,
     HeapBaselineRecorded,

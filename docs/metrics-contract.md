@@ -23,6 +23,25 @@ The accounting contract is independent of trace retention.
 Metrics must remain consistent across FULL, EVENTS, and
 METRICS_ONLY trace modes.
 
+Accumulated metrics are stored in an immutable
+`InstrumentationState` attached to each `ExecutionState`.
+Scalar counters are grouped in `MetricCounters`, while
+run-level accounting metadata, such as the initialization
+heap baseline, belongs to `InstrumentationState`.
+
+Derived metrics are not stored redundantly:
+`semanticReductions` is the sum of the six semantic
+reduction counters, `currentFrames` equals pushes minus
+pops, and `thunksNeverForced` equals created thunks minus
+thunks whose evaluation has started. These identities rely
+on the event-accounting invariants defined below.
+
+Instrumentation updates produce new immutable values.
+Historical snapshots may safely share unchanged metric
+objects. Per-object lifecycle tracking and detailed metric
+breakdowns will be introduced only when their corresponding
+accounting rules are implemented.
+
 ## 2. Transition and Event Accounting
 
 `TransitionKind` and `ExecutionPhase` are independent

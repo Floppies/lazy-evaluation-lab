@@ -7,7 +7,7 @@ from dataclasses import dataclass, field, replace
 from enum import Enum
 
 from lazy_lab.runtime.materialization import MaterializationState
-
+from lazy_lab.metrics.state import InstrumentationState
 from .control import CoreControl
 from .environment import Environment
 from .heap import Heap
@@ -112,11 +112,6 @@ class ResultState:
     result_reference: RuntimeRef | None = None
     resolved_result_mode: ResultPolicy | None = None
     materialization: MaterializationState | None = None
-
-
-@dataclass(frozen=True, slots=True)
-class InstrumentationState:
-    """Placeholder for future metrics and object history."""
 
 
 @dataclass(frozen=True, slots=True)

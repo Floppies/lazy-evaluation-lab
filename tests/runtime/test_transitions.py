@@ -1335,3 +1335,143 @@ def test_seq_emits_two_applications_and_one_reduction(
     )
 
     assert seq_event.origin.kind is OriginKind.SOURCE
+
+
+def test_variable_lookup_emits_one_semantic_event():
+    span = SourceSpan(1, 1, 1, 2)
+
+    expression = CoreVar(
+        "x",
+        span=span,
+        origin=OriginKind.SOURCE,
+    )
+
+    environment = Environment({
+        "x": ImmediateInteger(42),
+    })
+
+    initial = make_state(expression)
+    initial = replace(
+        initial,
+        machine_state=replace(
+            initial.machine_state,
+            local_environment=environment,
+        ),
+    )
+
+    transition = step(initial, make_config())
+
+    assert [
+        event.kind
+        for event in transition.semantic_events
+    ] == [SemanticEventKind.VARIABLE_LOOKED_UP]
+
+    event = transition.semantic_events[0]
+
+    assert event.origin.kind is OriginKind.SOURCE
+    assert event.origin.source_spans == (span,)
+    assert transition.rule_id is RuleId.CORE_EVAL_VARIABLE
+
+
+@pytest.mark.parametrize(
+    "strategy",
+    [Strategy.CBV, Strategy.CBNEED],
+)
+def test_letrec_emits_one_activation_per_group(strategy):
+    expression = CoreLetRec(
+        bindings=(
+            CoreBinding("x", CoreInt(1)),
+            CoreBinding("y", CoreInt(2)),
+        ),
+        body=CoreVar("x"),
+        origin=OriginKind.GENERATED,
+    )
+
+    initial = make_state(expression)
+    initial = replace(
+        initial,
+        machine_state=replace(
+            initial.machine_state,
+            strategy=strategy,
+        ),
+    )
+
+    config = replace(
+        make_config(),
+        strategy=strategy,
+    )
+
+    transition = step(initial, config)
+
+    assert transition.rule_id is RuleId.CORE_LETREC_RESERVE_SCOPE
+
+    assert [
+        event.kind
+        for event in transition.semantic_events
+    ] == [SemanticEventKind.LET_ACTIVATED]
+
+    assert (
+        transition.semantic_events[0].origin.kind
+        is OriginKind.GENERATED
+    )
+
+
+@pytest.mark.parametrize(
+    "strategy",
+    [Strategy.CBV, Strategy.CBNEED],
+)
+@pytest.mark.parametrize(
+    "operator,arguments",
+    [
+        ("+", (CoreInt(1), CoreInt(2))),
+        ("negate", (CoreInt(3),)),
+    ],
+)
+def test_primitive_emits_event_only_when_executed(
+    strategy,
+    operator,
+    arguments,
+):
+    span = SourceSpan(1, 1, 1, 8)
+
+    expression = CorePrimOp(
+        operator,
+        arguments,
+        span=span,
+        origin=OriginKind.SOURCE,
+    )
+
+    initial = make_state(expression)
+    initial = replace(
+        initial,
+        machine_state=replace(
+            initial.machine_state,
+            strategy=strategy,
+        ),
+    )
+
+    config = replace(
+        make_config(),
+        strategy=strategy,
+    )
+
+    transitions = collect_until_event(
+        initial,
+        config,
+        SemanticEventKind.PRIMITIVE_REDUCED,
+    )
+
+    primitive_events = [
+        event
+        for transition in transitions
+        for event in transition.semantic_events
+        if event.kind is SemanticEventKind.PRIMITIVE_REDUCED
+    ]
+
+    assert len(primitive_events) == 1
+    assert transitions[-1].rule_id is RuleId.CORE_PRIM_EXECUTE
+
+    event = primitive_events[0]
+
+    assert event.origin.kind is OriginKind.SOURCE
+    assert event.origin.source_spans == (span,)

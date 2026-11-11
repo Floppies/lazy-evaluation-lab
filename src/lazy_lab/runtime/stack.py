@@ -3,9 +3,9 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
-from lazy_lab.core.nodes import CoreAlt, CoreApp, CoreExpr
+from lazy_lab.core.nodes import CoreAlt, CoreApp, CoreExpr, CorePrimOp
 
 from .environment import Environment
 from .references import RuntimeRef, HeapReference
@@ -101,6 +101,11 @@ class PrimitiveOperandsFrame(StackFrame):
     environment: Environment
     awaiting_whnf: bool = False
 
+    primitive: CorePrimOp | None = field(
+        default=None,
+        compare=False,
+    )
+    
 
 @dataclass(frozen=True, slots=True)
 class LocalValueInitializationFrame(StackFrame):

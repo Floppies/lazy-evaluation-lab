@@ -186,6 +186,10 @@ def _dispatch_core_evaluation(
         reference = machine.local_environment.lookup(
             expression.name
         )
+        recorder.emit(
+            SemanticEventKind.VARIABLE_LOOKED_UP,
+            node=expression,
+        )
         next_control = Return(reference)
         rule_id = RuleId.CORE_EVAL_VARIABLE
 
@@ -232,6 +236,7 @@ def _dispatch_core_evaluation(
                 remaining_arguments=expression.arguments[1:],
                 evaluated_arguments=(),
                 environment=machine.local_environment,
+                primitive=expression,
             )
         )
 
@@ -1287,6 +1292,11 @@ def _advance_apply_primitive(
                     f"Unexpected primitive operator: {operator!r}"
                 )
 
+    recorder.emit(
+        SemanticEventKind.PRIMITIVE_REDUCED,
+        node=control.primitive,
+    )
+
     return (
         replace(
             machine,
@@ -1880,6 +1890,7 @@ def _resume_primitive_operand(
             control=ApplyPrimitive(
                 operator=frame.operator,
                 arguments=evaluated_arguments,
+                primitive=frame.primitive,
             ),
         ),
         RuleId.CORE_PRIM_OPERANDS_READY,
@@ -2402,6 +2413,11 @@ def _enter_local_letrec(
     # Restore the enclosing scope when the let body returns.
     machine.stack.push(
         RestoreEnvironmentFrame(outer_environment)
+    )
+
+    recorder.emit(
+        SemanticEventKind.LET_ACTIVATED,
+        node=expression,
     )
 
     return (

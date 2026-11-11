@@ -153,9 +153,15 @@ semantic-event transport channel from evaluator rules to
 
 B07.4.4 implements emission of `FUNCTION_APPLIED`,
 `BETA_REDUCED`, and `SEQ_REDUCED` for supported CBV and
-CBNeed applications. Variable lookup, let activation,
-primitive reduction, conditional selection, and case
-selection events remain part of B07.4.5–B07.4.6.
+CBNeed applications.
+
+B07.4.5 implements `VARIABLE_LOOKED_UP`, `LET_ACTIVATED`,
+and `PRIMITIVE_REDUCED` at their successful operational
+boundaries. Local recursive binding groups are counted once
+per activation, and primitive reductions are emitted only
+after successful primitive execution.
+
+Conditional and case selection events remain part of B07.4.6.
 
 Heap and stack effect emission, CBNeed lifecycle emission,
 and integration of accumulated metrics into execution states
@@ -215,9 +221,17 @@ while beta-reduction events are attributed to the `CoreLam`
 whose body is entered. Saturated `seq` reductions retain the
 provenance of their saturating application.
 
-B07.4.4 implements these attribution rules. Attribution for
-variable lookup, let activation, primitive execution, and
-conditional/case selection remains part of B07.4.5–B07.4.6.
+B07.4.4 implements application, beta-reduction, and
+`seq` attribution. B07.4.5 attributes successful variable
+lookups to their evaluated `CoreVar`, local recursive
+binding activation to the corresponding `CoreLetRec`, and
+primitive execution to its originating `CorePrimOp`.
+
+Primitive provenance is preserved through operand-evaluation
+frames and the final `ApplyPrimitive` control.
+
+Attribution for conditional and case selection remains
+part of B07.4.6.
 
 CoreCase expressions introduced to implement source-level
 pattern matching contribute to `caseReductions` when their

@@ -1,6 +1,8 @@
 # ADR-005: Use Lexical Runtime Environments with Name-Based Lookup
 
-- **Status:** Accepted; implemented for the supported Core CBV and CBNeed subsets. CBN evaluation and executable constructor matching remain deferred.
+- **Status:** Accepted; implemented for the supported Core
+  CBV and CBNeed subsets, including constructor matching.
+  CBN evaluation remains deferred.
 - **Recorded:** 2026-10-20
 - **Scope:** CBV/CBN/CBNeed evaluators, closures, shadowing, recursive bindings, runtime visualization
 - **Related:** [Language specification, §6](../specifications/language-specification.md), [Name resolution](../name-resolution.md), [Core IR](../core-ir.md), [ADR-001 — Recursive local bindings](ADR-001-core-letrec.md), [ADR-004 — Surface name checking](ADR-004-source-name-checking-before-desugaring.md), [B02.8 audit, F03/F07](../audits/b02.8-audit.md)
@@ -78,12 +80,17 @@ This pseudocode describes lexical selection, not an exact Python API or runtime 
 
 The existing B02.9 checkers statically validate lexical visibility over Surface and Core, including recursion and shadowing, but **do not implement or test runtime lookup**. B02.8 lowering tests show that `CoreLam`, `CoreLetRec`, `CoreCase`, and compiler-generated aliases retain the necessary binding structure.
 
-The following list records the runtime acceptance scenarios identified
-when this ADR was accepted. Runtime tests now cover the supported CBV and
-CBNeed scenarios; constructor matching and CBN evaluation remain future work.
+The following list records runtime acceptance scenarios
+identified when this ADR was accepted. Runtime tests now
+cover the supported CBV and CBNeed scenarios, including
+constructor matching, recursive bindings, and lexical
+scope restoration. CBN execution remains future work.
+
 See the [B04 audit](../audits/b04-audit.md),
-[B05 audit](../audits/b05-audit.md) and
-[Core evaluation contract](../core-evaluation-contract.md) for current evidence.
+[B05 audit](../audits/b05-audit.md),
+[B06 audit](../audits/b06-audit.md), and
+[Core evaluation contract](../core-evaluation-contract.md)
+for verification evidence and implementation boundaries.
 
 Runtime acceptance scenarios include:
 

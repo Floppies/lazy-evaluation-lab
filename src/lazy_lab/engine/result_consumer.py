@@ -310,11 +310,13 @@ def consume_materialized_result(
         )
     ):
         raise InvalidResultObservationError(
-            "Complete constructor materialization is not implemented yet"
+            "Constructor results require the dedicated "
+            "constructor materialization protocol"
         )
 
-    # The current runtime supports only atomic or opaque
-    # WHNF results. No recursive traversal is necessary.
+    # This helper handles atomic or opaque WHNF results only.
+    # Recursive constructor traversal uses the separate
+    # constructor materialization protocol.
     canonical = observe_whnf(machine.heap, reference)
 
     # No additional evaluator work is performed.

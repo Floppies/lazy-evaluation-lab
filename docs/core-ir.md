@@ -214,8 +214,14 @@ Desugaring does not evaluate expressions, perform name resolution, eliminate unu
 - Validation does not perform type checking; `CoreApp(CoreInt(1), CoreInt(2))` is structurally valid.
 - Validation does not check pattern-match exhaustiveness or reachability.
 - Constructors are restricted to `Nil` and `Cons`.
-- Name checking is implemented separately in `lazy_lab.semantics`. Runtime evaluation supports the CBV and CBNeed subsets; CBN, constructors and case execution remain deferred.
-- Structural tests verify generated Core shapes; operational equivalence and the instrumentation cost of generated aliases still require evaluator tests.
+- Name checking is implemented separately in
+  `lazy_lab.semantics`. Runtime evaluation supports Core
+  CBV and CBNeed, including constructors and case expressions.
+  CBN execution remains deferred.
+- Structural tests verify the generated Core shapes, while
+  runtime and integration tests cover supported CBV and CBNeed
+  execution. Comparable cost accounting for generated Core
+  operations requires completion of the metrics integration.
 
 ## Surface-to-Core Desugaring
 

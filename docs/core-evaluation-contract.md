@@ -2,7 +2,10 @@
 
 **Status:** Core CBV and CBNeed evaluation and canonical observation implemented; audited with documented limitations.
 
-**Scope:** Implemented Core CBV and CBNeed subsets; planned CBN and executable constructors/case.
+**Scope:** Implemented Core CBV and CBNeed evaluation,
+including constructors, pattern matching, recursive list
+operations, and canonical result observation. CBN evaluation
+remains deferred.
 
 This document retains the incremental B04 submilestone boundaries.
 Those boundaries describe the responsibility of each stage, not
@@ -33,8 +36,10 @@ Examples of WHNF include:
 - A partially applied primitive function.
 - A data constructor whose outermost form is known.
 
-Integers, booleans and function values are supported in B04.
-Executable constructors remain part of B06.
+The supported Core evaluators recognize integers, booleans,
+function values, and data constructors in WHNF. Constructor
+fields are evaluated according to the selected strategy
+and the active demand context.
 
 WHNF is distinct from complete result materialization. Demand policies and constructor-field evaluation depend on the selected strategy.
 
@@ -52,10 +57,10 @@ A demand for WHNF may originate from:
 
 These contexts may require different continuation frames but share the abstract notion of WHNF demand.
 
-The implemented CBV and CBNeed rules are described below. CBNeed
-includes non-strict demand, shared thunk updates and blackhole detection.
-Constructor matching remains part of B06; nonmemoizing CBN evaluation
-remains part of B11.
+The implemented CBV and CBNeed rules include explicit WHNF
+demand, shared thunk updates, blackhole detection, and
+constructor inspection for pattern matching. Nonmemoizing
+CBN evaluation remains deferred.
 
 ## 4. Result Observation
 
@@ -74,7 +79,11 @@ guarantee. The current evaluator returns it only for a recognized
 WHNF reference in a root `Return` with an empty stack. It leaves
 the machine `RUNNING` until the result consumer completes observation.
 
-Canonical result observation and terminal-state transitions are completed in B04. Recursive materialization of lists requires B06 support.
+Canonical result observation and terminal-state transitions
+are implemented. Recursive constructor materialization,
+including finite list structures, is supported through the
+dedicated materialization protocol, subject to result and
+execution limits.
 
 ## 5. Milestone Boundaries
 
@@ -167,20 +176,6 @@ without restarting or repeating previously completed work.
 Continuation restoration must preserve the original caller
 environment, including across nested applications, primitive
 operations and recursive binding initialization.
-
-### 6.5 Deferred Frames
-
-The initial B04.1 continuation plan assigned support to the
-following operational milestones:
-
-- Constructors and pattern matching: B06.
-
-The B04 entries are implemented as described below.
-Thunk updates and sharing for deferred function arguments
-are implemented in B05.5. Global and recursive binding
-integration remains part of B05.6; blackhole detection
-belongs to B05.7. Constructors and pattern matching
-remain part of B06.
 
 ## 7. Evaluation Strategies and Binding Contracts
 
@@ -2241,8 +2236,10 @@ evaluate, or update them.
 Unsupported runtime objects must not silently produce
 fabricated canonical values.
 
-The canonical value schema will be extended with constructors
-when constructor evaluation becomes available in B06.
+Canonical constructor values are supported by the extended
+result-observation and materialization contracts described
+in Section 16. The passive observation and recursive
+materialization boundaries remain distinct.
 
 This subsection defines only passive conversion. ResultPolicy
 handling, result-consumer transitions and completion are implemented

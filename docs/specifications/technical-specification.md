@@ -705,6 +705,8 @@ Demanda y visualización son operaciones diferentes. Expandir un nodo, consultar
 
 Las métricas se actualizan mediante un reducer puro a partir de TransitionResult. phase y transitionKind se mantienen separados: la fase indica dónde ocurre el trabajo y el tipo distingue EVALUATOR, RESULT\_CONSUMER y GC. La interfaz puede combinarlos para presentación sin perder la información original.
 
+Las reglas operacionales de contabilidad, los eventos semanticos, la atribucion de origen e invariantes de metricas estan detalladas y definidas en [Instrumentation and Metrics Contract](../metrics-contract.md)
+
 ### Trabajo semántico
 
 ```text

@@ -107,7 +107,10 @@ def reduce_metrics(
     # Heap effects are processed in operational order.
     for effect in transition.heap_effects:
         if isinstance(effect, HeapAllocated):
-            if effect.allocated_slots < 1:
+            if (
+                type(effect.allocated_slots) is not int
+                or effect.allocated_slots < 1
+            ):
                 raise ValueError(
                     "Allocation requires positive slots"
                 )
@@ -125,9 +128,18 @@ def reduce_metrics(
                 raise ValueError(
                     "Heap baseline already recorded"
                 )
-            if effect.slots < 0:
+
+            if (
+                type(effect.slots) is not int
+                or effect.slots < 0
+            ):
                 raise ValueError(
-                    "Heap baseline cannot be negative"
+                    "Heap baseline must be a non-negative integer"
+                )
+
+            if effect.slots != current_slots:
+                raise ValueError(
+                    "Heap baseline does not match accounted slots"
                 )
 
             baseline_slots = effect.slots

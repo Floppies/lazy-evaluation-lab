@@ -1,6 +1,8 @@
 
 from dataclasses import replace
 
+import pytest
+
 from lazy_lab.core.nodes import CoreInt
 from lazy_lab.metrics.events import (
     EventOrigin,
@@ -318,3 +320,125 @@ def test_blackhole_does_not_count_as_successful_update():
     assert updated.counters.thunks_updated == 0
     assert updated.counters.blackholes == 1
     assert updated.counters.shared_result_hits == 0
+
+
+def test_baseline_must_match_accounted_heap():
+    initial = InstrumentationState()
+
+    allocated = replace(
+        make_transition(),
+        heap_effects=(
+            HeapAllocated(
+                object_id=ObjectId(0),
+                allocated_slots=3,
+                object_type="Reserved",
+            ),
+        ),
+    )
+
+    state = reduce_metrics(initial, allocated)
+
+    wrong_baseline = replace(
+        make_transition(),
+        heap_effects=(HeapBaselineRecorded(slots=2),),
+    )
+
+    with pytest.raises(ValueError, match="does not match"):
+        reduce_metrics(state, wrong_baseline)
+
+    assert state.baseline_slots is None
+    assert state.counters.current_heap_slots == 3
+
+    correct_baseline = replace(
+        make_transition(),
+        heap_effects=(HeapBaselineRecorded(slots=3),),
+    )
+
+    updated = reduce_metrics(state, correct_baseline)
+
+    assert updated.baseline_slots == 3
+
+    with pytest.raises(ValueError, match="already recorded"):
+        reduce_metrics(updated, correct_baseline)
+
+
+def test_reducer_is_compositional_across_batches():
+    transitions = (
+        replace(
+            make_transition(
+                SemanticEvent(
+                    SemanticEventKind.BETA_REDUCED
+                )
+            ),
+            heap_effects=(
+                HeapAllocated(
+                    object_id=ObjectId(0),
+                    allocated_slots=2,
+                    object_type="Closure",
+                ),
+            ),
+        ),
+        replace(
+            make_transition(),
+            stack_effects=(
+                StackPushed("ApplyFunctionFrame"),
+            ),
+        ),
+        replace(
+            make_transition(),
+            stack_effects=(
+                StackPopped("ApplyFunctionFrame"),
+            ),
+        ),
+    )
+
+    initial = InstrumentationState()
+
+    sequential = initial
+    for transition in transitions:
+        sequential = reduce_metrics(
+            sequential,
+            transition,
+        )
+
+    first_batch = initial
+    for transition in transitions[:2]:
+        first_batch = reduce_metrics(
+            first_batch,
+            transition,
+        )
+
+    batched = first_batch
+    for transition in transitions[2:]:
+        batched = reduce_metrics(
+            batched,
+            transition,
+        )
+
+    assert sequential == batched
+    assert initial.counters.evaluator_transitions == 0
+    assert first_batch.counters.evaluator_transitions == 2
+
+    assert sequential.counters.evaluator_transitions == 3
+    assert sequential.counters.semantic_reductions == 1
+    assert sequential.counters.current_heap_slots == 2
+    assert sequential.counters.peak_frames == 1
+    assert sequential.counters.current_frames == 0
+
+
+def test_stack_underflow_preserves_previous_state():
+    initial = InstrumentationState()
+
+    transition = replace(
+        make_transition(),
+        stack_effects=(
+            StackPopped("UpdateFrame"),
+        ),
+    )
+
+    with pytest.raises(ValueError, match="underflow"):
+        reduce_metrics(initial, transition)
+
+    assert initial.counters.pushes == 0
+    assert initial.counters.pops == 0
+    assert initial.counters.current_frames == 0

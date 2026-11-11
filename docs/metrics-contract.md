@@ -143,10 +143,14 @@ counter exactly once per occurrence. `semanticReductions` remains
 a derived value and is never incremented directly.
 Source attribution does not alter global event counts.
 
-The initial reducer implementation covers transition counts
-and Core semantic-work counters. Heap, stack, and CBNeed event
-accounting are added incrementally in B07.3.2 and B07.3.3.
-Producer integration is deferred to B07.8.
+The B07.3 pure reducer accounts for transition metadata,
+Core semantic-work events, heap and stack effects, initialization
+baseline recording, and the six CBNeed lifecycle event counters.
+
+Event and effect emission from actual machine execution remains
+to be integrated in B07.4–B07.8. Result-node accounting,
+per-object lifecycle validation, and pending thunk-chain depth
+tracking are not implemented by the current reducer.
 
 ## 3. Source Attribution
 
@@ -277,8 +281,10 @@ from a change in phase or from a particular RuleId.
 
 ## 6. CBNeed Demand and Sharing
 
-The detailed lifecycle and accounting rules will be
-completed in B07.7.
+The six CBNeed lifecycle event counters are implemented
+by the pure reducer in B07.3. Correct emission boundaries,
+per-anchor lifecycle validation, sharing attribution,
+and pending update-chain depth accounting remain part of B07.7.
 
 The supported event types already include thunk creation,
 demand, first force, successful update, shared-result reuse,
@@ -339,6 +345,26 @@ execution costs.
 Abstract slots, semantic reductions, and continuation frames
 must not be equated with native memory bytes, machine
 instructions, or physical stack usage.
+
+### Reducer Accounting Invariants
+
+The reducer processes each transition exactly once and
+returns a new immutable instrumentation state.
+
+Heap allocations require positive integer slot counts.
+The initialization baseline may be recorded only once and
+must match the accounted current heap slots at that point.
+This assumes that the initial heap was empty or correctly
+represented in the initial instrumentation state.
+
+Stack pops must not produce a negative accounted frame depth.
+Peak heap usage and peak stack depth are monotonic across
+successive instrumentation states.
+
+Applying the same ordered transition sequence in different
+batch partitions must produce identical accumulated metrics.
+These are reducer-level guarantees; end-to-end batch and
+snapshot equivalence is validated after producer integration.
 
 ## 8. Export Contract
 

@@ -147,10 +147,16 @@ The B07.3 pure reducer accounts for transition metadata,
 Core semantic-work events, heap and stack effects, initialization
 baseline recording, and the six CBNeed lifecycle event counters.
 
-Event and effect emission from actual machine execution remains
-to be integrated in B07.4–B07.8. Result-node accounting,
-per-object lifecycle validation, and pending thunk-chain depth
-tracking are not implemented by the current reducer.
+The pure reducer is implemented, and B07.4.3 provides the
+semantic-event transport channel from evaluator rules to
+`TransitionResult`. Actual semantic event producers are added
+in B07.4.4–B07.4.6.
+
+Heap and stack effect emission, CBNeed lifecycle emission,
+and integration of accumulated metrics into execution states
+remain deferred to their respective B07 work packages.
+Result-node accounting, per-object lifecycle validation, and
+pending thunk-chain depth tracking are not implemented yet.
 
 ## 3. Source Attribution
 
@@ -195,8 +201,12 @@ matching. The original equation bodies retain `SOURCE`
 provenance.
 
 Provenance classification is implemented during lowering.
-Propagation of that metadata into actual semantic events
-remains part of B07.4.3–B07.4.6.
+B07.4.3 provides a per-transition semantic event recorder
+that transfers Core provenance into immutable `SemanticEvent`
+values and delivers them through `TransitionResult`.
+
+Actual event emission at successful semantic-operation
+boundaries remains part of B07.4.4–B07.4.6.
 
 CoreCase expressions introduced to implement source-level
 pattern matching contribute to `caseReductions` when their

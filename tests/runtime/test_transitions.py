@@ -13,6 +13,7 @@ from lazy_lab.core.nodes import (
     CoreLetRec,
     CoreBinding,
 )
+from lazy_lab.engine import core_machine
 from lazy_lab.engine.core_machine import (
     EvaluatorBudgetExhaustedError,
     InvalidMachineStateError,
@@ -71,6 +72,7 @@ from lazy_lab.runtime.transitions import (
     TraceEntry,
 )
 from lazy_lab.runtime.closures import Closure
+from lazy_lab.source import SourceSpan
 
 def make_config(
     trace_mode=TraceMode.FULL,
@@ -1176,3 +1178,52 @@ def test_transition_accepts_typed_instrumentation_payloads():
             original,
             semantic_events=("BETA_REDUCED",),
         )
+
+
+def test_step_transports_semantic_events(monkeypatch):
+    # Inject one synthetic event to test the transport
+    # channel before production emitters are implemented.
+    expression = CoreInt(
+        42,
+        span=SourceSpan(1, 1, 1, 3),
+        origin=OriginKind.SOURCE,
+    )
+
+    original_dispatch = (
+        core_machine._dispatch_core_evaluation
+    )
+
+    def instrumented_dispatch(machine, recorder):
+        next_machine, rule_id = original_dispatch(
+            machine,
+            recorder,
+        )
+
+        recorder.emit(
+            SemanticEventKind.BETA_REDUCED,
+            node=expression,
+        )
+
+        return next_machine, rule_id
+
+    monkeypatch.setattr(
+        core_machine,
+        "_dispatch_core_evaluation",
+        instrumented_dispatch,
+    )
+
+    transition = step(
+        make_state(expression),
+        make_config(),
+    )
+
+    assert len(transition.semantic_events) == 1
+
+    event = transition.semantic_events[0]
+
+    assert event.kind is SemanticEventKind.BETA_REDUCED
+    assert event.origin.kind is OriginKind.SOURCE
+    assert event.origin.source_spans == (expression.span,)
+
+    assert transition.rule_id is RuleId.CORE_EVAL_INTEGER
+    assert transition.next_state.state_id == 1

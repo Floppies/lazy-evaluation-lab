@@ -93,7 +93,7 @@ from lazy_lab.runtime.thunks import (
     PendingThunk,
     EvaluatingThunk,
 )
-
+from lazy_lab.metrics.recording import SemanticEventRecorder
 
 class UnsupportedTransitionError(NotImplementedError):
     """The requested transition is not implemented yet."""
@@ -157,6 +157,7 @@ def _evaluate_boolean(
 
 def _dispatch_core_evaluation(
     machine: MachineState,
+    recorder: SemanticEventRecorder,
 ) -> tuple[MachineState, RuleId]:
     """Apply one Core expression evaluation rule.
 
@@ -252,6 +253,7 @@ def _dispatch_core_evaluation(
         return _enter_local_letrec(
             machine,
             expression,
+            recorder,
         )
 
     elif isinstance(expression, CoreCase):
@@ -380,6 +382,7 @@ def step(
 
     # All mutations below affect isolated successor storage.
     snapshot = state.snapshot()
+    recorder = SemanticEventRecorder()
 
     if isinstance(control, InitializeCoreBindings):
         next_machine, rule_id = _advance_global_initialization(
@@ -397,23 +400,27 @@ def step(
         next_machine, rule_id = _advance_force(
             snapshot.machine_state,
             control,
+            recorder,
         )
 
     elif isinstance(control, Return):
         next_machine, rule_id = _advance_return(
             snapshot.machine_state,
             control,
+            recorder,
         )
 
     elif isinstance(control, ApplyPrimitive):
         next_machine, rule_id = _advance_apply_primitive(
             snapshot.machine_state,
             control,
+            recorder,
         )
 
     else:
         next_machine, rule_id = _dispatch_core_evaluation(
-        snapshot.machine_state
+        snapshot.machine_state,
+        recorder,
     )
         
     next_machine = replace(
@@ -437,6 +444,7 @@ def step(
         transition_kind=TransitionKind.EVALUATOR,
         phase_before=machine.phase,
         phase_after=next_machine.phase,
+        semantic_events=recorder.freeze(),
     )
 
 def _stop_reason(
@@ -840,6 +848,7 @@ def _reference_is_whnf(
 def _advance_force(
     machine: MachineState,
     control: Force,
+    recorder: SemanticEventRecorder,
 ) -> tuple[MachineState, RuleId]:
     """Demand WHNF, entering CBNeed thunks or detecting reentrant demand.
 
@@ -1022,6 +1031,7 @@ def _advance_force(
 def _advance_return(
     machine: MachineState,
     control: Return,
+    recorder: SemanticEventRecorder,
 ) -> tuple[MachineState, RuleId]:
     """Resume a continuation or demand a root result."""
     reference = control.reference
@@ -1091,6 +1101,7 @@ def _advance_return(
                 machine,
                 control,
                 frame,
+                recorder,
             )
 
         # 6. Function position has returned.
@@ -1100,6 +1111,7 @@ def _advance_return(
                 machine,
                 control,
                 frame,
+                recorder,
             )
 
         # 7. Argument has returned.
@@ -1109,6 +1121,7 @@ def _advance_return(
                 machine,
                 control,
                 frame,
+                recorder,
             )
 
         # 8. Function body has returned.
@@ -1125,6 +1138,7 @@ def _advance_return(
                 machine,
                 control,
                 frame,
+                recorder,
             )
 
         # 10. Constructor evaluation
@@ -1141,6 +1155,7 @@ def _advance_return(
                 machine,
                 control,
                 frame,
+                recorder,
             )
 
         #12. Continueation for materailization
@@ -1184,6 +1199,7 @@ def _advance_return(
 def _advance_apply_primitive(
     machine: MachineState,
     control: ApplyPrimitive,
+    recorder: SemanticEventRecorder,
 ) -> tuple[MachineState, RuleId]:
     """Execute a primitive with fully evaluated WHNF operands."""
     operator = control.operator
@@ -1394,6 +1410,7 @@ def _resume_apply_function(
     machine: MachineState,
     control: Return,
     frame: ApplyFunctionFrame,
+    recorder: SemanticEventRecorder,
 ) -> tuple[MachineState, RuleId]:
     """Demand the function, then dispatch CBV or CBNeed application.
 
@@ -1563,6 +1580,7 @@ def _resume_seq_first_argument(
     machine: MachineState,
     control: Return,
     frame: SeqFirstArgumentFrame,
+    recorder: SemanticEventRecorder,
 ) -> tuple[MachineState, RuleId]:
     """Complete CBNeed seq without forcing its second argument."""
 
@@ -1599,6 +1617,7 @@ def _resume_apply_argument(
     machine: MachineState,
     control: Return,
     frame: ApplyArgumentFrame,
+    recorder: SemanticEventRecorder,
 ) -> tuple[MachineState, RuleId]:
     """Demand the CBV argument, then enter the closure body."""
     if frame.return_environment is None:
@@ -1819,6 +1838,7 @@ def _resume_if_condition(
     machine: MachineState,
     control: Return,
     frame: IfFrame,
+    recorder: SemanticEventRecorder,
 ) -> tuple[MachineState, RuleId]:
     """Demand a boolean condition and select exactly one branch."""
     reference = control.reference
@@ -2082,6 +2102,7 @@ def _resume_core_case(
     machine: MachineState,
     control: Return,
     frame: CoreCaseFrame,
+    recorder: SemanticEventRecorder,
 ) -> tuple[MachineState, RuleId]:
     """Demand the case scrutinee before matching alternatives."""
 
@@ -2279,6 +2300,7 @@ def _resume_materialization_field(
 def _enter_local_letrec(
     machine: MachineState,
     expression: CoreLetRec,
+    recorder: SemanticEventRecorder,
 ) -> tuple[MachineState, RuleId]:
     """Reserve every local binding before evaluating any RHS."""
     if machine.strategy not in (

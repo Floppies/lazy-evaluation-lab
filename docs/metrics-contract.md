@@ -247,7 +247,7 @@ The accounting invariants, for an initially empty stack, are:
 
     currentFrames = pushes - pops
     peakFrames = max(currentFrames across the execution)
-    
+
 The reducer processes stack effects sequentially.
 `StackPushed` increments pushes and updates the peak after
 the operation; `StackPopped` increments pops. Pops that
@@ -287,6 +287,31 @@ and blackhole detection.
 Thunk identity follows the stable anchor, not an
 intermediate payload address. The definitions in technical
 specification section 10 remain authoritative.
+
+### CBNeed Event Accounting
+
+The metrics reducer recognizes six explicit CBNeed lifecycle
+events: `THUNK_CREATED`, `THUNK_DEMANDED`, `THUNK_FORCE_STARTED`,
+`THUNK_UPDATED`, `SHARED_RESULT_HIT`, and
+`BLACKHOLE_DETECTED`.
+
+Each event increments only its corresponding counter.
+A demand does not implicitly count as a force, an update,
+or a shared-result hit. Likewise, a successful update does
+not imply a new allocation.
+
+`thunksNeverForced` is derived as `thunksCreated` minus
+`thunksForced`, relying on each thunk being created and
+first-forced at most once in the corresponding accounting
+categories.
+
+Events refer to the stable thunk anchor through its
+`ObjectId`. Per-anchor lifecycle validation, correct emission
+boundaries, and pending update-chain depth accounting are
+completed during B07.7.
+
+The reducer does not infer lifecycle events from `RuleId`,
+heap object types, or changes in the heap state.
 
 ## 7. Determinism and Comparability
 

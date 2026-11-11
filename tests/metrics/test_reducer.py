@@ -217,3 +217,104 @@ def test_stack_peak_preserves_intermediate_depth():
 
     # Peak cannot be recovered from final depth alone.
     assert state.counters.peak_frames == 2
+
+
+def test_cbneed_events_update_independent_counters():
+    anchor = ObjectId(10)
+
+    created = make_transition(
+        SemanticEvent(
+            SemanticEventKind.THUNK_CREATED,
+            object_id=anchor,
+        ),
+    )
+
+    forced = make_transition(
+        SemanticEvent(
+            SemanticEventKind.THUNK_DEMANDED,
+            object_id=anchor,
+        ),
+        SemanticEvent(
+            SemanticEventKind.THUNK_FORCE_STARTED,
+            object_id=anchor,
+        ),
+    )
+
+    updated = make_transition(
+        SemanticEvent(
+            SemanticEventKind.THUNK_UPDATED,
+            object_id=anchor,
+        ),
+    )
+
+    reused = make_transition(
+        SemanticEvent(
+            SemanticEventKind.THUNK_DEMANDED,
+            object_id=anchor,
+        ),
+        SemanticEvent(
+            SemanticEventKind.SHARED_RESULT_HIT,
+            object_id=anchor,
+        ),
+    )
+
+    state = InstrumentationState()
+
+    for transition in (
+        created,
+        forced,
+        updated,
+        reused,
+    ):
+        state = reduce_metrics(state, transition)
+
+    counters = state.counters
+
+    assert counters.thunks_created == 1
+    assert counters.thunk_demands == 2
+    assert counters.thunks_forced == 1
+    assert counters.thunks_updated == 1
+    assert counters.shared_result_hits == 1
+    assert counters.blackholes == 0
+    assert counters.thunks_never_forced == 0
+
+    assert counters.semantic_reductions == 0
+    assert counters.total_allocations == 0
+
+
+def test_blackhole_does_not_count_as_successful_update():
+    anchor = ObjectId(20)
+
+    transition = make_transition(
+        SemanticEvent(
+            SemanticEventKind.THUNK_CREATED,
+            object_id=anchor,
+        ),
+        SemanticEvent(
+            SemanticEventKind.THUNK_DEMANDED,
+            object_id=anchor,
+        ),
+        SemanticEvent(
+            SemanticEventKind.THUNK_FORCE_STARTED,
+            object_id=anchor,
+        ),
+        SemanticEvent(
+            SemanticEventKind.THUNK_DEMANDED,
+            object_id=anchor,
+        ),
+        SemanticEvent(
+            SemanticEventKind.BLACKHOLE_DETECTED,
+            object_id=anchor,
+        ),
+    )
+
+    updated = reduce_metrics(
+        InstrumentationState(),
+        transition,
+    )
+
+    assert updated.counters.thunk_demands == 2
+    assert updated.counters.thunks_forced == 1
+    assert updated.counters.thunks_updated == 0
+    assert updated.counters.blackholes == 1
+    assert updated.counters.shared_result_hits == 0

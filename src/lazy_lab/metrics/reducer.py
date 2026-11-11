@@ -41,6 +41,21 @@ _CORE_EVENT_COUNTERS = {
         "variable_lookups",
 }
 
+_CBNEED_EVENT_COUNTERS = {
+    SemanticEventKind.THUNK_CREATED:
+        "thunks_created",
+    SemanticEventKind.THUNK_DEMANDED:
+        "thunk_demands",
+    SemanticEventKind.THUNK_FORCE_STARTED:
+        "thunks_forced",
+    SemanticEventKind.THUNK_UPDATED:
+        "thunks_updated",
+    SemanticEventKind.SHARED_RESULT_HIT:
+        "shared_result_hits",
+    SemanticEventKind.BLACKHOLE_DETECTED:
+        "blackholes",
+}
+
 
 def reduce_metrics(
     previous: InstrumentationState,
@@ -69,9 +84,14 @@ def reduce_metrics(
         is TransitionKind.RESULT_CONSUMER
     ):
         bump("result_consumer_transitions")
-
+    
     for event in transition.semantic_events:
         field_name = _CORE_EVENT_COUNTERS.get(event.kind)
+
+        if field_name is None:
+            field_name = _CBNEED_EVENT_COUNTERS.get(
+                event.kind
+            )
 
         if field_name is not None:
             bump(field_name)

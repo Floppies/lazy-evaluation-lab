@@ -4,7 +4,7 @@
 
 Core is the intermediate representation intended to sit between the surface Abstract Syntax Tree (AST) and evaluation. It makes functions, applications, recursive bindings, and constructor inspection explicit.
 
-The current implementation provides immutable nodes, explicit structural validation, and Surface-to-Core desugaring. Separate Surface and Core name checkers verify lexical visibility; see [Name resolution](name-resolution.md). The Core evaluator executes the supported CBV and CBNeed subsets and provides canonical result observation; see the [Core evaluation contract](core-evaluation-contract.md). CBNeed includes deferred evaluation, memoization, sharing and blackhole detection. CBN evaluation and executable constructors/case remain deferred.
+The current implementation provides immutable nodes, explicit structural validation, and Surface-to-Core desugaring. Separate Surface and Core name checkers verify lexical visibility; see [Name resolution](name-resolution.md). The Core evaluator executes the supported CBV and CBNeed subsets and provides canonical result observation; see the [Core evaluation contract](core-evaluation-contract.md). CBNeed includes deferred evaluation, memoization, sharing and blackhole detection. CBN evaluation remains deferred. Constructor and case execution are supported by the Core CBV and CBNeed evaluators.
 
 Core does not select an evaluation strategy. The same expression can be used by call-by-value (CBV), call-by-name (CBN), and call-by-need (CBNeed) evaluators.
 
@@ -177,8 +177,18 @@ value does not participate in structural equality.
 
 Provenance and source spans are independent: a generated
 Core node may retain a source span identifying the syntax
-responsible for its creation. Frontend desugaring is
-responsible for assigning known provenance classifications.
+responsible for its creation.
+
+Frontend desugaring assigns `SOURCE` to Core constructs
+directly representing source-authored expressions and
+parameters. It assigns `GENERATED` to auxiliary structures
+introduced for list literals and pattern matching, including
+constructor chains, case expressions, temporary parameters,
+and auxiliary recursive bindings.
+
+Core nodes created directly without explicit provenance
+retain `UNKNOWN`. Source spans and provenance remain
+independent metadata and do not affect structural equality.
 
 ## Representation Boundaries
 

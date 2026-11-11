@@ -4,6 +4,7 @@ from lazy_lab.frontend.parser import parse_program
 from lazy_lab.core import nodes as core
 from lazy_lab.core.desugar import lower_program
 from lazy_lab.core.validation import validate_core_program
+from lazy_lab.source import OriginKind
 
 
 def lower_source(source: str) -> core.CoreProgram:
@@ -372,3 +373,36 @@ def test_pattern_alternatives_preserve_source_spans():
         == second_equation.parameters[-1].span
     )
 
+
+def test_pattern_lowering_marks_auxiliary_core_as_generated():
+    result = lower_source(
+        "f x [] = x\n"
+        "f y (h:t) = y"
+    )
+
+    first_lambda = result.bindings[0].rhs
+    second_lambda = first_lambda.body
+    case = second_lambda.body
+
+    assert first_lambda.origin is OriginKind.GENERATED
+    assert second_lambda.origin is OriginKind.GENERATED
+    assert case.origin is OriginKind.GENERATED
+    assert case.scrutinee.origin is OriginKind.GENERATED
+
+    assert all(
+        alt.origin is OriginKind.GENERATED
+        for alt in case.alternatives
+    )
+
+    first_body = case.alternatives[0].body
+
+    assert isinstance(first_body, core.CoreLetRec)
+    assert first_body.origin is OriginKind.GENERATED
+
+    binding = first_body.bindings[0]
+
+    assert binding.origin is OriginKind.GENERATED
+    assert binding.rhs.origin is OriginKind.GENERATED
+
+    # The equation's original body remains source-authored.
+    assert first_body.body.origin is OriginKind.SOURCE

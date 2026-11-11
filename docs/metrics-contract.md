@@ -182,9 +182,21 @@ The Core representation does not depend on the metrics
 package. Semantic event producers convert Core provenance
 into `EventOrigin` values when recording actual operations.
 
-B07.4.1 establishes provenance storage only. Classification
-of source-authored and compiler-generated Core nodes during
-desugaring remains part of B07.4.2.
+Surface-to-Core desugaring assigns explicit provenance to
+the Core structures it creates. Source-authored literals,
+variables, applications, primitive operations, conditionals,
+recursive bindings, and explicitly declared function
+parameters receive `SOURCE`.
+
+Constructor chains introduced for list literals receive
+`GENERATED`, as do auxiliary cases, alternatives, parameter
+bindings, and temporary lambdas introduced by pattern
+matching. The original equation bodies retain `SOURCE`
+provenance.
+
+Provenance classification is implemented during lowering.
+Propagation of that metadata into actual semantic events
+remains part of B07.4.3–B07.4.6.
 
 CoreCase expressions introduced to implement source-level
 pattern matching contribute to `caseReductions` when their

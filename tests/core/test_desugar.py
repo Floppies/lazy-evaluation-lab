@@ -14,6 +14,7 @@ from lazy_lab.core.desugar import (
     lower_program,
 )
 from lazy_lab.core.validation import validate_core_program
+from lazy_lab.source import OriginKind
 
 
 @pytest.mark.parametrize(
@@ -729,3 +730,48 @@ def test_deep_addition_lowering_pipeline(validate_surface):
         terms += 1
     assert result == core.CoreInt(1)
     assert terms == 2000
+
+
+def test_source_constructs_preserve_source_provenance():
+    program = lower_program(
+        parse_program("add x y = x + y")
+    )
+
+    function = program.bindings[0].rhs
+
+    assert program.origin is OriginKind.SOURCE
+    assert function.origin is OriginKind.SOURCE
+    assert function.body.origin is OriginKind.SOURCE
+    assert function.body.body.origin is OriginKind.SOURCE
+
+    local = lower_expression(
+        parse_expression("let { x = 1 } in x")
+    )
+
+    assert local.origin is OriginKind.SOURCE
+    assert local.bindings[0].origin is OriginKind.SOURCE
+    assert local.body.origin is OriginKind.SOURCE
+
+
+def test_list_literal_generates_constructor_structure():
+    expression = lower_expression(
+        parse_expression("[1, 2]")
+    )
+
+    first = expression
+    second = first.fields[1]
+    nil = second.fields[1]
+
+    assert first.origin is OriginKind.GENERATED
+    assert second.origin is OriginKind.GENERATED
+    assert nil.origin is OriginKind.GENERATED
+
+    assert first.fields[0].origin is OriginKind.SOURCE
+    assert second.fields[0].origin is OriginKind.SOURCE
+
+    explicit_cons = lower_expression(
+        parse_expression("1 : []")
+    )
+
+    assert explicit_cons.origin is OriginKind.SOURCE
+    assert explicit_cons.fields[1].origin is OriginKind.GENERATED

@@ -7,7 +7,7 @@ from dataclasses import dataclass, field
 from typing import TypeAlias
 
 from .metric_events import EventOrigin
-from .references import ObjectId
+from ..runtime.references import ObjectId
 
 
 @dataclass(frozen=True, slots=True)

@@ -3,7 +3,7 @@ from dataclasses import FrozenInstanceError
 
 import pytest
 
-from lazy_lab.runtime.metric_events import (
+from lazy_lab.metrics.metric_events import (
     EventOrigin,
     OriginKind,
     SemanticEvent,

@@ -6,7 +6,7 @@ from dataclasses import dataclass, field
 from enum import StrEnum
 
 from lazy_lab.source import SourceSpan
-from .references import ObjectId
+from ..runtime.references import ObjectId
 
 
 class SemanticEventKind(StrEnum):

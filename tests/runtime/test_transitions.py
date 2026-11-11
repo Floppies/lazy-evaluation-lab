@@ -5,6 +5,10 @@ import pytest
 from lazy_lab.core.nodes import (
     CoreApp,
     CoreBool,
+    CoreCase,
+    CoreCon,
+    CoreConAlt,
+    CoreDefaultAlt,
     CoreInt,
     CoreLam,
     CoreVar,
@@ -17,6 +21,7 @@ from lazy_lab.engine import core_machine
 from lazy_lab.engine.core_machine import (
     EvaluatorBudgetExhaustedError,
     InvalidMachineStateError,
+    PatternMatchError,
     UnsupportedTransitionError,
     run_batch,
     step,
@@ -1475,3 +1480,179 @@ def test_primitive_emits_event_only_when_executed(
 
     assert event.origin.kind is OriginKind.SOURCE
     assert event.origin.source_spans == (span,)
+
+
+@pytest.mark.parametrize(
+    "strategy",
+    [Strategy.CBV, Strategy.CBNEED],
+)
+@pytest.mark.parametrize(
+    "condition, expected_rule",
+    [
+        (True, RuleId.CORE_IF_SELECT_THEN),
+        (False, RuleId.CORE_IF_SELECT_ELSE),
+    ],
+)
+def test_conditional_selection_event(
+    strategy,
+    condition,
+    expected_rule,
+):
+    span = SourceSpan(1, 1, 1, 25)
+
+    expression = CoreIf(
+        CoreBool(condition),
+        CoreInt(10),
+        CoreInt(20),
+        span=span,
+        origin=OriginKind.SOURCE,
+    )
+
+    initial = make_state(expression)
+    initial = replace(
+        initial,
+        machine_state=replace(
+            initial.machine_state,
+            strategy=strategy,
+        ),
+    )
+    config = replace(make_config(), strategy=strategy)
+
+    transitions = collect_until_event(
+        initial,
+        config,
+        SemanticEventKind.CONDITIONAL_SELECTED,
+    )
+
+    selected = transitions[-1]
+
+    assert selected.rule_id is expected_rule
+
+    events = [
+        event
+        for transition in transitions
+        for event in transition.semantic_events
+        if event.kind is SemanticEventKind.CONDITIONAL_SELECTED
+    ]
+
+    assert len(events) == 1
+    assert events[0].origin.kind is OriginKind.SOURCE
+    assert events[0].origin.source_spans == (span,)
+
+    expected_value = 10 if condition else 20
+    assert selected.next_state.machine_state.control == (
+        EvaluateCore(CoreInt(expected_value))
+    )
+
+    # Entering the selected branch is not another selection.
+    following = step(selected.next_state, config)
+
+    assert not any(
+        event.kind is SemanticEventKind.CONDITIONAL_SELECTED
+        for event in following.semantic_events
+    )
+
+
+@pytest.mark.parametrize(
+    "strategy",
+    [Strategy.CBV, Strategy.CBNEED],
+)
+@pytest.mark.parametrize(
+    "scrutinee, expected_rule",
+    [
+        (
+            CoreCon("Nil", ()),
+            RuleId.CORE_CASE_SELECT_CONSTRUCTOR,
+        ),
+        (
+            CoreInt(9),
+            RuleId.CORE_CASE_SELECT_DEFAULT,
+        ),
+    ],
+)
+def test_case_selection_preserves_generated_provenance(
+    strategy,
+    scrutinee,
+    expected_rule,
+):
+    span = SourceSpan(2, 1, 2, 12)
+
+    expression = CoreCase(
+        scrutinee,
+        (
+            CoreConAlt("Nil", (), CoreInt(1)),
+            CoreDefaultAlt("value", CoreInt(2)),
+        ),
+        span=span,
+        origin=OriginKind.GENERATED,
+    )
+
+    initial = make_state(expression)
+    initial = replace(
+        initial,
+        machine_state=replace(
+            initial.machine_state,
+            strategy=strategy,
+        ),
+    )
+    config = replace(make_config(), strategy=strategy)
+
+    transitions = collect_until_event(
+        initial,
+        config,
+        SemanticEventKind.CASE_ALTERNATIVE_SELECTED,
+    )
+
+    selected = transitions[-1]
+
+    assert selected.rule_id is expected_rule
+
+    events = [
+        event
+        for transition in transitions
+        for event in transition.semantic_events
+        if event.kind is SemanticEventKind.CASE_ALTERNATIVE_SELECTED
+    ]
+
+    assert len(events) == 1
+    assert events[0].origin.kind is OriginKind.GENERATED
+    assert events[0].origin.source_spans == (span,)
+
+    # Entering the selected alternative must not count again.
+    following = step(selected.next_state, config)
+
+    assert not any(
+        event.kind is SemanticEventKind.CASE_ALTERNATIVE_SELECTED
+        for event in following.semantic_events
+    )
+
+
+def test_non_exhaustive_case_does_not_emit_selection():
+    expression = CoreCase(
+        CoreCon("Nil", ()),
+        (
+            CoreConAlt(
+                "Cons",
+                ("head", "tail"),
+                CoreInt(1),
+            ),
+        ),
+    )
+
+    current = make_state(expression)
+    config = make_config()
+
+    for _ in range(20):
+        try:
+            transition = step(current, config)
+        except PatternMatchError:
+            break
+
+        assert not any(
+            event.kind is SemanticEventKind.CASE_ALTERNATIVE_SELECTED
+            for event in transition.semantic_events
+        )
+
+        current = transition.next_state
+    else:
+        pytest.fail("Expected non-exhaustive case failure")

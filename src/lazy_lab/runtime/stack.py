@@ -5,7 +5,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from lazy_lab.core.nodes import CoreAlt, CoreApp, CoreExpr, CorePrimOp
+from lazy_lab.core.nodes import CoreAlt, CoreApp, CoreCase, CoreExpr, CoreIf, CorePrimOp
 
 from .environment import Environment
 from .references import RuntimeRef, HeapReference
@@ -40,6 +40,10 @@ class IfFrame(StackFrame):
     else_branch: CoreExpr
     environment: Environment
     awaiting_whnf: bool = False
+    conditional: CoreIf | None = field(
+        default=None,
+        compare=False,
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -147,6 +151,10 @@ class CoreCaseFrame(StackFrame):
     awaiting_whnf: bool = False
     scrutinee_reference: RuntimeRef | None = None
     selected_alternative: CoreAlt | None = None
+    case_expression: CoreCase | None = field(
+        default=None,
+        compare=False,
+    )
 
 
 @dataclass(frozen=True, slots=True)

@@ -161,7 +161,12 @@ boundaries. Local recursive binding groups are counted once
 per activation, and primitive reductions are emitted only
 after successful primitive execution.
 
-Conditional and case selection events remain part of B07.4.6.
+`CONDITIONAL_SELECTED` is emitted once after successful
+boolean branch selection. `CASE_ALTERNATIVE_SELECTED` is
+emitted once when a matching constructor or default
+alternative is selected. Preparation, scrutinee demand,
+and subsequent body entry do not produce additional
+selection events.
 
 Heap and stack effect emission, CBNeed lifecycle emission,
 and integration of accumulated metrics into execution states
@@ -230,8 +235,12 @@ primitive execution to its originating `CorePrimOp`.
 Primitive provenance is preserved through operand-evaluation
 frames and the final `ApplyPrimitive` control.
 
-Attribution for conditional and case selection remains
-part of B07.4.6.
+Conditional-selection events retain the provenance of
+their originating `CoreIf`. Case-selection events retain
+the provenance of their originating `CoreCase`, including
+`GENERATED` for case expressions introduced by pattern
+matching. Both are preserved across their corresponding
+continuation frames.
 
 CoreCase expressions introduced to implement source-level
 pattern matching contribute to `caseReductions` when their

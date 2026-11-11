@@ -250,6 +250,7 @@ def _dispatch_core_evaluation(
                 then_branch=expression.then_branch,
                 else_branch=expression.else_branch,
                 environment=machine.local_environment,
+                conditional=expression
             )
         )
 
@@ -268,6 +269,7 @@ def _dispatch_core_evaluation(
             CoreCaseFrame(
                 alternatives=expression.alternatives,
                 environment=machine.local_environment,
+                case_expression=expression
             )
         )
 
@@ -1943,6 +1945,11 @@ def _resume_if_condition(
     # The condition continuation is finished.
     machine.stack.pop()
 
+    recorder.emit(
+        SemanticEventKind.CONDITIONAL_SELECTED,
+        node=frame.conditional,
+    )
+
     # Evaluate only the selected branch, using the lexical
     # environment of the original conditional expression.
     return (
@@ -2302,6 +2309,11 @@ def _resume_core_case(
             frame,
             selected_alternative=selected,
         )
+    )
+
+    recorder.emit(
+        SemanticEventKind.CASE_ALTERNATIVE_SELECTED,
+        node=frame.case_expression,
     )
 
     return (

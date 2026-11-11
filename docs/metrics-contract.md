@@ -173,6 +173,19 @@ was generated. Desugaring may produce several nodes sharing
 a span. Provenance must therefore be represented explicitly
 where attribution is required.
 
+Core nodes carry an immutable, keyword-only `origin` metadata
+field using the shared `OriginKind` enumeration defined in
+`lazy_lab.source`. The field defaults to `UNKNOWN` and is
+excluded from structural equality, just like `SourceSpan`.
+
+The Core representation does not depend on the metrics
+package. Semantic event producers convert Core provenance
+into `EventOrigin` values when recording actual operations.
+
+B07.4.1 establishes provenance storage only. Classification
+of source-authored and compiler-generated Core nodes during
+desugaring remains part of B07.4.2.
+
 CoreCase expressions introduced to implement source-level
 pattern matching contribute to `caseReductions` when their
 alternatives are selected. Their origin is `GENERATED`;

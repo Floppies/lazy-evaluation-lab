@@ -1,5 +1,5 @@
 from dataclasses import dataclass
-
+from enum import StrEnum
 
 @dataclass(frozen=True, slots=True)
 class SourceSpan:
@@ -14,3 +14,12 @@ class SourceSpan:
     start_column: int
     end_line: int
     end_column: int
+    
+
+class OriginKind(StrEnum):
+    """Provenance of a source or intermediate operation."""
+
+    SOURCE = "SOURCE"
+    GENERATED = "GENERATED"
+    INTERNAL = "INTERNAL"
+    UNKNOWN = "UNKNOWN"

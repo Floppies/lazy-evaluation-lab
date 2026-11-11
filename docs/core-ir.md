@@ -171,6 +171,15 @@ Source spans use one-based coordinates, an inclusive start, and an exclusive end
 
 Spans are optional and excluded from structural equality. Two otherwise identical Core nodes compare equal even when their source locations differ.
 
+Every Core node also accepts an optional keyword-only `origin`
+field using `OriginKind`. Its default is `UNKNOWN`, and its
+value does not participate in structural equality.
+
+Provenance and source spans are independent: a generated
+Core node may retain a source span identifying the syntax
+responsible for its creation. Frontend desugaring is
+responsible for assigning known provenance classifications.
+
 ## Representation Boundaries
 
 Core, a future STG-like representation, and runtime objects remain separate representations with different responsibilities.

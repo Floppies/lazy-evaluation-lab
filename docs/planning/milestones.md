@@ -91,8 +91,8 @@ The descriptions follow the **Gantt B** plan and its milestone acceptance criter
 | B07 | Instrumentation and Metrics | In Progress |
 | B07.1 | Metrics Contract and Accounting Rules | Completed |
 | B07.2 | Instrumentation Data Model | Completed |
-| B07.3 | Pure Metrics Reducer | In Progress |
-| B07.4 | Semantic Reductions and Attribution | Pending |
+| B07.3 | Pure Metrics Reducer | Completed |
+| B07.4 | Semantic Reductions and Attribution | In Progress |
 | B07.5 | Heap and Allocation Metrics | Pending |
 | B07.6 | Stack and Phase Metrics | Pending |
 | B07.7 | CBNeed Demand and Sharing Metrics | Pending |

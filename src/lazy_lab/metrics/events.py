@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from enum import StrEnum
 
-from lazy_lab.source import SourceSpan
+from lazy_lab.source import OriginKind, SourceSpan
 from ..runtime.references import ObjectId
 
 
@@ -27,13 +27,6 @@ class SemanticEventKind(StrEnum):
     THUNK_UPDATED = "THUNK_UPDATED"
     SHARED_RESULT_HIT = "SHARED_RESULT_HIT"
     BLACKHOLE_DETECTED = "BLACKHOLE_DETECTED"
-
-
-class OriginKind(StrEnum):
-    SOURCE = "SOURCE"
-    GENERATED = "GENERATED"
-    INTERNAL = "INTERNAL"
-    UNKNOWN = "UNKNOWN"
 
 
 @dataclass(frozen=True, slots=True)

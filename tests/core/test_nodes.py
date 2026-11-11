@@ -2,7 +2,7 @@ import pytest
 
 from dataclasses import FrozenInstanceError
 
-from lazy_lab.source import SourceSpan
+from lazy_lab.source import OriginKind, SourceSpan
 from lazy_lab.core.nodes import (
     CoreInt,
     CoreBool,
@@ -116,3 +116,32 @@ def test_core_equality_ignores_source_spans():
     )
 
     assert first == second
+
+
+def test_core_provenance_does_not_affect_equality():
+    direct = CoreInt(42)
+
+    source = CoreInt(
+        42,
+        origin=OriginKind.SOURCE,
+    )
+
+    generated = CoreInt(
+        42,
+        origin=OriginKind.GENERATED,
+    )
+
+    assert direct.origin is OriginKind.UNKNOWN
+    assert source.origin is OriginKind.SOURCE
+    assert generated.origin is OriginKind.GENERATED
+
+    assert direct == source == generated
+
+    # Inherited metadata also works on composite nodes.
+    expression = CoreApp(
+        CoreVar("f"),
+        CoreInt(1),
+        origin=OriginKind.GENERATED,
+    )
+
+    assert expression.origin is OriginKind.GENERATED

@@ -2,13 +2,17 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from lazy_lab.source import SourceSpan
+from lazy_lab.source import OriginKind, SourceSpan
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class CoreNode:
     span: SourceSpan | None = field(
         default=None,
+        compare=False,
+    )
+    origin: OriginKind = field(
+        default=OriginKind.UNKNOWN,
         compare=False,
     )
 

@@ -9,7 +9,7 @@ from lazy_lab.metrics.events import (
     SemanticEvent,
     SemanticEventKind,
 )
-from lazy_lab.source import SourceSpan
+from lazy_lab.source import OriginKind, SourceSpan
 
 
 def test_semantic_event_preserves_explicit_origin():
@@ -39,3 +39,16 @@ def test_semantic_event_has_unknown_origin_by_default():
 
     with pytest.raises(FrozenInstanceError):
         event.object_id = 6
+
+
+def test_origin_kind_is_shared_with_source_model():
+    from lazy_lab.source import OriginKind as SourceOriginKind
+
+    assert OriginKind is SourceOriginKind
+
+    event = SemanticEvent(
+        SemanticEventKind.BETA_REDUCED,
+        origin=EventOrigin(kind=OriginKind.GENERATED),
+    )
+
+    assert event.origin.kind is SourceOriginKind.GENERATED

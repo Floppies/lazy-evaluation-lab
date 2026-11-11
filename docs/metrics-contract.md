@@ -1,9 +1,10 @@
 
 # Instrumentation and Metrics Contract
 
-**Status:** B07 operational contract.  
-**Scope:** Core CBV and CBNeed instrumentation. CBN, STG,
-GC, and object lifetime metrics belong to later milestones.
+**Status:** Active instrumentation contract.
+**Scope:** Core CBV and CBNeed. CBN, STG, garbage
+collection, and object-lifetime metrics are outside
+the current scope.
 
 ## 1. Purpose and Architectural Principles
 
@@ -143,36 +144,34 @@ counter exactly once per occurrence. `semanticReductions` remains
 a derived value and is never incremented directly.
 Source attribution does not alter global event counts.
 
-The B07.3 pure reducer accounts for transition metadata,
-Core semantic-work events, heap and stack effects, initialization
-baseline recording, and the six CBNeed lifecycle event counters.
+The pure reducer accounts for transition metadata, Core
+semantic events, heap and stack effects, initialization
+baseline recording, and CBNeed lifecycle events.
 
-The pure reducer is implemented, and B07.4.3 provides the
-semantic-event transport channel from evaluator rules to
-`TransitionResult`.
+A per-transition `SemanticEventRecorder` collects events
+emitted by evaluator rules and transfers them to the
+immutable `TransitionResult.semantic_events` payload.
 
-B07.4.4 implements emission of `FUNCTION_APPLIED`,
-`BETA_REDUCED`, and `SEQ_REDUCED` for supported CBV and
-CBNeed applications.
+Supported Core evaluation emits events for successful
+function applications, beta reductions, local let activation,
+primitive execution, conditional selection, case-alternative
+selection, saturated `seq` reductions, and variable lookups.
 
-B07.4.5 implements `VARIABLE_LOOKED_UP`, `LET_ACTIVATED`,
-and `PRIMITIVE_REDUCED` at their successful operational
-boundaries. Local recursive binding groups are counted once
-per activation, and primitive reductions are emitted only
-after successful primitive execution.
+Events are emitted at successful operational boundaries.
+Preparing a continuation, demanding an operand, or entering
+an already selected case body does not independently count
+as a successful semantic reduction.
 
-`CONDITIONAL_SELECTED` is emitted once after successful
-boolean branch selection. `CASE_ALTERNATIVE_SELECTED` is
-emitted once when a matching constructor or default
-alternative is selected. Preparation, scrutinee demand,
-and subsequent body entry do not produce additional
-selection events.
+Heap and stack effect types and their reducer accounting
+are implemented, but emission of those effects by the
+runtime is not yet integrated. CBNeed lifecycle event
+emission and per-anchor lifecycle validation also remain
+pending.
 
-Heap and stack effect emission, CBNeed lifecycle emission,
-and integration of accumulated metrics into execution states
-remain deferred to their respective B07 work packages.
-Result-node accounting, per-object lifecycle validation,
-and pending thunk-chain depth tracking are not implemented yet.
+`ExecutionState` carries an `InstrumentationState`, but
+evaluator execution does not yet update its accumulated
+metric counters. Result-node accounting and pending
+thunk-chain depth tracking are likewise not yet integrated.
 
 ## 3. Source Attribution
 
@@ -216,24 +215,25 @@ bindings, and temporary lambdas introduced by pattern
 matching. The original equation bodies retain `SOURCE`
 provenance.
 
-Provenance classification is implemented during lowering.
-B07.4.3 provides a per-transition semantic event recorder
-that transfers Core provenance into immutable `SemanticEvent`
-values and delivers them through `TransitionResult`.
+The per-transition `SemanticEventRecorder` converts the
+origin and optional source span of a Core node into an
+`EventOrigin` attached to the emitted semantic event.
 
-Application events are attributed to the originating `CoreApp`,
-while beta-reduction events are attributed to the `CoreLam`
-whose body is entered. Saturated `seq` reductions retain the
-provenance of their saturating application.
+Successful application events are attributed to their
+originating `CoreApp`. Beta reductions are attributed to
+the `CoreLam` whose body is entered. A saturated `seq`
+reduction retains the provenance of its saturating
+application.
 
-B07.4.4 implements application, beta-reduction, and
-`seq` attribution. B07.4.5 attributes successful variable
-lookups to their evaluated `CoreVar`, local recursive
-binding activation to the corresponding `CoreLetRec`, and
-primitive execution to its originating `CorePrimOp`.
+Variable lookups are attributed to their evaluated
+`CoreVar`, local recursive-binding activations to their
+`CoreLetRec`, and primitive reductions to the originating
+`CorePrimOp`.
 
-Primitive provenance is preserved through operand-evaluation
-frames and the final `ApplyPrimitive` control.
+Continuation frames and the `ApplyPrimitive` control
+preserve the relevant Core node when evaluation requires
+intermediate steps. This avoids losing attribution while
+operands are evaluated or references are demanded.
 
 Conditional-selection events retain the provenance of
 their originating `CoreIf`. Case-selection events retain
@@ -350,10 +350,10 @@ from a change in phase or from a particular RuleId.
 
 ## 6. CBNeed Demand and Sharing
 
-The six CBNeed lifecycle event counters are implemented
-by the pure reducer in B07.3. Correct emission boundaries,
-per-anchor lifecycle validation, sharing attribution,
-and pending update-chain depth accounting remain part of B07.7.
+The pure reducer supports the six CBNeed lifecycle event
+categories defined below. Runtime emission of these events,
+per-anchor lifecycle validation, sharing attribution, and
+pending update-chain depth accounting are not yet integrated.
 
 The supported event types already include thunk creation,
 demand, first force, successful update, shared-result reuse,
@@ -380,10 +380,10 @@ not imply a new allocation.
 first-forced at most once in the corresponding accounting
 categories.
 
-Events refer to the stable thunk anchor through its
-`ObjectId`. Per-anchor lifecycle validation, correct emission
-boundaries, and pending update-chain depth accounting are
-completed during B07.7.
+Lifecycle events identify the stable thunk anchor through
+its `ObjectId`. Per-anchor lifecycle validation and pending
+update-chain depth tracking remain outside the current
+runtime integration.
 
 The reducer does not infer lifecycle events from `RuleId`,
 heap object types, or changes in the heap state.
@@ -437,5 +437,7 @@ snapshot equivalence is validated after producer integration.
 
 ## 8. Export Contract
 
-The versioned run-record schema and JSON/CSV export
-requirements will be specified in B07.10.
+Versioned run records and JSON/CSV export are not yet
+implemented. Their design must preserve the metric
+definitions, comparison metadata, and partial-execution
+semantics specified in Section 7.

@@ -9,8 +9,12 @@ from typing import Mapping
 from collections.abc import Callable, Generator
 from contextlib import contextmanager
 
-from lazy_lab.metrics.effects import HeapEffect
 
+from lazy_lab.metrics.effects import (
+    HeapEffect,
+    HeapAllocated,
+    HeapReplaced,
+)
 from .references import HeapReference, ObjectId, RuntimeRef
 
 
@@ -107,6 +111,15 @@ class Heap:
         self._next_object_id += 1
         self._current_slots += allocated_slots
 
+        if self._effect_sink is not None:
+            self._effect_sink(
+                HeapAllocated(
+                    object_id=object_id,
+                    allocated_slots=allocated_slots,
+                    object_type=type(value).__name__,
+                )
+            )
+
         return HeapReference(object_id)
 
     def get(self, reference: HeapReference) -> HeapCell:
@@ -141,6 +154,16 @@ class Heap:
             value=value,
             allocated_slots=previous.allocated_slots,
         )
+
+        if self._effect_sink is not None:
+            self._effect_sink(
+                HeapReplaced(
+                    object_id=previous.object_id,
+                    previous_object_type=type(previous.value).__name__,
+                    new_object_type=type(value).__name__,
+                )
+            )
+
 
     def clone(self) -> Heap:
         """Return an independent copy of the heap state."""

@@ -1,6 +1,8 @@
 
 import pytest
 
+from lazy_lab.metrics.effects import HeapAllocated, HeapReplaced
+from lazy_lab.metrics.recording import HeapEffectRecorder
 from lazy_lab.runtime.heap import (
     Heap,
     Indirection,
@@ -113,3 +115,95 @@ def test_cells_view_cannot_be_modified():
 
     with pytest.raises(TypeError):
         heap.cells[ref.object_id] = heap.get(ref)
+
+
+def test_heap_effect_capture_is_scoped_and_not_cloned():
+    heap = Heap()
+    observed = []
+
+    with heap.capture_effects(observed.append):
+        cloned = heap.clone()
+
+        # A clone must have an independent capture scope.
+        with cloned.capture_effects(observed.append):
+            pass
+
+        # The same heap cannot have nested captures.
+        with pytest.raises(RuntimeError):
+            with heap.capture_effects(observed.append):
+                pass
+
+    # The original capture scope was correctly released.
+    with heap.capture_effects(observed.append):
+        pass
+
+
+def test_heap_emits_allocation_and_replacement_effects():
+    heap = Heap()
+    recorder = HeapEffectRecorder()
+
+    with heap.capture_effects(recorder.record):
+        reference = heap.allocate(
+            Reserved(),
+            allocated_slots=3,
+        )
+
+        heap.replace(
+            reference,
+            Indirection(ImmediateInteger(42)),
+        )
+
+    effects = recorder.freeze()
+
+    assert len(effects) == 2
+
+    allocation, replacement = effects
+
+    assert isinstance(allocation, HeapAllocated)
+    assert allocation.object_id == reference.object_id
+    assert allocation.allocated_slots == 3
+    assert allocation.object_type == "Reserved"
+
+    assert isinstance(replacement, HeapReplaced)
+    assert replacement.object_id == reference.object_id
+    assert replacement.previous_object_type == "Reserved"
+    assert replacement.new_object_type == "Indirection"
+
+    assert heap.current_slots == 3
+    assert heap.next_object_id == 1
+
+
+def test_heap_emits_only_successful_captured_operations():
+    heap = Heap()
+    recorder = HeapEffectRecorder()
+
+    # No capture: no effects.
+    heap.allocate(Reserved(), allocated_slots=1)
+    assert recorder.freeze() == ()
+
+    with heap.capture_effects(recorder.record):
+        with pytest.raises(ValueError):
+            heap.allocate(Reserved(), allocated_slots=0)
+
+        with pytest.raises(InvalidHeapAddressError):
+            heap.replace(
+                HeapReference(ObjectId(99)),
+                Reserved(),
+            )
+
+        reference = heap.allocate(
+            Reserved(),
+            allocated_slots=1,
+        )
+
+    # Capture already ended.
+    heap.replace(
+        reference,
+        Indirection(ImmediateInteger(7)),
+    )
+
+    effects = recorder.freeze()
+
+    assert len(effects) == 1
+    assert isinstance(effects[0], HeapAllocated)
+    assert effects[0].object_id == reference.object_id

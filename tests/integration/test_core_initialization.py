@@ -12,6 +12,9 @@ from lazy_lab.engine.core_machine import (
     EvaluatorBudgetExhaustedError,
     UninitializedLocalBindingError,
 )
+from lazy_lab.metrics.effects import HeapBaselineRecorded
+from lazy_lab.metrics.reducer import reduce_metrics
+from lazy_lab.metrics.state import InstrumentationState
 from lazy_lab.pipeline import compile_source
 from lazy_lab.runtime.environment import (
     UnboundNameError,
@@ -1286,3 +1289,62 @@ def test_cbv_letrec_preserves_anchor_identity_and_slot_accounting():
 
     assert machine.stack.depth == 0
     assert machine.local_environment is machine.global_environment
+
+
+@pytest.mark.parametrize(
+    "strategy",
+    [Strategy.CBV, Strategy.CBNEED],
+)
+def test_heap_baseline_recorded_once_after_global_initialization(
+    strategy,
+):
+    program = compile_source(
+        "answer = 42\n"
+        "main = answer"
+    )
+
+    config = make_config(strategy)
+
+    state = create_initial_core_state(
+        program,
+        config,
+        session_id="heap-baseline-test",
+    )
+
+    metrics = InstrumentationState()
+    baseline_effects = []
+
+    # Reservation + one installation per binding + entry.
+    initialization_steps = len(program.bindings) + 2
+
+    for index in range(initialization_steps):
+        transition = step(state, config)
+
+        effects = [
+            effect
+            for effect in transition.heap_effects
+            if isinstance(effect, HeapBaselineRecorded)
+        ]
+
+        if index < initialization_steps - 1:
+            assert effects == []
+        else:
+            assert transition.rule_id is RuleId.CORE_INIT_ENTER_ENTRY
+            assert len(effects) == 1
+
+        baseline_effects.extend(effects)
+
+        metrics = reduce_metrics(metrics, transition)
+        state = transition.next_state
+
+    assert len(baseline_effects) == 1
+
+    baseline = baseline_effects[0]
+
+    assert baseline.slots == state.machine_state.heap.current_slots
+    assert metrics.baseline_slots == baseline.slots
+    assert metrics.counters.current_heap_slots == baseline.slots
+    assert metrics.counters.peak_heap_slots == baseline.slots
+    assert metrics.additional_peak_over_baseline == 0
+
+    assert state.machine_state.phase is ExecutionPhase.EVALUATION

@@ -98,6 +98,7 @@ from lazy_lab.metrics.recording import (
     SemanticEventRecorder,
     HeapEffectRecorder,
 )
+from lazy_lab.metrics.effects import HeapBaselineRecorded
 
 
 class UnsupportedTransitionError(NotImplementedError):
@@ -373,7 +374,6 @@ def step(
             f"Unsupported control: {type(control).__name__}"
         )
 
-    # Legacy B03 controls without an entry remain unsupported.
     # Initialization is only executable for states created
     # through the valid Core initialization contract.
     if isinstance(control, InitializeCoreBindings):
@@ -406,6 +406,7 @@ def step(
             next_machine, rule_id = _advance_global_initialization(
                 snapshot.machine_state,
                 control,
+                heap_recorder,
         )
 
         elif isinstance(control, InitializeLocalBindings):
@@ -619,6 +620,7 @@ def _install_global_rhs(
 def _advance_global_initialization(
     machine: MachineState,
     control: InitializeCoreBindings,
+    heap_recorder: HeapEffectRecorder,
 ) -> tuple[MachineState, RuleId]:
     """Apply one Core global-initialization rule.
 
@@ -703,6 +705,12 @@ def _advance_global_initialization(
 
     # Stage 3: the global group is installed. Begin evaluating
     # the user-selected entry without forcing unrelated globals.
+    heap_recorder.record(
+        HeapBaselineRecorded(
+            slots=machine.heap.current_slots,
+        )
+    )
+
     return (
         replace(
             machine,

@@ -94,7 +94,11 @@ from lazy_lab.runtime.thunks import (
     PendingThunk,
     EvaluatingThunk,
 )
-from lazy_lab.metrics.recording import SemanticEventRecorder
+from lazy_lab.metrics.recording import (
+    SemanticEventRecorder,
+    HeapEffectRecorder,
+)
+
 
 class UnsupportedTransitionError(NotImplementedError):
     """The requested transition is not implemented yet."""
@@ -388,49 +392,54 @@ def step(
         raise EvaluatorBudgetExhaustedError(
             "Evaluator step limit reached"
         )
-
+    
     # All mutations below affect isolated successor storage.
     snapshot = state.snapshot()
+
     recorder = SemanticEventRecorder()
+    heap_recorder = HeapEffectRecorder()
 
-    if isinstance(control, InitializeCoreBindings):
-        next_machine, rule_id = _advance_global_initialization(
-            snapshot.machine_state,
-            control,
-    )
-
-    elif isinstance(control, InitializeLocalBindings):
-        next_machine, rule_id = _advance_local_initialization(
-            snapshot.machine_state,
-            control,
+    with snapshot.machine_state.heap.capture_effects(
+        heap_recorder.record
+    ):
+        if isinstance(control, InitializeCoreBindings):
+            next_machine, rule_id = _advance_global_initialization(
+                snapshot.machine_state,
+                control,
         )
 
-    elif isinstance(control, Force):
-        next_machine, rule_id = _advance_force(
+        elif isinstance(control, InitializeLocalBindings):
+            next_machine, rule_id = _advance_local_initialization(
+                snapshot.machine_state,
+                control,
+            )
+
+        elif isinstance(control, Force):
+            next_machine, rule_id = _advance_force(
+                snapshot.machine_state,
+                control,
+                recorder,
+            )
+
+        elif isinstance(control, Return):
+            next_machine, rule_id = _advance_return(
+                snapshot.machine_state,
+                control,
+                recorder,
+            )
+
+        elif isinstance(control, ApplyPrimitive):
+            next_machine, rule_id = _advance_apply_primitive(
+                snapshot.machine_state,
+                control,
+                recorder,
+            )
+
+        else:
+            next_machine, rule_id = _dispatch_core_evaluation(
             snapshot.machine_state,
-            control,
             recorder,
         )
-
-    elif isinstance(control, Return):
-        next_machine, rule_id = _advance_return(
-            snapshot.machine_state,
-            control,
-            recorder,
-        )
-
-    elif isinstance(control, ApplyPrimitive):
-        next_machine, rule_id = _advance_apply_primitive(
-            snapshot.machine_state,
-            control,
-            recorder,
-        )
-
-    else:
-        next_machine, rule_id = _dispatch_core_evaluation(
-        snapshot.machine_state,
-        recorder,
-    )
         
     next_machine = replace(
         next_machine,
@@ -454,6 +463,7 @@ def step(
         phase_before=machine.phase,
         phase_after=next_machine.phase,
         semantic_events=recorder.freeze(),
+        heap_effects=heap_recorder.freeze(),
     )
 
 def _stop_reason(

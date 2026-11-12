@@ -37,6 +37,7 @@ from lazy_lab.metrics.events import (
 )
 from lazy_lab.metrics.effects import (
     HeapAllocated,
+    HeapReplaced,
     StackPushed,
 )
 from lazy_lab.metrics.reducer import reduce_metrics
@@ -1785,3 +1786,124 @@ def test_generated_case_counts_as_real_core_reduction(strategy):
 
     # Both reductions contribute to Core semantic work.
     assert metrics.counters.semantic_reductions >= 2
+
+
+def test_transition_carries_heap_allocation_effect():
+    global_env = Environment()
+    local_env = global_env.extend({
+        "x": ImmediateInteger(10),
+    })
+
+    expression = CoreLam("argument", CoreVar("x"))
+    original = make_state(expression)
+
+    original = replace(
+        original,
+        machine_state=replace(
+            original.machine_state,
+            local_environment=local_env,
+            global_environment=global_env,
+        ),
+    )
+
+    transition = step(original, make_config())
+
+    assert transition.rule_id is RuleId.CORE_EVAL_LAMBDA
+    assert len(transition.heap_effects) == 1
+
+    effect = transition.heap_effects[0]
+
+    assert isinstance(effect, HeapAllocated)
+    assert effect.allocated_slots == 2
+    assert effect.object_type == "Closure"
+
+    reference = (
+        transition.next_state.machine_state.control.reference
+    )
+
+    assert effect.object_id == reference.object_id
+
+    # The original snapshot remains untouched.
+    assert original.machine_state.heap.current_slots == 0
+    assert transition.next_state.machine_state.heap.current_slots == 2
+
+    # The pure reducer accounts for the emitted effect.
+    metrics = reduce_metrics(
+        InstrumentationState(),
+        transition,
+    )
+
+    assert metrics.counters.total_allocations == 1
+    assert metrics.counters.current_heap_slots == 2
+    assert metrics.counters.peak_heap_slots == 2
+
+    # Persistent metrics integration belongs to B07.8.
+    assert (
+        transition.next_state.instrumentation_state
+        == original.instrumentation_state
+    )
+
+
+def test_letrec_transitions_preserve_heap_effect_order():
+    expression = CoreLetRec(
+        (
+            CoreBinding(
+                "f",
+                CoreLam("x", CoreVar("x")),
+            ),
+        ),
+        CoreVar("f"),
+    )
+
+    initial = make_state(expression)
+    config = make_config()
+
+    reservation = step(initial, config)
+
+    assert reservation.rule_id is RuleId.CORE_LETREC_RESERVE_SCOPE
+
+    reservation_effects = reservation.heap_effects
+
+    assert len(reservation_effects) == 1
+    assert isinstance(reservation_effects[0], HeapAllocated)
+    assert reservation_effects[0].object_type == "Reserved"
+
+    installation = step(reservation.next_state, config)
+
+    assert installation.rule_id is RuleId.CORE_LETREC_INSTALL_FUNCTION
+
+    effects = installation.heap_effects
+
+    assert len(effects) == 2
+    assert isinstance(effects[0], HeapAllocated)
+    assert isinstance(effects[1], HeapReplaced)
+
+    assert effects[0].object_type == "Closure"
+    assert effects[1].previous_object_type == "Reserved"
+    assert effects[1].new_object_type == "Indirection"
+
+    # Replacement preserves the previously reserved identity.
+    assert (
+        effects[1].object_id
+        == reservation_effects[0].object_id
+    )
+
+    # No effects from the previous transition are repeated.
+    assert all(
+        effect.object_id != reservation_effects[0].object_id
+        for effect in effects
+        if isinstance(effect, HeapAllocated)
+    )
+
+    metrics = InstrumentationState()
+
+    metrics = reduce_metrics(metrics, reservation)
+    metrics = reduce_metrics(metrics, installation)
+
+    assert metrics.counters.total_allocations == 2
+    assert metrics.counters.current_heap_slots == 2
+    assert metrics.counters.peak_heap_slots == 2
+
+    assert initial.machine_state.heap.current_slots == 0
+    assert reservation.next_state.machine_state.heap.current_slots == 1
+    assert installation.next_state.machine_state.heap.current_slots == 2

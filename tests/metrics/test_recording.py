@@ -1,7 +1,8 @@
 
 from lazy_lab.core.nodes import CoreVar
+from lazy_lab.metrics.effects import HeapAllocated, HeapReplaced
 from lazy_lab.metrics.events import SemanticEventKind
-from lazy_lab.metrics.recording import SemanticEventRecorder
+from lazy_lab.metrics.recording import HeapEffectRecorder, SemanticEventRecorder
 from lazy_lab.runtime.references import ObjectId
 from lazy_lab.source import OriginKind, SourceSpan
 
@@ -37,3 +38,30 @@ def test_recorder_preserves_event_order_and_provenance():
 
     assert recorded[1].object_id == ObjectId(7)
     assert recorded[1].origin.kind is OriginKind.UNKNOWN
+
+
+def test_heap_effect_recorder_preserves_order():
+    recorder = HeapEffectRecorder()
+
+    allocation = HeapAllocated(
+        object_id=ObjectId(0),
+        allocated_slots=2,
+        object_type="ThunkPayload",
+    )
+
+    replacement = HeapReplaced(
+        object_id=ObjectId(0),
+        previous_object_type="Reserved",
+        new_object_type="PendingThunk",
+    )
+
+    recorder.record(allocation)
+    frozen = recorder.freeze()
+
+    recorder.record(replacement)
+
+    assert frozen == (allocation,)
+    assert recorder.freeze() == (
+        allocation,
+        replacement,
+    )

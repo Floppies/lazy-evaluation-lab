@@ -6,6 +6,10 @@ from __future__ import annotations
 from dataclasses import dataclass
 from types import MappingProxyType
 from typing import Mapping
+from collections.abc import Callable, Generator
+from contextlib import contextmanager
+
+from lazy_lab.metrics.effects import HeapEffect
 
 from .references import HeapReference, ObjectId, RuntimeRef
 
@@ -59,6 +63,7 @@ class Heap:
         self._cells: dict[ObjectId, HeapCell] = {}
         self._next_object_id = 0
         self._current_slots = 0
+        self._effect_sink: Callable[[HeapEffect], None] | None = None
 
     @property
     def next_object_id(self) -> int:
@@ -149,3 +154,25 @@ class Heap:
     def _validate_object(value: HeapObject) -> None:
         if not isinstance(value, HeapObject):
             raise TypeError("Expected a HeapObject")
+
+    @contextmanager
+    def capture_effects(
+        self,
+        sink: Callable[[HeapEffect], None],
+    ) -> Generator[None]:
+        """Temporarily attach an observer to this heap instance."""
+        if not callable(sink):
+            raise TypeError("Heap effect sink must be callable")
+
+        if self._effect_sink is not None:
+            raise RuntimeError(
+                "Heap effect capture is already active"
+            )
+
+        self._effect_sink = sink
+
+        try:
+            yield
+        finally:
+            self._effect_sink = None
+

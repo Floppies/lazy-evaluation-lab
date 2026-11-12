@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 from lazy_lab.core.nodes import CoreNode
+from lazy_lab.metrics.effects import HeapEffect
 from lazy_lab.runtime.references import ObjectId
 from lazy_lab.source import OriginKind
 
@@ -54,3 +55,19 @@ class SemanticEventRecorder:
     def freeze(self) -> tuple[SemanticEvent, ...]:
         """Return an immutable snapshot of recorded events."""
         return tuple(self._events)
+
+
+class HeapEffectRecorder:
+    """Collect heap effects produced by one transition."""
+
+    __slots__ = ("_effects",)
+
+    def __init__(self) -> None:
+        self._effects: list[HeapEffect] = []
+
+    def record(self, effect: HeapEffect) -> None:
+        self._effects.append(effect)
+
+    def freeze(self) -> tuple[HeapEffect, ...]:
+        """Return an immutable snapshot of recorded effects."""
+        return tuple(self._effects)

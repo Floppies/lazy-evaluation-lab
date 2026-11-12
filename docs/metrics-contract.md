@@ -162,10 +162,17 @@ Preparing a continuation, demanding an operand, or entering
 an already selected case body does not independently count
 as a successful semantic reduction.
 
-Heap and stack effect types and their reducer accounting
-are implemented, but emission of those effects by the
-runtime is not yet integrated. CBNeed lifecycle event
-emission and per-anchor lifecycle validation also remain
+Heap allocation and replacement effects are emitted
+directly by the Core runtime and transported through
+`TransitionResult.heap_effects`.
+
+The initialization baseline is recorded when global
+initialization completes, before entry-expression
+evaluation begins.
+
+Heap effects are accounted for by the pure metrics
+reducer. Stack effect emission, CBNeed lifecycle event
+emission, and per-anchor lifecycle validation remain
 pending.
 
 `ExecutionState` carries an `InstrumentationState`, but
@@ -306,6 +313,12 @@ baseline exactly once and does not modify the heap counters.
 The absolute peak includes initialization and result
 materialization. No garbage collection or physical-memory
 measurement is implied by these abstract counters.
+
+Heap effects are captured per transition from the isolated
+successor heap. Each successful allocation or replacement
+produces one effect when instrumentation is active.
+Failed operations do not emit successful effects, and heap
+snapshots do not inherit active effect observers.
 
 ## 5. Stack and Phase Accounting
 

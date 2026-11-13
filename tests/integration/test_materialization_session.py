@@ -115,6 +115,7 @@ def test_complete_materialization_of_finite_list(strategy):
     progress = result.machine_state.result_state.materialization
     assert progress is not None
     assert progress.visited_nodes == 5
+    assert result.instrumentation_state.counters.result_nodes == 5
 
 
 @pytest.mark.parametrize("mode", list(TraceMode))
@@ -178,6 +179,7 @@ def test_materialization_result_node_limit():
     progress = result.machine_state.result_state.materialization
     assert progress is not None
     assert progress.visited_nodes == 2
+    assert result.instrumentation_state.counters.result_nodes == 2
 
     assert result.canonical_result == CanonicalPartialConstructor(
         "Cons",
@@ -508,3 +510,34 @@ def test_materialization_stack_and_phase_accounting():
     # The previous snapshots remain independent.
     assert pending.next_state.machine_state.stack.depth == 0
     assert requested.next_state.machine_state.stack.depth == 1
+
+
+@pytest.mark.parametrize(
+    ("policy", "expected_nodes"),
+    [
+        (ResultPolicy.WHNF_ONLY, 0),
+        (ResultPolicy.MATERIALIZE_COMPLETE_VALUE, 1),
+    ],
+)
+def test_atomic_result_node_accounting(
+    policy,
+    expected_nodes,
+):
+    config = make_config(policy=policy)
+
+    initial = create_initial_core_state(
+        compile_source("main = 42"),
+        config,
+        session_id="atomic-result-nodes",
+    )
+
+    completed, _ = complete_in_batches(
+        initial,
+        config,
+        batch_size=100,
+    )
+
+    assert completed.canonical_result == CanonicalInteger(42)
+    assert completed.instrumentation_state.counters.result_nodes == (
+        expected_nodes
+    )

@@ -378,6 +378,17 @@ Phase-boundary events must be recorded explicitly where
 necessary. The reducer must not infer metric events merely
 from a change in phase or from a particular RuleId.
 
+resultNodes counts occurrences successfully materialized
+in the canonical result tree, independently of heap sharing.
+Constructor materialization reports the change in visited
+nodes for each DFS transition. Direct atomic or opaque
+materialization contributes one node.
+
+WHNF-only observation, pending WHNF demands, result-mode
+selection, and materialization completion do not add nodes.
+The result-node limit prevents visits beyond the configured
+bound.
+
 ## 6. CBNeed Demand and Sharing
 
 The pure reducer supports the six CBNeed lifecycle event

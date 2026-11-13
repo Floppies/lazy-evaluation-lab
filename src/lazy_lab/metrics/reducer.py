@@ -106,6 +106,12 @@ def reduce_metrics(
     thunk_chain_length = counters.current_thunk_chain_length
     max_thunk_chain_length = counters.max_thunk_chain_length
 
+    if transition.result_nodes_delta:
+        increments["result_nodes"] = (
+            increments.get("result_nodes", 0)
+            + transition.result_nodes_delta
+        )
+
     # Heap effects are processed in operational order.
     for effect in transition.heap_effects:
         if isinstance(effect, HeapAllocated):

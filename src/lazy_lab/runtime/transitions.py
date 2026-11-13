@@ -131,6 +131,9 @@ class TransitionResult:
     stack_effects: tuple[StackEffect, ...] = ()
     source_origins: tuple[EventOrigin, ...] = ()
 
+    result_nodes_delta: int = 0
+
+
     def __post_init__(self) -> None:
         payload_types = (
             (
@@ -170,6 +173,14 @@ class TransitionResult:
                 raise TypeError(
                     f"{field_name} must contain "
                     "valid typed instrumentation records"
+                )
+            
+            if (
+                type(self.result_nodes_delta) is not int
+                or self.result_nodes_delta < 0
+            ):
+                raise ValueError(
+                    "result_nodes_delta must be a non-negative integer"
                 )
 
 

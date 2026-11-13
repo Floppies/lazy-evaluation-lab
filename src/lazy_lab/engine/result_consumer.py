@@ -364,6 +364,7 @@ def consume_materialized_result(
         transition_kind=TransitionKind.RESULT_CONSUMER,
         phase_before=machine.phase,
         phase_after=next_machine.phase,
+        result_nodes_delta=1,
     )
 
     return accumulate_transition_metrics(
@@ -547,6 +548,12 @@ def advance_constructor_materialization(
         progress,
         node_limit=config.result_node_limit,
     )
+
+    nodes_visited = (
+        next_progress.visited_nodes
+        - progress.visited_nodes
+    )
+
     snapshot = state.snapshot()
     next_machine = replace(
         snapshot.machine_state,
@@ -568,6 +575,7 @@ def advance_constructor_materialization(
         transition_kind=TransitionKind.RESULT_CONSUMER,
         phase_before=machine.phase,
         phase_after=next_machine.phase,
+        result_nodes_delta=nodes_visited,
     )
 
     return accumulate_transition_metrics(

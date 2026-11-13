@@ -8,7 +8,7 @@ from dataclasses import dataclass, field
 from typing import Callable, Generator
 
 from lazy_lab.core.nodes import CoreAlt, CoreApp, CoreCase, CoreExpr, CoreIf, CorePrimOp
-from lazy_lab.metrics.effects import StackEffect
+from lazy_lab.metrics.effects import StackEffect, StackPopped, StackPushed
 
 from .environment import Environment
 from .references import RuntimeRef, HeapReference
@@ -190,12 +190,27 @@ class Stack:
             raise TypeError("Expected a StackFrame")
 
         self._frames.append(frame)
+        if self._effect_sink is not None:
+            self._effect_sink(
+                StackPushed(
+                    frame_type=type(frame).__name__,
+                )
+            )
 
     def pop(self) -> StackFrame:
         if not self._frames:
             raise EmptyStackError("Cannot pop an empty stack")
 
-        return self._frames.pop()
+        frame = self._frames.pop()
+
+        if self._effect_sink is not None:
+            self._effect_sink(
+                StackPopped(
+                    frame_type=type(frame).__name__,
+                )
+            )
+
+        return frame
 
     def peek(self) -> StackFrame:
         if not self._frames:

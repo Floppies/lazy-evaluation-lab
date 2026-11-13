@@ -97,6 +97,7 @@ from lazy_lab.runtime.thunks import (
 from lazy_lab.metrics.recording import (
     SemanticEventRecorder,
     HeapEffectRecorder,
+    StackEffectRecorder,
 )
 from lazy_lab.metrics.effects import HeapBaselineRecorded
 
@@ -398,9 +399,15 @@ def step(
 
     recorder = SemanticEventRecorder()
     heap_recorder = HeapEffectRecorder()
+    stack_recorder = StackEffectRecorder()
 
-    with snapshot.machine_state.heap.capture_effects(
-        heap_recorder.record
+    with (
+        snapshot.machine_state.heap.capture_effects(
+            heap_recorder.record
+        ),
+        snapshot.machine_state.stack.capture_effects(
+            stack_recorder.record
+        ),
     ):
         if isinstance(control, InitializeCoreBindings):
             next_machine, rule_id = _advance_global_initialization(
@@ -465,6 +472,7 @@ def step(
         phase_after=next_machine.phase,
         semantic_events=recorder.freeze(),
         heap_effects=heap_recorder.freeze(),
+        stack_effects=stack_recorder.freeze(),
     )
 
 def _stop_reason(

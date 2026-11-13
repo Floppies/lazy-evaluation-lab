@@ -38,6 +38,7 @@ from lazy_lab.metrics.events import (
 from lazy_lab.metrics.effects import (
     HeapAllocated,
     HeapReplaced,
+    StackPopped,
     StackPushed,
 )
 from lazy_lab.metrics.reducer import reduce_metrics
@@ -1907,3 +1908,58 @@ def test_letrec_transitions_preserve_heap_effect_order():
     assert initial.machine_state.heap.current_slots == 0
     assert reservation.next_state.machine_state.heap.current_slots == 1
     assert installation.next_state.machine_state.heap.current_slots == 2
+
+
+def test_evaluator_transition_records_stack_effects():
+    expression = CoreApp(
+        CoreLam("x", CoreVar("x")),
+        CoreInt(7),
+    )
+
+    config = make_config()
+    initial = make_state(expression)
+
+    # Enter application: push function continuation.
+    first = step(initial, config)
+
+    assert first.rule_id is RuleId.CORE_EVAL_APPLICATION
+    assert first.stack_effects == (
+        StackPushed("ApplyFunctionFrame"),
+    )
+
+    assert first.next_state.machine_state.stack.depth == 1
+    assert initial.machine_state.stack.depth == 0
+
+    # Evaluate lambda: no stack changes.
+    second = step(first.next_state, config)
+
+    assert second.rule_id is RuleId.CORE_EVAL_LAMBDA
+    assert second.stack_effects == ()
+
+    # Request function WHNF: pop and push a continuation.
+    third = step(second.next_state, config)
+
+    assert third.rule_id is RuleId.CORE_APPLY_REQUIRE_FUNCTION_WHNF
+    assert third.stack_effects == (
+        StackPopped("ApplyFunctionFrame"),
+        StackPushed("ApplyFunctionFrame"),
+    )
+
+    assert third.next_state.machine_state.stack.depth == 1
+
+    # The pure reducer preserves intermediate operations.
+    metrics = InstrumentationState()
+
+    for transition in (first, second, third):
+        metrics = reduce_metrics(metrics, transition)
+
+    assert metrics.counters.pushes == 2
+    assert metrics.counters.pops == 1
+    assert metrics.counters.current_frames == 1
+    assert metrics.counters.peak_frames == 1
+
+    # Persistent integration is not implemented yet.
+    assert (
+        third.next_state.instrumentation_state
+        == initial.instrumentation_state
+    )

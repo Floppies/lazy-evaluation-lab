@@ -30,6 +30,8 @@ from lazy_lab.runtime.transitions import (
     TransitionResult,
 )
 
+from lazy_lab.metrics.recording import StackEffectRecorder
+
 
 class InvalidResultObservationError(ValueError):
     """The machine is not ready for the requested observation."""
@@ -672,13 +674,17 @@ def request_materialization_field(
 
     snapshot = state.snapshot()
     next_machine = snapshot.machine_state
+    stack_recorder = StackEffectRecorder()
 
-    next_machine.stack.push(
-        MaterializationDemandFrame(
-            root_reference=progress.root_reference,
-            return_environment=next_machine.local_environment,
+    with next_machine.stack.capture_effects(
+        stack_recorder.record
+    ):
+        next_machine.stack.push(
+            MaterializationDemandFrame(
+                root_reference=progress.root_reference,
+                return_environment=next_machine.local_environment,
+            )
         )
-    )
 
     next_machine = replace(
         next_machine,
@@ -699,4 +705,5 @@ def request_materialization_field(
         transition_kind=TransitionKind.RESULT_CONSUMER,
         phase_before=machine.phase,
         phase_after=next_machine.phase,
+        stack_effects=stack_recorder.freeze(),
     )

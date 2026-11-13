@@ -174,8 +174,10 @@ Heap and stack effects are accounted for by the pure metrics
 reducer. Stack operations emit ordered effects during Core
 evaluation and result-consumer materialization requests.
 
-CBNeed lifecycle event emission and per-anchor lifecycle
-validation remain pending.
+CBNeed lifecycle events are emitted by the Core evaluator
+and accounted for by the pure metrics reducer. Representative
+per-anchor lifecycle invariants are verified by integration
+tests.
 
 `ExecutionState` carries an `InstrumentationState`, but
 evaluator execution does not yet update its accumulated
@@ -387,9 +389,28 @@ The supported event types already include thunk creation,
 demand, first force, successful update, shared-result reuse,
 and blackhole detection.
 
-Thunk identity follows the stable anchor, not an
-intermediate payload address. The definitions in technical
-specification section 10 remain authoritative.
+The Core CBNeed evaluator emits lifecycle events for thunk
+creation, demand, first force, successful update, shared-result
+reuse, and blackhole detection.
+
+The pure reducer accounts for these events independently.
+Lifecycle events use the stable thunk anchor ObjectId.
+Integration tests verify representative per-anchor creation,
+force, update, sharing, and reentry invariants.
+
+Pending thunk-chain depth is derived from ordered stack effects.
+Pushing an UpdateFrame increments currentThunkChainLength;
+popping one decrements it. maxThunkChainLength records the
+highest intermediate number of simultaneously pending
+UpdateFrames, including within a single transition.
+
+Other continuation frame types do not contribute to thunk-chain
+depth. This metric is distinct from peakFrames and does not
+represent the native Python call stack.
+
+No separate mutable update-chain registry is maintained.
+Persistent cross-transition per-anchor lifecycle histories are
+not part of the current reducer implementation.
 
 ### CBNeed Event Accounting
 

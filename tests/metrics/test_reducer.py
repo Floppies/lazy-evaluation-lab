@@ -442,3 +442,52 @@ def test_stack_underflow_preserves_previous_state():
     assert initial.counters.pushes == 0
     assert initial.counters.pops == 0
     assert initial.counters.current_frames == 0
+
+
+def test_thunk_chain_depth_tracks_nested_update_frames():
+    transition = replace(
+        make_transition(),
+        stack_effects=(
+            StackPushed("UpdateFrame"),
+            StackPushed("ApplyFunctionFrame"),
+            StackPushed("UpdateFrame"),
+            StackPopped("UpdateFrame"),
+            StackPopped("ApplyFunctionFrame"),
+            StackPopped("UpdateFrame"),
+        ),
+    )
+
+    initial = InstrumentationState()
+    result = reduce_metrics(initial, transition)
+
+    counters = result.counters
+
+    assert counters.pushes == 3
+    assert counters.pops == 3
+    assert counters.current_frames == 0
+    assert counters.peak_frames == 3
+
+    assert counters.current_thunk_chain_length == 0
+    assert counters.max_thunk_chain_length == 2
+
+    assert initial.counters.max_thunk_chain_length == 0
+
+
+def test_thunk_chain_underflow_is_rejected():
+    transition = replace(
+        make_transition(),
+        stack_effects=(
+            StackPushed("ApplyFunctionFrame"),
+            StackPopped("UpdateFrame"),
+        ),
+    )
+
+    initial = InstrumentationState()
+
+    with pytest.raises(
+        ValueError,
+        match="Thunk chain accounting underflow",
+    ):
+        reduce_metrics(initial, transition)
+
+    assert initial == InstrumentationState()

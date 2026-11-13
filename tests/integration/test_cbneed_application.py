@@ -5,6 +5,8 @@ import pytest
 from dataclasses import replace
 
 from lazy_lab.metrics.events import SemanticEventKind
+from lazy_lab.metrics.reducer import reduce_metrics
+from lazy_lab.metrics.state import InstrumentationState
 from lazy_lab.pipeline import compile_source
 from lazy_lab.engine.core_machine import (
     create_initial_core_state,
@@ -2219,3 +2221,68 @@ def test_cbneed_update_and_sharing_events_use_same_anchor():
         body_state.machine_state.heap.get(x_ref).value,
         PendingThunk,
     )
+
+
+@pytest.mark.parametrize("mode", list(TraceMode))
+def test_thunk_chain_metrics_match_active_update_frames(mode):
+    config = replace(
+        make_cbneed_config(),
+        trace_mode=mode,
+        execution_step_limit=300,
+    )
+
+    initial = create_initial_core_state(
+        compile_source(
+            r"main = (\x -> (\y -> y + 1) x) (20 + 1)"
+        ),
+        config,
+        session_id="thunk-chain-metrics",
+    )
+
+    # Determine the complete evaluation boundary.
+    finished = run_batch(
+        initial,
+        config,
+        max_steps=300,
+    )
+
+    assert finished.stop_reason is BatchStopReason.WHNF_PENDING
+
+    current = initial
+    metrics = InstrumentationState()
+    observed_peak = 0
+
+    for _ in range(finished.state.transition_index):
+        transition = step(current, config)
+        metrics = reduce_metrics(metrics, transition)
+        current = transition.next_state
+
+        active_updates = sum(
+            isinstance(frame, UpdateFrame)
+            for frame in current.machine_state.stack.frames
+        )
+
+        observed_peak = max(
+            observed_peak,
+            active_updates,
+        )
+
+        assert (
+            metrics.counters.current_thunk_chain_length
+            == active_updates
+        )
+
+        assert (
+            metrics.counters.max_thunk_chain_length
+            >= observed_peak
+        )
+
+    assert current.machine_state.stack.depth == 0
+
+    counters = metrics.counters
+
+    assert counters.current_thunk_chain_length == 0
+    assert counters.max_thunk_chain_length == 3
+    assert counters.thunks_forced == 3
+    assert counters.thunks_updated == 3
+    assert counters.blackholes == 0

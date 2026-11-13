@@ -103,6 +103,8 @@ def reduce_metrics(
     pushes = counters.pushes
     pops = counters.pops
     peak_frames = counters.peak_frames
+    thunk_chain_length = counters.current_thunk_chain_length
+    max_thunk_chain_length = counters.max_thunk_chain_length
 
     # Heap effects are processed in operational order.
     for effect in transition.heap_effects:
@@ -153,11 +155,27 @@ def reduce_metrics(
                 pushes - pops,
             )
 
+            if effect.frame_type == "UpdateFrame":
+                thunk_chain_length += 1
+                max_thunk_chain_length = max(
+                    max_thunk_chain_length,
+                    thunk_chain_length,
+                )
+
         elif isinstance(effect, StackPopped):
             if pushes == pops:
                 raise ValueError(
                     "Stack accounting underflow"
                 )
+
+            if effect.frame_type == "UpdateFrame":
+                if thunk_chain_length == 0:
+                    raise ValueError(
+                        "Thunk chain accounting underflow"
+                    )
+
+                thunk_chain_length -= 1
+
             pops += 1
 
     updates = {
@@ -171,6 +189,8 @@ def reduce_metrics(
         pushes=pushes,
         pops=pops,
         peak_frames=peak_frames,
+        current_thunk_chain_length=thunk_chain_length,
+        max_thunk_chain_length=max_thunk_chain_length,
     )
 
     updated_counters = replace(counters, **updates)

@@ -101,7 +101,9 @@ from lazy_lab.metrics.recording import (
     StackEffectRecorder,
 )
 from lazy_lab.metrics.effects import HeapBaselineRecorded
-
+from lazy_lab.metrics.integration import (
+    accumulate_transition_metrics,
+)
 
 class UnsupportedTransitionError(NotImplementedError):
     """The requested transition is not implemented yet."""
@@ -466,8 +468,8 @@ def step(
         transition_index=state.transition_index + 1,
         machine_state=next_machine,
     )
-
-    return TransitionResult(
+    
+    transition = TransitionResult(
         previous_state_id=state.state_id,
         next_state=next_state,
         rule_id=rule_id,
@@ -477,6 +479,11 @@ def step(
         semantic_events=recorder.freeze(),
         heap_effects=heap_recorder.freeze(),
         stack_effects=stack_recorder.freeze(),
+    )
+
+    return accumulate_transition_metrics(
+        state,
+        transition,
     )
 
 def _stop_reason(

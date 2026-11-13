@@ -1416,12 +1416,6 @@ def test_heap_metrics_match_actual_heap_during_execution(strategy):
 
         assert counters.total_allocations == len(heap.cells)
 
-        # Persistent metric integration is deferred.
-        assert (
-            next_state.instrumentation_state
-            == initial.instrumentation_state
-        )
-
         current = next_state
 
         if (

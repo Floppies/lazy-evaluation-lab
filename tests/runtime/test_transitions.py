@@ -41,6 +41,7 @@ from lazy_lab.metrics.effects import (
     StackPopped,
     StackPushed,
 )
+from lazy_lab.metrics.integration import accumulate_transition_metrics
 from lazy_lab.metrics.reducer import reduce_metrics
 from lazy_lab.metrics.state import InstrumentationState
 from lazy_lab.runtime.predefined import PredefinedFunction
@@ -1857,11 +1858,8 @@ def test_transition_carries_heap_allocation_effect():
     assert metrics.counters.current_heap_slots == 2
     assert metrics.counters.peak_heap_slots == 2
 
-    # Persistent metrics integration belongs to B07.8.
-    assert (
-        transition.next_state.instrumentation_state
-        == original.instrumentation_state
-    )
+    assert transition.next_state.instrumentation_state == metrics
+    assert original.instrumentation_state == InstrumentationState()
 
 
 def test_letrec_transitions_preserve_heap_effect_order():
@@ -1977,11 +1975,8 @@ def test_evaluator_transition_records_stack_effects():
     assert metrics.counters.current_frames == 1
     assert metrics.counters.peak_frames == 1
 
-    # Persistent integration is not implemented yet.
-    assert (
-        third.next_state.instrumentation_state
-        == initial.instrumentation_state
-    )
+    assert third.next_state.instrumentation_state == metrics
+    assert initial.instrumentation_state == InstrumentationState()
 
 
 @pytest.mark.parametrize(
@@ -2136,3 +2131,99 @@ def test_lazy_constructor_emits_one_creation_per_field():
     assert len({
         event.object_id for event in creation_events
     }) == 2
+
+
+def test_transition_metrics_are_attached_immutably():
+    initial = make_state(CoreInt(42))
+
+    successor = replace(
+        initial,
+        state_id=1,
+        transition_index=1,
+    )
+
+    raw_transition = TransitionResult(
+        previous_state_id=initial.state_id,
+        next_state=successor,
+        rule_id=RuleId.CORE_EVAL_INTEGER,
+        transition_kind=TransitionKind.EVALUATOR,
+        phase_before=ExecutionPhase.EVALUATION,
+        phase_after=ExecutionPhase.EVALUATION,
+    )
+
+    finalized = accumulate_transition_metrics(
+        initial,
+        raw_transition,
+    )
+
+    assert (
+        finalized.next_state.instrumentation_state
+        .counters.evaluator_transitions
+    ) == 1
+
+    # The original objects remain unchanged.
+    assert (
+        initial.instrumentation_state
+        .counters.evaluator_transitions
+    ) == 0
+
+    assert (
+        raw_transition.next_state.instrumentation_state
+        .counters.evaluator_transitions
+    ) == 0
+
+    # The operational state is preserved.
+    assert (
+        finalized.next_state.machine_state
+        is raw_transition.next_state.machine_state
+    )
+
+    assert finalized.rule_id is raw_transition.rule_id
+    assert finalized.semantic_events == raw_transition.semantic_events
+    assert finalized.heap_effects == raw_transition.heap_effects
+    assert finalized.stack_effects == raw_transition.stack_effects
+
+
+def test_step_persists_metrics_without_double_counting():
+    expression = CoreApp(
+        CoreLam("x", CoreVar("x")),
+        CoreInt(7),
+    )
+
+    initial = make_state(expression)
+    config = make_config()
+
+    first = step(initial, config)
+    second = step(first.next_state, config)
+
+    first_metrics = (
+        first.next_state.instrumentation_state
+    )
+    second_metrics = (
+        second.next_state.instrumentation_state
+    )
+
+    assert first_metrics.counters.evaluator_transitions == 1
+    assert second_metrics.counters.evaluator_transitions == 2
+
+    # First transition pushes an application frame.
+    assert first_metrics.counters.pushes == 1
+
+    # The next transition evaluates the lambda and
+    # allocates its closure.
+    assert second_metrics.counters.pushes == 1
+    assert second_metrics.counters.total_allocations == 1
+
+    # The second transition is reduced against the
+    # first accumulated instrumentation state.
+    assert second_metrics == reduce_metrics(
+        first_metrics,
+        second,
+    )
+
+    # Earlier states remain unchanged.
+    assert (
+        initial.instrumentation_state
+        == InstrumentationState()
+    )
+    assert first_metrics.counters.evaluator_transitions == 1

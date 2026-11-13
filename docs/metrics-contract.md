@@ -408,10 +408,6 @@ Other continuation frame types do not contribute to thunk-chain
 depth. This metric is distinct from peakFrames and does not
 represent the native Python call stack.
 
-No separate mutable update-chain registry is maintained.
-Persistent cross-transition per-anchor lifecycle histories are
-not part of the current reducer implementation.
-
 ### CBNeed Event Accounting
 
 The metrics reducer recognizes six explicit CBNeed lifecycle

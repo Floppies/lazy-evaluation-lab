@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from collections.abc import Callable
 
 from lazy_lab.core.nodes import CoreExpr
 
@@ -115,6 +116,7 @@ def allocate_thunk(
     global_environment: Environment,
     *,
     anchor_reference: HeapReference | None = None,
+    on_created: Callable[[HeapReference], None] | None = None,
 ) -> HeapReference:
     """Allocate a deferred computation with a stable identity anchor.
 
@@ -165,10 +167,15 @@ def allocate_thunk(
     )
 
     if anchor_reference is None:
-        return heap.allocate(
+        result = heap.allocate(
             pending,
             allocated_slots=pending.required_slots,
         )
+    else:
+        heap.replace(anchor_reference, pending)
+        result = anchor_reference
 
-    heap.replace(anchor_reference, pending)
-    return anchor_reference
+    if on_created is not None:
+        on_created(result)
+
+    return result

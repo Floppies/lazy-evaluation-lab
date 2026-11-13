@@ -1,3 +1,8 @@
+import pytest
+
+from lazy_lab.metrics.events import SemanticEventKind
+from lazy_lab.metrics.reducer import reduce_metrics
+from lazy_lab.metrics.state import InstrumentationState
 from lazy_lab.pipeline import compile_source
 from .test_cbneed_application import (
     make_cbneed_config,
@@ -13,6 +18,7 @@ from lazy_lab.runtime.control import Force, Return
 from lazy_lab.runtime.heap import Indirection, Reserved
 from lazy_lab.runtime.references import ImmediateInteger
 from lazy_lab.runtime.thunks import (
+    EvaluatingThunk,
     PendingThunk,
     ThunkPayload,
 )
@@ -399,3 +405,57 @@ def test_cbneed_global_recursive_value_not_demanded_is_left_pending():
     assert anchors[RuleId.CORE_THUNK_UPDATE_WHNF] == [base_ref, main_ref]
 
     assert RuleId.CORE_FORCE_GLOBAL_RHS not in rules
+
+
+def test_first_thunk_demand_emits_demand_and_force_start():
+    config = make_cbneed_config()
+
+    initial = create_initial_core_state(
+        compile_source("main = 42"),
+        config,
+        session_id="first-thunk-demand",
+    )
+
+    current = initial
+    metrics = InstrumentationState()
+
+    for _ in range(30):
+        transition = step(current, config)
+        metrics = reduce_metrics(metrics, transition)
+
+        if transition.rule_id is RuleId.CORE_FORCE_THUNK_ENTER:
+            anchor = current.machine_state.control.reference
+
+            assert [
+                event.kind
+                for event in transition.semantic_events
+            ] == [
+                SemanticEventKind.THUNK_DEMANDED,
+                SemanticEventKind.THUNK_FORCE_STARTED,
+            ]
+
+            assert all(
+                event.object_id == anchor.object_id
+                for event in transition.semantic_events
+            )
+
+            assert isinstance(
+                current.machine_state.heap.get(anchor).value,
+                PendingThunk,
+            )
+
+            assert isinstance(
+                transition.next_state.machine_state.heap
+                .get(anchor).value,
+                EvaluatingThunk,
+            )
+            break
+
+        current = transition.next_state
+    else:
+        pytest.fail("Thunk first force was not reached")
+
+    assert metrics.counters.thunks_created == 1
+    assert metrics.counters.thunk_demands == 1
+    assert metrics.counters.thunks_forced == 1
+    assert metrics.counters.thunks_never_forced == 0

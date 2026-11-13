@@ -3,7 +3,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from types import MappingProxyType
 from typing import Mapping
 from collections.abc import Callable, Generator
@@ -43,6 +43,11 @@ class Indirection(HeapObject):
     """A cell referring to another runtime reference."""
 
     target: RuntimeRef
+    from_thunk_update: bool = field(
+        default=False,
+        compare=False,
+        repr=False,
+    )
 
     @property
     def required_slots(self) -> int:

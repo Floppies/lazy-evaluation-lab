@@ -918,8 +918,24 @@ def _advance_force(
     value = machine.heap.get(reference).value
 
     if isinstance(value, Indirection):
+        if (
+            machine.strategy is Strategy.CBNEED
+            and value.from_thunk_update
+        ):
+            recorder.emit(
+                SemanticEventKind.THUNK_DEMANDED,
+                object_id=reference.object_id,
+            )
+            recorder.emit(
+                SemanticEventKind.SHARED_RESULT_HIT,
+                object_id=reference.object_id,
+            )
+
         return (
-            replace(machine, control=Force(value.target)),
+            replace(
+                machine,
+                control=Force(value.target),
+            ),
             RuleId.CORE_FORCE_INDIRECTION,
         )
 
@@ -989,6 +1005,16 @@ def _advance_force(
 
         machine.stack.push(update_frame)
 
+        recorder.emit(
+            SemanticEventKind.THUNK_DEMANDED,
+            object_id=reference.object_id,
+        )
+
+        recorder.emit(
+            SemanticEventKind.THUNK_FORCE_STARTED,
+            object_id=reference.object_id,
+        )
+
         return (
             replace(
                 machine,
@@ -1016,6 +1042,16 @@ def _advance_force(
             raise InvalidMachineStateError(
                 "EvaluatingThunk has no active UpdateFrame"
             )
+        
+        recorder.emit(
+            SemanticEventKind.THUNK_DEMANDED,
+            object_id=reference.object_id,
+        )
+
+        recorder.emit(
+            SemanticEventKind.BLACKHOLE_DETECTED,
+            object_id=reference.object_id,
+        )
 
         # Preserve the control, heap, stack and environments.
         # The enclosing step() owns the isolated successor state
@@ -1091,6 +1127,7 @@ def _advance_return(
                 machine,
                 control,
                 frame,
+                recorder,
             )
 
         # 2. Resume a pending global RHS evaluation.
@@ -2062,6 +2099,7 @@ def _resume_update_frame(
     machine: MachineState,
     control: Return,
     frame: UpdateFrame,
+    recorder: SemanticEventRecorder,
 ) -> tuple[MachineState, RuleId]:
     """Demand a thunk RHS result before its memoizing update."""
 
@@ -2110,13 +2148,21 @@ def _resume_update_frame(
             "Thunk cannot update to itself"
         )
 
+
     machine.heap.replace(
         frame.thunk_reference,
-        Indirection(reference),
+        Indirection(
+            reference,
+            from_thunk_update=True,
+        ),
     )
 
-    # The update is complete. Resume the suspended caller.
     machine.stack.pop()
+
+    recorder.emit(
+        SemanticEventKind.THUNK_UPDATED,
+        object_id=frame.thunk_reference.object_id,
+    )
 
     return (
         replace(

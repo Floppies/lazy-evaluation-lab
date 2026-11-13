@@ -4,7 +4,7 @@
 from __future__ import annotations
 
 from lazy_lab.core.nodes import CoreNode
-from lazy_lab.metrics.effects import HeapEffect
+from lazy_lab.metrics.effects import HeapEffect, StackEffect
 from lazy_lab.runtime.references import ObjectId
 from lazy_lab.source import OriginKind
 
@@ -69,5 +69,21 @@ class HeapEffectRecorder:
         self._effects.append(effect)
 
     def freeze(self) -> tuple[HeapEffect, ...]:
+        """Return an immutable snapshot of recorded effects."""
+        return tuple(self._effects)
+
+
+class StackEffectRecorder:
+    """Collect stack effects produced by one transition."""
+
+    __slots__ = ("_effects",)
+
+    def __init__(self) -> None:
+        self._effects: list[StackEffect] = []
+
+    def record(self, effect: StackEffect) -> None:
+        self._effects.append(effect)
+
+    def freeze(self) -> tuple[StackEffect, ...]:
         """Return an immutable snapshot of recorded effects."""
         return tuple(self._effects)

@@ -3,9 +3,12 @@
 
 from __future__ import annotations
 
+from contextlib import contextmanager
 from dataclasses import dataclass, field
+from typing import Callable, Generator
 
 from lazy_lab.core.nodes import CoreAlt, CoreApp, CoreCase, CoreExpr, CoreIf, CorePrimOp
+from lazy_lab.metrics.effects import StackEffect
 
 from .environment import Environment
 from .references import RuntimeRef, HeapReference
@@ -172,6 +175,7 @@ class EmptyStackError(LookupError):
 class Stack:
     def __init__(self) -> None:
         self._frames: list[StackFrame] = []
+        self._effect_sink: Callable[[StackEffect], None] | None = None
 
     @property
     def depth(self) -> int:
@@ -203,3 +207,25 @@ class Stack:
         result = Stack()
         result._frames = self._frames.copy()
         return result
+
+    @contextmanager
+    def capture_effects(
+        self,
+        sink: Callable[[StackEffect], None],
+    ) -> Generator[None]:
+        """Temporarily attach an observer to this stack."""
+        if not callable(sink):
+            raise TypeError("Stack effect sink must be callable")
+
+        if self._effect_sink is not None:
+            raise RuntimeError(
+                "Stack effect capture is already active"
+            )
+
+        self._effect_sink = sink
+
+        try:
+            yield
+        finally:
+            self._effect_sink = None
+

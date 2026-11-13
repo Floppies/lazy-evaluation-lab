@@ -1336,10 +1336,21 @@ def test_seq_emits_two_applications_and_one_reduction(
         is RuleId.CORE_PREDEFINED_PARTIAL_APPLY
     )
 
+    expected_partial_events = (
+        [
+            SemanticEventKind.THUNK_CREATED,
+            SemanticEventKind.FUNCTION_APPLIED,
+        ]
+        if strategy is Strategy.CBNEED
+        else [
+            SemanticEventKind.FUNCTION_APPLIED,
+        ]
+    )
+
     assert [
         event.kind
         for event in partial.semantic_events
-    ] == [SemanticEventKind.FUNCTION_APPLIED]
+    ] == expected_partial_events
 
     seq_event = next(
         event for event in events
@@ -1718,10 +1729,18 @@ def test_real_core_events_reduce_to_expected_metrics(strategy):
     assert counters.variable_lookups == 1
     assert counters.function_applications == 0
     assert counters.beta_reductions == 0
+    
+    core_event_kinds = {
+        SemanticEventKind.LET_ACTIVATED,
+        SemanticEventKind.CONDITIONAL_SELECTED,
+        SemanticEventKind.VARIABLE_LOOKED_UP,
+        SemanticEventKind.PRIMITIVE_REDUCED,
+    }
 
     assert all(
         event.origin.kind is OriginKind.SOURCE
         for event in events
+        if event.kind in core_event_kinds
     )
 
     assert (
@@ -2045,3 +2064,75 @@ def test_stack_metrics_match_runtime_across_trace_modes(strategy):
         ))
 
     assert results[0] == results[1] == results[2]
+
+
+def test_local_thunk_creation_uses_reserved_anchor():
+    expression = CoreLetRec(
+        (CoreBinding("x", CoreInt(9)),),
+        CoreVar("x"),
+    )
+
+    config = make_config()
+    initial = make_state(expression)
+
+    reserved = step(initial, config)
+    installed = step(reserved.next_state, config)
+
+    anchor = (
+        reserved.next_state.machine_state
+        .local_environment.lookup("x")
+    )
+
+    events = [
+        event for event in installed.semantic_events
+        if event.kind is SemanticEventKind.THUNK_CREATED
+    ]
+
+    assert installed.rule_id is RuleId.CORE_LETREC_INSTALL_THUNK
+    assert len(events) == 1
+    assert events[0].object_id == anchor.object_id
+
+    metrics = reduce_metrics(
+        InstrumentationState(),
+        installed,
+    )
+
+    assert metrics.counters.thunks_created == 1
+    assert metrics.counters.thunks_never_forced == 1
+
+
+def test_lazy_constructor_emits_one_creation_per_field():
+    expression = CoreCon(
+        "Cons",
+        (
+            CoreInt(1),
+            CoreCon("Nil", ()),
+        ),
+    )
+
+    transition = step(
+        make_state(expression),
+        make_config(),
+    )
+
+    creation_events = [
+        event for event in transition.semantic_events
+        if event.kind is SemanticEventKind.THUNK_CREATED
+    ]
+
+    assert len(creation_events) == 2
+
+    machine = transition.next_state.machine_state
+    constructor_ref = machine.control.reference
+    constructor = machine.heap.get(constructor_ref).value
+
+    assert {
+        event.object_id for event in creation_events
+    } == {
+        reference.object_id
+        for reference in constructor.fields
+    }
+
+    assert len({
+        event.object_id for event in creation_events
+    }) == 2

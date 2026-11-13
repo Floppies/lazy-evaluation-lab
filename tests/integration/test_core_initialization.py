@@ -14,6 +14,7 @@ from lazy_lab.engine.core_machine import (
     UninitializedLocalBindingError,
 )
 from lazy_lab.metrics.effects import HeapAllocated, HeapBaselineRecorded
+from lazy_lab.metrics.events import SemanticEventKind
 from lazy_lab.metrics.reducer import reduce_metrics
 from lazy_lab.metrics.state import InstrumentationState
 from lazy_lab.pipeline import compile_source
@@ -1448,3 +1449,41 @@ def test_heap_metrics_match_actual_heap_during_execution(strategy):
     # Historical execution state remains untouched.
     assert initial.machine_state.heap.current_slots == 0
     assert initial.transition_index == 0
+
+
+@pytest.mark.parametrize(
+    "strategy",
+    [Strategy.CBV, Strategy.CBNEED],
+)
+def test_global_thunk_creation_emits_stable_anchor_event(strategy):
+    program = compile_source(
+        "answer = 42\n"
+        "main = answer"
+    )
+    config = make_config(strategy)
+
+    initial = create_initial_core_state(
+        program,
+        config,
+        session_id="global-thunk-creation",
+    )
+
+    reserved = step(initial, config)
+    installed = step(reserved.next_state, config)
+
+    anchor = (
+        installed.next_state.machine_state
+        .global_environment.lookup("answer")
+    )
+
+    creation_events = [
+        event
+        for event in installed.semantic_events
+        if event.kind is SemanticEventKind.THUNK_CREATED
+    ]
+
+    if strategy is Strategy.CBNEED:
+        assert len(creation_events) == 1
+        assert creation_events[0].object_id == anchor.object_id
+    else:
+        assert creation_events == []

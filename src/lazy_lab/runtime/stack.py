@@ -5,7 +5,7 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 from dataclasses import dataclass, field
-from typing import Callable, Generator
+from collections.abc import Callable, Generator
 
 from lazy_lab.core.nodes import CoreAlt, CoreApp, CoreCase, CoreExpr, CoreIf, CorePrimOp
 from lazy_lab.metrics.effects import StackEffect, StackPopped, StackPushed

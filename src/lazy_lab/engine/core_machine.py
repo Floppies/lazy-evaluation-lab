@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import replace
 
 from lazy_lab.core.nodes import (
@@ -290,6 +291,7 @@ def _dispatch_core_evaluation(
                     field,
                     machine.local_environment,
                     machine.global_environment,
+                    on_created=recorder.record_thunk_creation,
                 )
                 for field in expression.fields
             )
@@ -414,12 +416,14 @@ def step(
                 snapshot.machine_state,
                 control,
                 heap_recorder,
+                recorder,
         )
 
         elif isinstance(control, InitializeLocalBindings):
             next_machine, rule_id = _advance_local_initialization(
                 snapshot.machine_state,
                 control,
+                recorder,
             )
 
         elif isinstance(control, Force):
@@ -558,6 +562,8 @@ def _install_global_rhs(
     global_environment: Environment,
     binding: CoreBinding,
     strategy: Strategy,
+    *,
+    on_created: Callable[[HeapReference], None] | None = None,
 ) -> HeapReference:
     """Install one global RHS without evaluating its expression.
 
@@ -614,6 +620,7 @@ def _install_global_rhs(
             global_environment,
             global_environment,
             anchor_reference=reference,
+            on_created=on_created,
         )
 
     else:
@@ -629,6 +636,7 @@ def _advance_global_initialization(
     machine: MachineState,
     control: InitializeCoreBindings,
     heap_recorder: HeapEffectRecorder,
+    recorder: SemanticEventRecorder,
 ) -> tuple[MachineState, RuleId]:
     """Apply one Core global-initialization rule.
 
@@ -698,6 +706,7 @@ def _advance_global_initialization(
             machine.global_environment,
             binding,
             machine.strategy,
+            on_created=recorder.record_thunk_creation,
         )
 
         return (
@@ -732,6 +741,7 @@ def _advance_global_initialization(
 def _advance_local_initialization(
     machine: MachineState,
     control: InitializeLocalBindings,
+    recorder: SemanticEventRecorder,
 ) -> tuple[MachineState, RuleId]:
     """Initialize local recursive bindings in source order."""
     if machine.strategy not in (Strategy.CBV, Strategy.CBNEED):
@@ -819,6 +829,7 @@ def _advance_local_initialization(
             machine.local_environment,
             machine.global_environment,
             anchor_reference=reference,
+            on_created=recorder.record_thunk_creation,
         )
 
         return (
@@ -1509,6 +1520,7 @@ def _resume_apply_function(
                 frame.argument,
                 frame.environment,
                 machine.global_environment,
+                on_created=recorder.record_thunk_creation,
             )
 
             partial = PartialPredefinedFunction(
@@ -1578,6 +1590,7 @@ def _resume_apply_function(
             frame.argument,
             frame.environment,
             machine.global_environment,
+            on_created=recorder.record_thunk_creation,
         )
 
         # The closure body uses the definition-site captures,
@@ -1661,6 +1674,7 @@ def _resume_seq_first_argument(
         frame.second_expression,
         frame.return_environment,
         machine.global_environment,
+        on_created=recorder.record_thunk_creation,
     )
 
     machine.stack.pop()

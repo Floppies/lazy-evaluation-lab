@@ -5,7 +5,7 @@ from __future__ import annotations
 
 from lazy_lab.core.nodes import CoreNode
 from lazy_lab.metrics.effects import HeapEffect, StackEffect
-from lazy_lab.runtime.references import ObjectId
+from lazy_lab.runtime.references import HeapReference, ObjectId
 from lazy_lab.source import OriginKind
 
 from .events import (
@@ -55,6 +55,16 @@ class SemanticEventRecorder:
     def freeze(self) -> tuple[SemanticEvent, ...]:
         """Return an immutable snapshot of recorded events."""
         return tuple(self._events)
+
+    def record_thunk_creation(
+        self,
+        anchor: HeapReference,
+    ) -> None:
+        """Record logical thunk creation at its stable anchor."""
+        self.emit(
+            SemanticEventKind.THUNK_CREATED,
+            object_id=anchor.object_id,
+        )
 
 
 class HeapEffectRecorder:

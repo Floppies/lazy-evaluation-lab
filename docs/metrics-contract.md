@@ -170,10 +170,12 @@ The initialization baseline is recorded when global
 initialization completes, before entry-expression
 evaluation begins.
 
-Heap effects are accounted for by the pure metrics
-reducer. Stack effect emission, CBNeed lifecycle event
-emission, and per-anchor lifecycle validation remain
-pending.
+Heap and stack effects are accounted for by the pure metrics
+reducer. Stack operations emit ordered effects during Core
+evaluation and result-consumer materialization requests.
+
+CBNeed lifecycle event emission and per-anchor lifecycle
+validation remain pending.
 
 `ExecutionState` carries an `InstrumentationState`, but
 evaluator execution does not yet update its accumulated
@@ -340,6 +342,19 @@ the operation; `StackPopped` increments pops. Pops that
 would produce a negative accounted depth are rejected.
 Intermediate stack depths are preserved for peak accounting,
 even when the net depth change of a transition is zero.
+
+Stack effects are captured per transition from isolated
+successor storage. Successful push and pop operations emit
+typed effects in operational order, independently of trace
+retention.
+
+The Core evaluator transports stack effects through
+`TransitionResult.stack_effects`. Result-consumer field-demand
+requests also emit stack effects when they install a
+`MaterializationDemandFrame`.
+
+Transition-kind and phase counters are derived from explicit
+transition metadata, independently of stack effects.
 
 `evaluatorTransitions` counts every transition whose kind
 is EVALUATOR, including global initialization and evaluation

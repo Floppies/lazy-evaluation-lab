@@ -1963,3 +1963,85 @@ def test_evaluator_transition_records_stack_effects():
         third.next_state.instrumentation_state
         == initial.instrumentation_state
     )
+
+
+@pytest.mark.parametrize(
+    "strategy",
+    [Strategy.CBV, Strategy.CBNEED],
+)
+def test_stack_metrics_match_runtime_across_trace_modes(strategy):
+    expression = CoreApp(
+        CoreLam("x", CoreVar("x")),
+        CoreInt(7),
+    )
+
+    results = []
+
+    for mode in TraceMode:
+        initial = make_state(expression)
+
+        state = replace(
+            initial,
+            machine_state=replace(
+                initial.machine_state,
+                strategy=strategy,
+            ),
+        )
+
+        config = replace(
+            make_config(trace_mode=mode, step_limit=200),
+            strategy=strategy,
+        )
+
+        metrics = InstrumentationState()
+        replayed_depth = 0
+        observed_peak = 0
+
+        for _ in range(200):
+            if (
+                core_machine._stop_reason(state, config)
+                is BatchStopReason.WHNF_PENDING
+            ):
+                break
+
+            transition = step(state, config)
+
+            for effect in transition.stack_effects:
+                if isinstance(effect, StackPushed):
+                    replayed_depth += 1
+                else:
+                    assert isinstance(effect, StackPopped)
+                    replayed_depth -= 1
+
+                assert replayed_depth >= 0
+                observed_peak = max(
+                    observed_peak,
+                    replayed_depth,
+                )
+
+            metrics = reduce_metrics(metrics, transition)
+            state = transition.next_state
+
+            assert (
+                metrics.counters.current_frames
+                == state.machine_state.stack.depth
+            )
+
+            assert metrics.counters.peak_frames == observed_peak
+
+        else:
+            pytest.fail("Evaluation did not reach WHNF")
+
+        assert state.machine_state.stack.depth == 0
+        assert metrics.counters.current_frames == 0
+        assert metrics.counters.pushes > 0
+        assert metrics.counters.pops > 0
+
+        results.append((
+            metrics.counters.pushes,
+            metrics.counters.pops,
+            metrics.counters.peak_frames,
+            metrics.counters.evaluator_transitions,
+        ))
+
+    assert results[0] == results[1] == results[2]

@@ -152,6 +152,17 @@ def test_materialization_is_equivalent_across_batches(mode):
     if mode is TraceMode.METRICS_ONLY:
         assert full_trace == ()
 
+    assert (
+        uninterrupted.instrumentation_state
+        == chunked.instrumentation_state
+    )
+
+    counters = uninterrupted.instrumentation_state.counters
+
+    assert counters.result_nodes == 5
+    assert counters.current_frames == 0
+    assert counters.current_thunk_chain_length == 0
+
 
 def test_materialization_result_node_limit():
     config = replace(
@@ -541,3 +552,110 @@ def test_atomic_result_node_accounting(
     assert completed.instrumentation_state.counters.result_nodes == (
         expected_nodes
     )
+
+
+@pytest.mark.parametrize(
+    "strategy",
+    [Strategy.CBV, Strategy.CBNEED],
+)
+def test_accumulated_metrics_are_trace_mode_independent(
+    strategy,
+):
+    program = compile_source(
+        "main = (1 + 2) : [4]"
+    )
+
+    results = []
+
+    for mode in TraceMode:
+        config = replace(
+            make_config(strategy=strategy),
+            trace_mode=mode,
+        )
+
+        initial = create_initial_core_state(
+            program,
+            config,
+            session_id="metrics-trace-independence",
+        )
+
+        completed, trace = complete_in_batches(
+            initial,
+            config,
+            batch_size=11,
+        )
+
+        assert (
+            completed.machine_state.status
+            is ExecutionStatus.COMPLETED
+        )
+
+        if mode is TraceMode.METRICS_ONLY:
+            assert trace == ()
+
+        results.append(
+            completed.instrumentation_state
+        )
+
+    assert results[0] == results[1] == results[2]
+
+
+def test_resume_from_snapshot_preserves_accumulated_metrics():
+    config = make_config()
+
+    initial = create_initial_core_state(
+        compile_source("main = (1 + 2) : [4]"),
+        config,
+        session_id="metrics-snapshot-resume",
+    )
+
+    # Uninterrupted reference execution.
+    full, _ = complete_in_batches(
+        initial,
+        config,
+        batch_size=500,
+    )
+
+    # Stop approximately halfway through execution.
+    midpoint = max(1, full.transition_index // 2)
+
+    paused = run_session_batch(
+        initial,
+        config,
+        max_steps=midpoint,
+    )
+
+    assert paused.stop_reason is BatchStopReason.BATCH_LIMIT
+
+    checkpoint = paused.state
+    saved_metrics = checkpoint.instrumentation_state
+
+    # Resume twice from independent copies of the checkpoint.
+    first, _ = complete_in_batches(
+        checkpoint,
+        config,
+        batch_size=1,
+    )
+
+    second, _ = complete_in_batches(
+        checkpoint.snapshot(),
+        config,
+        batch_size=7,
+    )
+
+    assert (
+        first.instrumentation_state
+        == full.instrumentation_state
+    )
+    assert (
+        second.instrumentation_state
+        == full.instrumentation_state
+    )
+
+    assert first.canonical_result == full.canonical_result
+    assert second.canonical_result == full.canonical_result
+
+    # Resuming must not mutate the saved checkpoint.
+    assert checkpoint.instrumentation_state == saved_metrics
+    assert checkpoint.transition_index == midpoint
+    assert initial.instrumentation_state == InstrumentationState()

@@ -179,10 +179,17 @@ and accounted for by the pure metrics reducer. Representative
 per-anchor lifecycle invariants are verified by integration
 tests.
 
-`ExecutionState` carries an `InstrumentationState`, but
-evaluator execution does not yet update its accumulated
-metric counters. Result-node accounting and pending
-thunk-chain depth tracking are likewise not yet integrated.
+Core evaluator and result-consumer transitions accumulate
+metrics into the immutable InstrumentationState attached
+to each successor ExecutionState.
+
+The previous execution state remains unchanged. Metrics
+are accumulated exactly once per transition, independently
+of batch boundaries and trace retention.
+
+Result-node accounting uses explicit per-transition deltas,
+and pending thunk-chain depth is derived from ordered
+UpdateFrame stack effects.
 
 ## 3. Source Attribution
 
@@ -391,11 +398,6 @@ bound.
 
 ## 6. CBNeed Demand and Sharing
 
-The pure reducer supports the six CBNeed lifecycle event
-categories defined below. Runtime emission of these events,
-per-anchor lifecycle validation, sharing attribution, and
-pending update-chain depth accounting are not yet integrated.
-
 The supported event types already include thunk creation,
 demand, first force, successful update, shared-result reuse,
 and blackhole detection.
@@ -437,9 +439,12 @@ first-forced at most once in the corresponding accounting
 categories.
 
 Lifecycle events identify the stable thunk anchor through
-its `ObjectId`. Per-anchor lifecycle validation and pending
-update-chain depth tracking remain outside the current
-runtime integration.
+its ObjectId. Runtime integration verifies representative
+lifecycle invariants, while the pure reducer maintains
+aggregate counters without persistent per-anchor histories.
+
+Thunk-chain depth is accounted for through ordered stack
+effects, as described above.
 
 The reducer does not infer lifecycle events from `RuleId`,
 heap object types, or changes in the heap state.

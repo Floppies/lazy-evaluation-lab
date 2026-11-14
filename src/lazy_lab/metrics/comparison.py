@@ -11,6 +11,10 @@ from lazy_lab.runtime.state import (
     ResultPolicy,
 )
 from lazy_lab.metrics.state import MetricCounters
+from lazy_lab.runtime.state import (
+    ExecutionStatus,
+    MachineKind,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -62,3 +66,114 @@ class ComparisonRun:
             )
 
         return self.config.result_policy
+
+
+@dataclass(frozen=True, slots=True)
+class ComparabilityAssessment:
+    """Eligibility for comparing complete execution costs."""
+
+    complete_costs_comparable: bool
+    reasons: tuple[str, ...] = ()
+
+
+_ALLOWED_FACTORS = frozenset({
+    "workload",
+    "strategy",
+    "result_policy",
+    "execution_step_limit",
+    "result_node_limit",
+})
+
+
+def assess_comparability(
+    left: ComparisonRun,
+    right: ComparisonRun,
+    *,
+    varied_factors: frozenset[str] = frozenset(),
+) -> ComparabilityAssessment:
+    """Assess comparability of complete logical execution costs."""
+
+    if (
+        not isinstance(left, ComparisonRun)
+        or not isinstance(right, ComparisonRun)
+    ):
+        raise TypeError("Expected ComparisonRun instances")
+
+    unknown = varied_factors - _ALLOWED_FACTORS
+
+    if unknown:
+        raise ValueError(
+            f"Unknown comparison factors: {sorted(unknown)}"
+        )
+
+    reasons: list[str] = []
+
+    # B07 comparison currently supports Core runs only.
+    if (
+        left.config.machine_kind is not MachineKind.CORE
+        or right.config.machine_kind is not MachineKind.CORE
+    ):
+        reasons.append("unsupported_machine_kind")
+
+    dimensions = (
+        ("workload", left.workload_id, right.workload_id),
+        ("strategy", left.config.strategy, right.config.strategy),
+        (
+            "result_policy",
+            left.effective_result_policy,
+            right.effective_result_policy,
+        ),
+        (
+            "execution_step_limit",
+            left.config.execution_step_limit,
+            right.config.execution_step_limit,
+        ),
+        (
+            "result_node_limit",
+            left.config.result_node_limit,
+            right.config.result_node_limit,
+        ),
+    )
+
+    for name, left_value, right_value in dimensions:
+        if (
+            left_value != right_value
+            and name not in varied_factors
+        ):
+            reasons.append(f"different_{name}")
+
+    for name, run in (("left", left), ("right", right)):
+        if (
+            run.state.machine_state.status
+            is not ExecutionStatus.COMPLETED
+        ):
+            reasons.append(f"{name}_not_completed")
+
+        if run.effective_result_policy is None:
+            reasons.append(f"{name}_unresolved_result_policy")
+
+        if (
+            run.state.machine_state.status
+            is ExecutionStatus.COMPLETED
+            and run.state.canonical_result is None
+        ):
+            reasons.append(f"{name}_missing_result")
+
+    # Equal workload and observation demand should yield
+    # equivalent canonical results across strategies.
+    if (
+        left.workload_id == right.workload_id
+        and left.effective_result_policy is not None
+        and left.effective_result_policy
+            == right.effective_result_policy
+        and left.state.canonical_result is not None
+        and right.state.canonical_result is not None
+        and left.state.canonical_result
+            != right.state.canonical_result
+    ):
+        reasons.append("different_observable_result")
+
+    return ComparabilityAssessment(
+        complete_costs_comparable=not reasons,
+        reasons=tuple(reasons),
+    )

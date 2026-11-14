@@ -8,7 +8,7 @@ from lazy_lab.engine.core_machine import (
     run_batch,
 )
 from lazy_lab.engine.session_runner import run_session_batch
-from lazy_lab.metrics.comparison import ComparisonRun
+from lazy_lab.metrics.comparison import ComparisonRun, assess_comparability
 from lazy_lab.pipeline import compile_source
 from lazy_lab.runtime.state import (
     ExecutionConfig,
@@ -110,3 +110,110 @@ def test_comparison_run_rejects_mismatched_configuration():
             config=replace(config, strategy=Strategy.CBV),
             state=initial,
         )
+
+
+def completed_run(
+    strategy=Strategy.CBNEED,
+    *,
+    source="main = 42",
+    workload_id="constant-42",
+    policy=ResultPolicy.WHNF_ONLY,
+):
+    config = replace(
+        make_config(policy),
+        strategy=strategy,
+    )
+
+    initial = create_initial_core_state(
+        compile_source(source),
+        config,
+        session_id="comparison-test",
+    )
+
+    completed = run_session_batch(
+        initial,
+        config,
+        max_steps=100,
+    ).state
+
+    assert (
+        completed.machine_state.status
+        is ExecutionStatus.COMPLETED
+    )
+
+    return ComparisonRun(
+        workload_id=workload_id,
+        config=config,
+        state=completed,
+    )
+
+
+def test_strategy_comparison_requires_declared_factor():
+    cbv = completed_run(Strategy.CBV)
+    need = completed_run(Strategy.CBNEED)
+
+    undeclared = assess_comparability(cbv, need)
+
+    assert not undeclared.complete_costs_comparable
+    assert "different_strategy" in undeclared.reasons
+
+    declared = assess_comparability(
+        cbv,
+        need,
+        varied_factors=frozenset({"strategy"}),
+    )
+
+    assert declared.complete_costs_comparable
+    assert declared.reasons == ()
+
+
+def test_result_policy_difference_requires_declaration():
+    whnf = completed_run()
+    materialized = completed_run(
+        policy=ResultPolicy.MATERIALIZE_COMPLETE_VALUE,
+    )
+
+    rejected = assess_comparability(whnf, materialized)
+
+    assert not rejected.complete_costs_comparable
+    assert "different_result_policy" in rejected.reasons
+
+    allowed = assess_comparability(
+        whnf,
+        materialized,
+        varied_factors=frozenset({"result_policy"}),
+    )
+
+    assert allowed.complete_costs_comparable
+
+
+def test_incomplete_run_is_not_complete_cost_comparable():
+    completed = completed_run()
+
+    config = make_config()
+    initial = create_initial_core_state(
+        compile_source("main = 42"),
+        config,
+        session_id="comparison-incomplete",
+    )
+
+    incomplete = ComparisonRun(
+        workload_id="constant-42",
+        config=config,
+        state=initial,
+    )
+
+    assessment = assess_comparability(completed, incomplete)
+
+    assert not assessment.complete_costs_comparable
+    assert "right_not_completed" in assessment.reasons
+
+
+def test_mismatched_observable_results_are_rejected():
+    first = completed_run(source="main = 42")
+    second = completed_run(source="main = 99")
+
+    assessment = assess_comparability(first, second)
+
+    assert not assessment.complete_costs_comparable
+    assert "different_observable_result" in assessment.reasons

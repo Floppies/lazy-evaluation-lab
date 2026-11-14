@@ -1,5 +1,8 @@
 
 from dataclasses import replace
+import json
+
+import pytest
 
 from lazy_lab.engine.core_machine import (
     create_initial_core_state,
@@ -9,10 +12,12 @@ from lazy_lab.engine.session_runner import run_session_batch
 from lazy_lab.metrics.comparison import ComparisonRun
 from lazy_lab.metrics.export import (
     RUN_RECORD_SCHEMA_VERSION,
+    RunRecord,
     build_run_record,
 )
+from lazy_lab.metrics.state import InstrumentationState
 from lazy_lab.pipeline import compile_source
-from lazy_lab.runtime.observation import CanonicalInteger
+from lazy_lab.runtime.observation import CanonicalBoolean, CanonicalConstructor, CanonicalInteger, ConstructorWHNF, OpaqueFunction
 from lazy_lab.runtime.state import (
     ExecutionConfig,
     ExecutionStatus,
@@ -22,6 +27,10 @@ from lazy_lab.runtime.state import (
     TraceMode,
 )
 from lazy_lab.runtime.transitions import BatchStopReason
+from lazy_lab.metrics.export import (
+    run_record_to_dict,
+    run_record_to_json,
+)
 
 
 def make_config():
@@ -111,3 +120,78 @@ def test_budget_limited_run_record_preserves_stop_reason():
     assert record.instrumentation == (
         batch.state.instrumentation_state
     )
+
+
+def test_partial_canonical_result_json_encoding():
+    from lazy_lab.metrics.export import RunRecord
+    from lazy_lab.metrics.state import InstrumentationState
+    from lazy_lab.runtime.observation import (
+        CanonicalInteger,
+        CanonicalPending,
+        CanonicalPartialConstructor,
+    )
+
+    record = RunRecord(
+        workload_id="partial-list",
+        session_id="partial-export",
+        transition_index=10,
+        config=make_config(),
+        effective_result_policy=ResultPolicy.MATERIALIZE_COMPLETE_VALUE,
+        status=ExecutionStatus.RESULT_LIMIT_REACHED,
+        stop_reason=BatchStopReason.TERMINAL_STATUS,
+        canonical_result=CanonicalPartialConstructor(
+            "Cons",
+            (
+                CanonicalInteger(1),
+                CanonicalPending(),
+            ),
+            unvisited_fields=0,
+        ),
+        instrumentation=InstrumentationState(),
+    )
+
+    result = run_record_to_dict(record)
+
+    assert result["canonical_result"] == {
+        "kind": "partial_constructor",
+        "tag": "Cons",
+        "fields": [
+            {"kind": "integer", "value": 1},
+            {"kind": "pending"},
+        ],
+        "unvisited_fields": 0,
+    }
+
+    assert result["status"] == "RESULT_LIMIT_REACHED"
+    assert json.loads(run_record_to_json(record)) == result
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        (CanonicalBoolean(True), {"kind": "boolean", "value": True}),
+        (OpaqueFunction(), {"kind": "opaque_function"}),
+        (
+            ConstructorWHNF("Cons", 2),
+            {"kind": "constructor_whnf", "tag": "Cons", "arity": 2},
+        ),
+        (
+            CanonicalConstructor("Nil", ()),
+            {"kind": "constructor", "tag": "Nil", "fields": []},
+        ),
+    ],
+)
+def test_remaining_canonical_json_variants(value, expected):
+    record = RunRecord(
+        workload_id="variants",
+        session_id="variants-export",
+        transition_index=1,
+        config=make_config(),
+        effective_result_policy=ResultPolicy.WHNF_ONLY,
+        status=ExecutionStatus.COMPLETED,
+        stop_reason=None,
+        canonical_result=value,
+        instrumentation=InstrumentationState(),
+    )
+
+    assert run_record_to_dict(record)["canonical_result"] == expected

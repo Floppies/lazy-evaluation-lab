@@ -1,5 +1,7 @@
 
-from dataclasses import replace
+import csv
+from dataclasses import fields, replace
+from io import StringIO
 import json
 
 import pytest
@@ -14,8 +16,9 @@ from lazy_lab.metrics.export import (
     RUN_RECORD_SCHEMA_VERSION,
     RunRecord,
     build_run_record,
+    run_records_to_csv,
 )
-from lazy_lab.metrics.state import InstrumentationState
+from lazy_lab.metrics.state import InstrumentationState, MetricCounters
 from lazy_lab.pipeline import compile_source
 from lazy_lab.runtime.observation import CanonicalBoolean, CanonicalConstructor, CanonicalInteger, ConstructorWHNF, OpaqueFunction
 from lazy_lab.runtime.state import (
@@ -195,3 +198,103 @@ def test_remaining_canonical_json_variants(value, expected):
     )
 
     assert run_record_to_dict(record)["canonical_result"] == expected
+
+
+def test_csv_exports_multiple_runs_with_stable_columns():
+    first = RunRecord(
+        workload_id="example-01",
+        session_id="csv-first",
+        transition_index=17,
+        config=make_config(),
+        effective_result_policy=ResultPolicy.WHNF_ONLY,
+        status=ExecutionStatus.COMPLETED,
+        stop_reason=None,
+        canonical_result=CanonicalInteger(42),
+        instrumentation=InstrumentationState(
+            counters=MetricCounters(
+                evaluator_transitions=16,
+                result_consumer_transitions=1,
+            ),
+            baseline_slots=3,
+        ),
+    )
+
+    second = replace(
+        first,
+        session_id="csv,second",
+        config=replace(
+            first.config,
+            strategy=Strategy.CBV,
+        ),
+        instrumentation=InstrumentationState(
+            counters=MetricCounters(
+                evaluator_transitions=12,
+                result_consumer_transitions=1,
+            ),
+            baseline_slots=2,
+        ),
+    )
+
+    output = run_records_to_csv([first, second])
+
+    reader = csv.DictReader(StringIO(output))
+    rows = list(reader)
+
+    assert len(rows) == 2
+
+    expected_columns = (
+        "schema_version",
+        "workload_id",
+        "session_id",
+        "transition_index",
+        "machine_kind",
+        "strategy",
+        "result_policy",
+        "effective_result_policy",
+        "execution_step_limit",
+        "result_node_limit",
+        "trace_mode",
+        "status",
+        "stop_reason",
+        "baseline_slots",
+    ) + tuple(
+        f"metric_{field.name}"
+        for field in fields(MetricCounters)
+    )
+
+    assert reader.fieldnames == list(expected_columns)
+
+    assert rows[0]["strategy"] == "CBNEED"
+    assert rows[1]["strategy"] == "CBV"
+
+    assert rows[0]["metric_evaluator_transitions"] == "16"
+    assert rows[1]["metric_evaluator_transitions"] == "12"
+
+    assert rows[0]["baseline_slots"] == "3"
+    assert rows[1]["baseline_slots"] == "2"
+
+    # CSV escaping is handled by the standard library.
+    assert rows[1]["session_id"] == "csv,second"
+
+    # Optional metadata uses empty cells.
+    assert rows[0]["stop_reason"] == ""
+
+    # Canonical trees belong to JSON, not metrics CSV.
+    assert "canonical_result" not in reader.fieldnames
+
+    assert output == run_records_to_csv([first, second])
+
+
+def test_csv_empty_collection_preserves_header():
+    output = run_records_to_csv([])
+
+    reader = csv.DictReader(StringIO(output))
+
+    assert list(reader) == []
+    assert "metric_evaluator_transitions" in reader.fieldnames
+    assert "schema_version" in reader.fieldnames
+
+
+def test_csv_rejects_invalid_records():
+    with pytest.raises(TypeError, match="Expected RunRecord"):
+        run_records_to_csv([object()])

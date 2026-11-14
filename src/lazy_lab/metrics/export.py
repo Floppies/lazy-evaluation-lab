@@ -3,8 +3,11 @@
 
 from __future__ import annotations
 
+import csv
+from io import StringIO
 import json
-from dataclasses import dataclass, asdict
+from dataclasses import dataclass, asdict, fields
+from typing import Iterable
 
 from lazy_lab.runtime.observation import (
     CanonicalInteger,
@@ -16,7 +19,7 @@ from lazy_lab.runtime.observation import (
     OpaqueFunction,
 )
 from lazy_lab.metrics.comparison import ComparisonRun
-from lazy_lab.metrics.state import InstrumentationState
+from lazy_lab.metrics.state import InstrumentationState, MetricCounters
 from lazy_lab.runtime.observation import PartialCanonicalValue
 from lazy_lab.runtime.state import (
     ExecutionConfig,
@@ -27,6 +30,32 @@ from lazy_lab.runtime.transitions import BatchStopReason
 
 
 RUN_RECORD_SCHEMA_VERSION = 1
+
+_CSV_METADATA_FIELDS = (
+    "schema_version",
+    "workload_id",
+    "session_id",
+    "transition_index",
+    "machine_kind",
+    "strategy",
+    "result_policy",
+    "effective_result_policy",
+    "execution_step_limit",
+    "result_node_limit",
+    "trace_mode",
+    "status",
+    "stop_reason",
+    "baseline_slots",
+)
+
+_CSV_COUNTER_FIELDS = tuple(
+    field.name for field in fields(MetricCounters)
+)
+
+_CSV_FIELDS = _CSV_METADATA_FIELDS + tuple(
+    f"metric_{name}"
+    for name in _CSV_COUNTER_FIELDS
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -195,3 +224,62 @@ def run_record_to_json(record: RunRecord) -> str:
         indent=2,
         allow_nan=False,
     )
+
+
+def run_records_to_csv(
+    records: Iterable[RunRecord],
+) -> str:
+    """Serialize measured runs to a deterministic CSV table."""
+
+    output = StringIO(newline="")
+
+    writer = csv.DictWriter(
+        output,
+        fieldnames=_CSV_FIELDS,
+        lineterminator="\n",
+    )
+    writer.writeheader()
+
+    for record in records:
+        if not isinstance(record, RunRecord):
+            raise TypeError("Expected RunRecord")
+
+        config = record.config
+
+        row = {
+            "schema_version": record.schema_version,
+            "workload_id": record.workload_id,
+            "session_id": record.session_id,
+            "transition_index": record.transition_index,
+            "machine_kind": config.machine_kind.value,
+            "strategy": config.strategy.value,
+            "result_policy": config.result_policy.value,
+            "effective_result_policy": (
+                record.effective_result_policy.value
+                if record.effective_result_policy is not None
+                else None
+            ),
+            "execution_step_limit": config.execution_step_limit,
+            "result_node_limit": config.result_node_limit,
+            "trace_mode": config.trace_mode.value,
+            "status": record.status.value,
+            "stop_reason": (
+                record.stop_reason.value
+                if record.stop_reason is not None
+                else None
+            ),
+            "baseline_slots": (
+                record.instrumentation.baseline_slots
+            ),
+        }
+
+        counters = record.instrumentation.counters
+
+        row.update({
+            f"metric_{name}": getattr(counters, name)
+            for name in _CSV_COUNTER_FIELDS
+        })
+
+        writer.writerow(row)
+
+    return output.getvalue()

@@ -16,6 +16,7 @@ from lazy_lab.runtime.observation import (
     CanonicalPending,
     ConstructorWHNF,
 )
+from lazy_lab.runtime.stack import UpdateFrame
 from lazy_lab.runtime.state import (
     ExecutionConfig,
     ExecutionPhase,
@@ -70,6 +71,57 @@ def complete_in_batches(state, config, batch_size):
     pytest.fail("Session failed to reach a terminal status")
 
 
+def assert_runtime_metrics_consistent(state):
+    """Check accumulated metrics against observable runtime state."""
+
+    machine = state.machine_state
+    counters = state.instrumentation_state.counters
+
+    # Evaluator and result-consumer transitions are disjoint.
+    assert (
+        counters.evaluator_transitions
+        == machine.evaluator_transition_count
+    )
+
+    assert (
+        counters.evaluator_transitions
+        + counters.result_consumer_transitions
+        == state.transition_index
+    )
+
+    # Heap and stack accounting agree with the actual machine.
+    assert (
+        counters.current_heap_slots
+        == machine.heap.current_slots
+    )
+
+    assert counters.current_frames == machine.stack.depth
+
+    active_updates = sum(
+        isinstance(frame, UpdateFrame)
+        for frame in machine.stack.frames
+    )
+
+    assert (
+        counters.current_thunk_chain_length
+        == active_updates
+    )
+
+    # Recorded peaks must not be below current usage.
+    assert counters.peak_heap_slots >= counters.current_heap_slots
+    assert counters.peak_frames >= counters.current_frames
+    assert (
+        counters.max_thunk_chain_length
+        >= counters.current_thunk_chain_length
+    )
+
+    # Materialization accounts for successful DFS visits.
+    progress = machine.result_state.materialization
+
+    if progress is not None:
+        assert counters.result_nodes == progress.visited_nodes
+
+
 def expected_list():
     return CanonicalConstructor(
         "Cons",
@@ -116,6 +168,7 @@ def test_complete_materialization_of_finite_list(strategy):
     assert progress is not None
     assert progress.visited_nodes == 5
     assert result.instrumentation_state.counters.result_nodes == 5
+    assert_runtime_metrics_consistent(result)
 
 
 @pytest.mark.parametrize("mode", list(TraceMode))
@@ -199,6 +252,7 @@ def test_materialization_result_node_limit():
             CanonicalPending(),
         ),
     )
+    assert_runtime_metrics_consistent(result)
 
 
 @pytest.mark.parametrize("extra_evaluator_steps", [0, 1])
@@ -261,6 +315,7 @@ def test_materialization_evaluator_budget_limit(
     assert repeated.stop_reason is BatchStopReason.TERMINAL_STATUS
     assert repeated.state is limited
     assert repeated.trace == ()
+    assert_runtime_metrics_consistent(limited)
 
 
 def test_interactive_selection_materializes_constructor():

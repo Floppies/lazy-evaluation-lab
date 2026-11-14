@@ -476,6 +476,36 @@ Abstract slots, semantic reductions, and continuation frames
 must not be equated with native memory bytes, machine
 instructions, or physical stack usage.
 
+### Run Comparability
+
+ComparisonRun associates a caller-supplied workload
+identifier with the execution configuration and accumulated
+execution state. The workload identifier is not a session
+identifier or a computed source hash.
+
+Complete-cost comparisons require completed executions.
+Differences in workload, strategy, effective result policy,
+and execution limits must be explicitly declared as
+experimental factors.
+
+For runs of the same workload and observation policy,
+completed canonical results must agree. Partial results
+are not treated as semantic mismatches with complete ones.
+
+Metric comparisons report the individual values and their
+signed delta. A ratio is available only when complete costs
+are comparable and the denominator is positive. Otherwise,
+the ratio is unavailable.
+
+CBNeed-specific metrics are applicable only to CBNeed runs.
+Logical metrics are independent of trace retention mode;
+this does not establish equivalence of wall-time measurements.
+
+Declared experimental factors permit exploratory comparisons.
+They do not, by themselves, establish a causal explanation
+for observed differences.
+
+
 ### Reducer Accounting Invariants
 
 The reducer processes each transition exactly once and

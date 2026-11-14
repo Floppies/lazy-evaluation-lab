@@ -18,6 +18,7 @@ from lazy_lab.runtime.state import (
     Strategy,
     TraceMode,
 )
+from lazy_lab.runtime.transitions import BatchStopReason
 
 
 def make_config(
@@ -312,3 +313,99 @@ def test_derived_semantic_reductions_are_supported():
 
     assert result.left_value == run.counters.semantic_reductions
     assert result.delta == 0
+
+
+def test_step_limited_run_is_not_a_complete_cost():
+    full = completed_run(
+        source="main = 1 + 2",
+        workload_id="addition",
+    )
+
+    config = replace(
+        make_config(),
+        execution_step_limit=2,
+    )
+
+    initial = create_initial_core_state(
+        compile_source("main = 1 + 2"),
+        config,
+        session_id="step-limited-comparison",
+    )
+
+    limited = run_session_batch(
+        initial,
+        config,
+        max_steps=100,
+    )
+
+    assert limited.stop_reason is BatchStopReason.EVALUATOR_BUDGET
+
+    truncated = ComparisonRun(
+        workload_id="addition",
+        config=config,
+        state=limited.state,
+    )
+
+    result = compare_metric(
+        full,
+        truncated,
+        "evaluator_transitions",
+        varied_factors=frozenset({"execution_step_limit"}),
+    )
+
+    assert not result.assessment.complete_costs_comparable
+    assert "right_not_completed" in result.assessment.reasons
+    assert result.ratio is None
+    assert result.delta == result.left_value - result.right_value
+
+
+def test_result_limited_run_is_not_a_complete_cost():
+    full = completed_run(
+        source="main = [1, 2]",
+        workload_id="finite-list",
+        policy=ResultPolicy.MATERIALIZE_COMPLETE_VALUE,
+    )
+
+    config = replace(
+        make_config(ResultPolicy.MATERIALIZE_COMPLETE_VALUE),
+        result_node_limit=2,
+    )
+
+    initial = create_initial_core_state(
+        compile_source("main = [1, 2]"),
+        config,
+        session_id="result-limited-comparison",
+    )
+
+    limited = run_session_batch(
+        initial,
+        config,
+        max_steps=300,
+    )
+
+    assert (
+        limited.state.machine_state.status
+        is ExecutionStatus.RESULT_LIMIT_REACHED
+    )
+
+    truncated = ComparisonRun(
+        workload_id="finite-list",
+        config=config,
+        state=limited.state,
+    )
+
+    result = compare_metric(
+        full,
+        truncated,
+        "result_nodes",
+        varied_factors=frozenset({"result_node_limit"}),
+    )
+
+    assert result.left_value == 5
+    assert result.right_value == 2
+    assert result.delta == 3
+    assert result.ratio is None
+
+    assert result.assessment.reasons == (
+        "right_not_completed",
+    )

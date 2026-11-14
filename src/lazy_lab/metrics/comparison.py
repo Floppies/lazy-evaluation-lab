@@ -294,7 +294,9 @@ def assess_comparability(
     # Equal workload and observation demand should yield
     # equivalent canonical results across strategies.
     if (
-        left.workload_id == right.workload_id
+        left.state.machine_state.status is ExecutionStatus.COMPLETED
+        and right.state.machine_state.status is ExecutionStatus.COMPLETED
+        and left.workload_id == right.workload_id
         and left.effective_result_policy is not None
         and left.effective_result_policy
             == right.effective_result_policy

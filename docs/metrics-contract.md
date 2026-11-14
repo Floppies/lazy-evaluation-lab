@@ -528,7 +528,62 @@ snapshot equivalence is validated after producer integration.
 
 ## 8. Export Contract
 
-Versioned run records and JSON/CSV export are not yet
-implemented. Their design must preserve the metric
-definitions, comparison metadata, and partial-execution
-semantics specified in Section 7.
+Measured executions can be represented as versioned,
+immutable RunRecord values. The current schema version is 1.
+
+A RunRecord contains the workload identifier, session
+identifier, transition index, execution configuration,
+effective result policy, execution status, optional batch
+stop reason, canonical result, and accumulated instrumentation.
+
+ExecutionStatus and BatchStopReason are distinct. A run may
+retain RUNNING status after a batch stops because of an
+evaluator budget. Such measurements must not be presented
+as complete execution costs.
+
+### JSON Export
+
+JSON export preserves the complete RunRecord measurement
+data, including canonical results and partial observations.
+
+Canonical values use explicit kind discriminators for
+integers, booleans, opaque functions, constructor WHNF,
+complete constructors, pending nodes, and partial constructors.
+
+Runtime heap references, stacks, environments, and mutable
+machine storage are not serialized.
+
+Primary metric counters and baselineSlots are exported.
+Derived metrics can be reconstructed from their definitions.
+
+JSON serialization is deterministic for identical records.
+
+### CSV Export
+
+CSV export produces one row per RunRecord, with stable
+column names and ordering.
+
+Columns include the schema version, workload and session
+identifiers, configuration, effective result policy,
+execution status, stop reason, heap baseline, and all
+primary metric counters.
+
+Metric columns use the metric_ prefix. Optional values
+without a value are represented as empty cells.
+
+Canonical result trees are not included in CSV. JSON export
+provides the structural result representation.
+
+An empty collection produces a CSV header without data rows.
+
+### Export Semantics
+
+Both formats preserve measured values without executing
+additional machine transitions or modifying the source state.
+
+Exports do not establish comparability by themselves.
+Complete-cost comparisons must satisfy the rules in Section 7.
+
+The current export API returns serialized strings.
+File persistence, command-line interfaces, and HTTP endpoints
+are outside B07 scope.

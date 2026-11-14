@@ -92,13 +92,13 @@ The descriptions follow the **Gantt B** plan and its milestone acceptance criter
 | B07.1 | Metrics Contract and Accounting Rules | Completed |
 | B07.2 | Instrumentation Data Model | Completed |
 | B07.3 | Pure Metrics Reducer | Completed |
-| B07.4 | Semantic Reductions and Attribution | In Progress |
-| B07.5 | Heap and Allocation Metrics | Pending |
-| B07.6 | Stack and Phase Metrics | Pending |
-| B07.7 | CBNeed Demand and Sharing Metrics | Pending |
-| B07.8 | Runtime Instrumentation Integration | Pending |
-| B07.9 | Metric Comparability and Validation | Pending |
-| B07.10 | Metrics and Run Data Export | Pending |
+| B07.4 | Semantic Reductions and Attribution | Completed |
+| B07.5 | Heap and Allocation Metrics | Completed |
+| B07.6 | Stack and Phase Metrics | Completed |
+| B07.7 | CBNeed Demand and Sharing Metrics | Completed |
+| B07.8 | Runtime Instrumentation Integration | Completed |
+| B07.9 | Metric Comparability and Validation | Completed |
+| B07.10 | Metrics and Run Data Export | Completed |
 | B07.11 | Integration, Regressions and Final Audit | Pending |
 
 

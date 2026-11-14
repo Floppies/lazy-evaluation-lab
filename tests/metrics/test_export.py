@@ -298,3 +298,96 @@ def test_csv_empty_collection_preserves_header():
 def test_csv_rejects_invalid_records():
     with pytest.raises(TypeError, match="Expected RunRecord"):
         run_records_to_csv([object()])
+
+
+@pytest.mark.parametrize(
+    "strategy",
+    [Strategy.CBV, Strategy.CBNEED],
+)
+def test_json_and_csv_preserve_real_execution_metrics(strategy):
+    source = "main = [1, 2]"
+    program = compile_source(source)
+
+    config = replace(
+        make_config(),
+        strategy=strategy,
+        result_policy=ResultPolicy.MATERIALIZE_COMPLETE_VALUE,
+        execution_step_limit=300,
+        result_node_limit=50,
+    )
+
+    records = []
+
+    for node_limit in (50, 2):
+        run_config = replace(
+            config,
+            result_node_limit=node_limit,
+        )
+
+        initial = create_initial_core_state(
+            program,
+            run_config,
+            session_id=f"export-{strategy.value}-{node_limit}",
+        )
+
+        batch = run_session_batch(
+            initial,
+            run_config,
+            max_steps=500,
+        )
+
+        measured = ComparisonRun(
+            workload_id="finite-list",
+            config=run_config,
+            state=batch.state,
+        )
+
+        original_metrics = batch.state.instrumentation_state
+
+        record = build_run_record(
+            measured,
+            stop_reason=batch.stop_reason,
+        )
+
+        assert record.instrumentation == original_metrics
+        assert batch.state.instrumentation_state == original_metrics
+
+        records.append(record)
+
+    complete, limited = records
+
+    assert complete.status is ExecutionStatus.COMPLETED
+    assert limited.status is ExecutionStatus.RESULT_LIMIT_REACHED
+
+    assert complete.is_complete
+    assert not limited.is_complete
+
+    assert complete.instrumentation.counters.result_nodes == 5
+    assert limited.instrumentation.counters.result_nodes == 2
+
+    csv_output = run_records_to_csv(records)
+    rows = list(csv.DictReader(StringIO(csv_output)))
+
+    assert len(rows) == 2
+
+    for record, row in zip(records, rows):
+        document = json.loads(run_record_to_json(record))
+
+        assert document["schema_version"] == record.schema_version
+        assert row["schema_version"] == str(record.schema_version)
+
+        assert document["status"] == row["status"]
+        assert document["stop_reason"] == row["stop_reason"]
+
+        for metric_name, value in document["instrumentation"][
+            "counters"
+        ].items():
+            assert row[f"metric_{metric_name}"] == str(value)
+
+        baseline = document["instrumentation"]["baseline_slots"]
+
+        assert row["baseline_slots"] == (
+            "" if baseline is None else str(baseline)
+        )
+
+    assert run_records_to_csv(records) == csv_output

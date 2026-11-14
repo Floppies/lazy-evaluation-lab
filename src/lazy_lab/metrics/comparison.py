@@ -5,6 +5,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, fields
 
+from lazy_lab.runtime.observation import CanonicalConstructor, CanonicalPartialConstructor, OpaqueFunction, PartialCanonicalValue
 from lazy_lab.runtime.state import (
     ExecutionConfig,
     ExecutionState,
@@ -152,6 +153,26 @@ def _metric_value(run: ComparisonRun, name: str) -> int:
         return value
 
     return getattr(run.counters, name)
+
+
+def _contains_opaque_function(
+    value: PartialCanonicalValue | None,
+) -> bool:
+    """Whether structural result equality cannot be verified."""
+
+    if isinstance(value, OpaqueFunction):
+        return True
+
+    if isinstance(
+        value,
+        (CanonicalConstructor, CanonicalPartialConstructor),
+    ):
+        return any(
+            _contains_opaque_function(field)
+            for field in value.fields
+        )
+
+    return False
 
 
 def compare_metric(
@@ -304,6 +325,12 @@ def assess_comparability(
         and right.state.canonical_result is not None
         and left.state.canonical_result
             != right.state.canonical_result
+        and not _contains_opaque_function(
+            left.state.canonical_result
+        )
+        and not _contains_opaque_function(
+            right.state.canonical_result
+        )
     ):
         reasons.append("different_observable_result")
 

@@ -526,6 +526,10 @@ batch partitions must produce identical accumulated metrics.
 These are reducer-level guarantees; end-to-end batch and
 snapshot equivalence is validated after producer integration.
 
+Canonical results containing opaque functions are excluded
+from automatic structural equivalence checks. This exclusion
+does not establish semantic equivalence between functions.
+
 ## 8. Export Contract
 
 Measured executions can be represented as versioned,

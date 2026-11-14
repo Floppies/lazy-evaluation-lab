@@ -409,3 +409,28 @@ def test_result_limited_run_is_not_a_complete_cost():
     assert result.assessment.reasons == (
         "right_not_completed",
     )
+
+
+def test_opaque_functions_are_not_compared_by_identity():
+    source = r"main = \x -> x"
+
+    cbv = completed_run(
+        Strategy.CBV,
+        source=source,
+        workload_id="identity-function",
+    )
+
+    need = completed_run(
+        Strategy.CBNEED,
+        source=source,
+        workload_id="identity-function",
+    )
+
+    assessment = assess_comparability(
+        cbv,
+        need,
+        varied_factors=frozenset({"strategy"}),
+    )
+
+    assert "different_observable_result" not in assessment.reasons
+    assert assessment.complete_costs_comparable

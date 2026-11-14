@@ -175,13 +175,13 @@ class TransitionResult:
                     "valid typed instrumentation records"
                 )
             
-            if (
-                type(self.result_nodes_delta) is not int
-                or self.result_nodes_delta < 0
-            ):
-                raise ValueError(
-                    "result_nodes_delta must be a non-negative integer"
-                )
+        if (
+            type(self.result_nodes_delta) is not int
+            or self.result_nodes_delta < 0
+        ):
+            raise ValueError(
+                "result_nodes_delta must be a non-negative integer"
+            )
 
 
 @dataclass(frozen=True, slots=True)

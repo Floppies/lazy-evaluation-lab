@@ -8,7 +8,7 @@ from lazy_lab.engine.core_machine import (
     run_batch,
 )
 from lazy_lab.engine.session_runner import run_session_batch
-from lazy_lab.metrics.comparison import ComparisonRun, assess_comparability
+from lazy_lab.metrics.comparison import ComparisonRun, assess_comparability, compare_metric
 from lazy_lab.pipeline import compile_source
 from lazy_lab.runtime.state import (
     ExecutionConfig,
@@ -217,3 +217,98 @@ def test_mismatched_observable_results_are_rejected():
 
     assert not assessment.complete_costs_comparable
     assert "different_observable_result" in assessment.reasons
+
+
+def test_complete_metric_comparison_returns_delta_and_ratio():
+    cbv = completed_run(Strategy.CBV)
+    need = completed_run(Strategy.CBNEED)
+
+    result = compare_metric(
+        cbv,
+        need,
+        "evaluator_transitions",
+        varied_factors=frozenset({"strategy"}),
+    )
+
+    left = cbv.counters.evaluator_transitions
+    right = need.counters.evaluator_transitions
+
+    assert result.left_value == left
+    assert result.right_value == right
+    assert result.delta == left - right
+    assert result.ratio == pytest.approx(left / right)
+    assert result.assessment.complete_costs_comparable
+
+
+def test_zero_denominator_does_not_produce_ratio():
+    run = completed_run()
+
+    result = compare_metric(
+        run,
+        run,
+        "result_nodes",
+    )
+
+    assert result.left_value == 0
+    assert result.right_value == 0
+    assert result.delta == 0
+    assert result.ratio is None
+    assert result.assessment.complete_costs_comparable
+
+
+def test_incomplete_comparison_has_no_ratio():
+    completed = completed_run()
+
+    config = make_config()
+    initial = create_initial_core_state(
+        compile_source("main = 42"),
+        config,
+        session_id="incomplete-metric",
+    )
+
+    incomplete = ComparisonRun(
+        workload_id="constant-42",
+        config=config,
+        state=initial,
+    )
+
+    result = compare_metric(
+        completed,
+        incomplete,
+        "evaluator_transitions",
+    )
+
+    assert result.left_value > 0
+    assert result.right_value == 0
+    assert result.delta == result.left_value
+    assert result.ratio is None
+    assert not result.assessment.complete_costs_comparable
+
+
+def test_cbneed_metric_rejects_cross_strategy_comparison():
+    cbv = completed_run(Strategy.CBV)
+    need = completed_run(Strategy.CBNEED)
+
+    with pytest.raises(
+        ValueError,
+        match="only applicable to CBNeed",
+    ):
+        compare_metric(
+            cbv,
+            need,
+            "shared_result_hits",
+            varied_factors=frozenset({"strategy"}),
+        )
+
+
+def test_derived_semantic_reductions_are_supported():
+    run = completed_run()
+
+    result = compare_metric(
+        run,
+        run,
+        "semantic_reductions",
+    )
+
+    assert result.left_value == run.counters.semantic_reductions
+    assert result.delta == 0

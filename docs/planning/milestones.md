@@ -88,7 +88,7 @@ The descriptions follow the **Gantt B** plan and its milestone acceptance criter
 | B06.10 | Folds and Strictness | Completed |
 | B06.11 | Infinite Lists and Bounded Evaluation | Completed |
 | B06.12 | Integration, Regressions and Audit | Completed |
-| B07 | Instrumentation and Metrics | In Progress |
+| B07 | Instrumentation and Metrics | Completed |
 | B07.1 | Metrics Contract and Accounting Rules | Completed |
 | B07.2 | Instrumentation Data Model | Completed |
 | B07.3 | Pure Metrics Reducer | Completed |
@@ -99,8 +99,19 @@ The descriptions follow the **Gantt B** plan and its milestone acceptance criter
 | B07.8 | Runtime Instrumentation Integration | Completed |
 | B07.9 | Metric Comparability and Validation | Completed |
 | B07.10 | Metrics and Run Data Export | Completed |
-| B07.11 | Integration, Regressions and Final Audit | Pending |
-
+| B07.11 | Integration, Regressions and Final Audit | Completed |
+| B08 | Interactive Visualizer | In Progress |
+| B08.1 | Interactive Visualization Contract | In Progress |
+| B08.2 | Execution Session Controller | Pending |
+| B08.3 | History Retention and Replay | Pending |
+| B08.4 | Passive State Projections | Pending |
+| B08.5 | Source and Core Inspection | Pending |
+| B08.6 | Heap Table and Memory Graph Projection | Pending |
+| B08.7 | Minimal FastAPI Session API | Pending |
+| B08.8 | React/TypeScript App Foundation | Pending |
+| B08.9 | Step, Run and Replay Controls | Pending |
+| B08.10 | Synchronized Visual Panels | Pending |
+| B08.11 | Integration, Demo and Final Audit | Pending |
 
 ### Important notes
 

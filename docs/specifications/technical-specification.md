@@ -1244,3 +1244,37 @@ Las auditorías b02.8-audit.md y b03-audit.md se preservan como registros fechad
 Esta revisión no altera de inmediato el Gantt B01–B19. La extensión seq se cubrirá provisionalmente con horas de reserva semanales y su costo real se registrará para una futura revisión solicitada por los docentes. La planificación sigue delimitando B04 como primer evaluador y observación canónica, y B05 como infraestructura de thunks, sharing y blackholes.
 
 La especificación de la mini-lengua y los documentos vigentes deben actualizarse para incorporar seq, las reglas de globals y las restricciones de alcance; este anexo no sustituye por sí solo los tests ni la validación de los contratos. En el informe final, la motivación y las consecuencias experimentales de estas decisiones se desarrollarán en el capítulo de diseño/metodología y se relacionarán con las evidencias de ejecución.
+
+### 16.9. Revisión de la política de historial y retención de snapshots
+
+**DEC-2.0-06 — Captura selectiva de ventanas de eventos.**
+
+Durante el diseño de B08 se revisó la política de retención `EVENTS` definida originalmente en §6.
+
+La propuesta inicial contemplaba eventos, deltas y checkpoints periódicos para reconstruir estados históricos. Se reemplaza este mecanismo por una política de **captura selectiva de snapshots**, orientada a inspeccionar transiciones relevantes para comprender la evaluación.
+
+El usuario podrá seleccionar categorías de eventos, como el ciclo de vida de los thunks, la materialización de resultados, las modificaciones del heap o las reducciones semánticas.
+
+Cuando una transición coincida con los filtros seleccionados, el controlador conservará tres estados:
+
+1. El estado anterior a la transición.
+2. El estado producido por la transición.
+3. El estado producido por la transición siguiente, cuando exista.
+
+Las ventanas superpuestas compartirán snapshots, evitando almacenar varias copias del mismo estado lógico.
+
+La política revisada establece:
+
+| Modo | Retención |
+| --- | --- |
+| `FULL` | Todos los estados de ejecución para navegación completa. |
+| `EVENTS` | Ventanas de snapshots alrededor de transiciones seleccionadas por el usuario. |
+| `METRICS_ONLY` | Estado actual y métricas acumuladas, sin historial navegable. |
+
+No se implementará reconstrucción de estados descartados mediante reejecución determinista ni checkpoints periódicos en B08.
+
+**Justificación:** la captura selectiva permite concentrar la visualización en fenómenos operacionales relevantes, conservando estados reales de ejecución sin introducir una infraestructura adicional de reconstrucción histórica.
+
+**Invariantes:** la selección de eventos y la retención de snapshots no alteran la semántica del evaluador, el estado vivo, la identidad de los objetos, los límites de ejecución ni las métricas. La inspección histórica permanece pasiva.
+
+**Impacto:** esta decisión sustituye específicamente la política de persistencia `EVENTS` descrita en §6. Las condiciones operacionales detalladas, los filtros y los límites de navegación se definen en `docs/interactive-visualizer-contract.md`.

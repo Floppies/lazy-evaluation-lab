@@ -5,7 +5,16 @@ from __future__ import annotations
 
 from dataclasses import dataclass, fields
 
-from lazy_lab.runtime.observation import CanonicalConstructor, CanonicalPartialConstructor, OpaqueFunction, PartialCanonicalValue
+from lazy_lab.runtime.observation import (
+    CanonicalConstructor,
+    CanonicalInteger,
+    CanonicalBoolean,
+    CanonicalPartialConstructor,
+    CanonicalPending,
+    ConstructorWHNF,
+    OpaqueFunction,
+    PartialCanonicalValue,
+)
 from lazy_lab.runtime.state import (
     ExecutionConfig,
     ExecutionState,
@@ -154,26 +163,78 @@ def _metric_value(run: ComparisonRun, name: str) -> int:
 
     return getattr(run.counters, name)
 
-
 def _contains_opaque_function(
     value: PartialCanonicalValue | None,
 ) -> bool:
-    """Whether structural result equality cannot be verified."""
+    """Detect opaque functions without recursive traversal."""
 
-    if isinstance(value, OpaqueFunction):
-        return True
+    pending = [value]
 
-    if isinstance(
-        value,
-        (CanonicalConstructor, CanonicalPartialConstructor),
-    ):
-        return any(
-            _contains_opaque_function(field)
-            for field in value.fields
-        )
+    while pending:
+        current = pending.pop()
+
+        if isinstance(current, OpaqueFunction):
+            return True
+
+        if isinstance(
+            current,
+            (CanonicalConstructor, CanonicalPartialConstructor),
+        ):
+            pending.extend(current.fields)
 
     return False
 
+def _canonical_values_equal(
+    left: PartialCanonicalValue,
+    right: PartialCanonicalValue,
+) -> bool:
+    """Compare canonical trees without recursive dataclass equality."""
+
+    pending = [(left, right)]
+
+    while pending:
+        a, b = pending.pop()
+
+        if type(a) is not type(b):
+            return False
+
+        if isinstance(a, (CanonicalInteger, CanonicalBoolean)):
+            if a.value != b.value:
+                return False
+
+        elif isinstance(a, ConstructorWHNF):
+            if a.tag != b.tag or a.arity != b.arity:
+                return False
+
+        elif isinstance(a, CanonicalConstructor):
+            if (
+                a.tag != b.tag
+                or len(a.fields) != len(b.fields)
+            ):
+                return False
+
+            pending.extend(zip(a.fields, b.fields))
+
+        elif isinstance(a, CanonicalPartialConstructor):
+            if (
+                a.tag != b.tag
+                or a.unvisited_fields != b.unvisited_fields
+                or len(a.fields) != len(b.fields)
+            ):
+                return False
+
+            pending.extend(zip(a.fields, b.fields))
+
+        elif isinstance(a, (CanonicalPending, OpaqueFunction)):
+            # OpaqueFunction equivalence is handled by the caller.
+            pass
+
+        else:
+            raise TypeError(
+                f"Unsupported canonical value: {type(a).__name__}"
+            )
+
+    return True
 
 def compare_metric(
     left: ComparisonRun,
@@ -236,7 +297,6 @@ def compare_metric(
         ratio=ratio,
         assessment=assessment,
     )
-
 
 def assess_comparability(
     left: ComparisonRun,
@@ -323,13 +383,15 @@ def assess_comparability(
             == right.effective_result_policy
         and left.state.canonical_result is not None
         and right.state.canonical_result is not None
-        and left.state.canonical_result
-            != right.state.canonical_result
         and not _contains_opaque_function(
             left.state.canonical_result
         )
         and not _contains_opaque_function(
             right.state.canonical_result
+        )
+        and not _canonical_values_equal(
+            left.state.canonical_result,
+            right.state.canonical_result,
         )
     ):
         reasons.append("different_observable_result")

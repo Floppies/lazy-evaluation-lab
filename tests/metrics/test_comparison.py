@@ -434,3 +434,50 @@ def test_opaque_functions_are_not_compared_by_identity():
 
     assert "different_observable_result" not in assessment.reasons
     assert assessment.complete_costs_comparable
+
+
+def test_deep_canonical_comparison_is_iterative():
+    from lazy_lab.metrics.comparison import _canonical_values_equal
+    from lazy_lab.runtime.observation import (
+        CanonicalConstructor,
+        CanonicalInteger,
+    )
+
+    def make_list(depth, last_value):
+        result = CanonicalConstructor("Nil", ())
+
+        for index in range(depth):
+            value = last_value if index == 0 else index
+            result = CanonicalConstructor(
+                "Cons",
+                (CanonicalInteger(value), result),
+            )
+
+        return result
+
+    first = make_list(1200, 42)
+    equal = make_list(1200, 42)
+    different = make_list(1200, 99)
+
+    assert first is not equal
+    assert _canonical_values_equal(first, equal)
+    assert not _canonical_values_equal(first, different)
+
+
+def test_deep_opaque_function_detection_is_iterative():
+    from lazy_lab.metrics.comparison import _contains_opaque_function
+    from lazy_lab.runtime.observation import (
+        CanonicalConstructor,
+        CanonicalInteger,
+        OpaqueFunction,
+    )
+
+    value = OpaqueFunction()
+
+    for _ in range(1200):
+        value = CanonicalConstructor(
+            "Cons",
+            (CanonicalInteger(1), value),
+        )
+
+    assert _contains_opaque_function(value)

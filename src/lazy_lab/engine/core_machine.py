@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import replace
 
 from lazy_lab.core.nodes import (
@@ -21,6 +22,7 @@ from lazy_lab.core.nodes import (
     CoreIf,
     CoreLetRec,
 )
+from lazy_lab.metrics.events import SemanticEventKind
 from lazy_lab.runtime.constructors import ConstructorValue, allocate_constructor
 from lazy_lab.runtime.materialization import resume_materialization
 from lazy_lab.semantics.predefined import PREDEFINED_IDENTIFIERS
@@ -93,7 +95,15 @@ from lazy_lab.runtime.thunks import (
     PendingThunk,
     EvaluatingThunk,
 )
-
+from lazy_lab.metrics.recording import (
+    SemanticEventRecorder,
+    HeapEffectRecorder,
+    StackEffectRecorder,
+)
+from lazy_lab.metrics.effects import HeapBaselineRecorded
+from lazy_lab.metrics.integration import (
+    accumulate_transition_metrics,
+)
 
 class UnsupportedTransitionError(NotImplementedError):
     """The requested transition is not implemented yet."""
@@ -157,6 +167,7 @@ def _evaluate_boolean(
 
 def _dispatch_core_evaluation(
     machine: MachineState,
+    recorder: SemanticEventRecorder,
 ) -> tuple[MachineState, RuleId]:
     """Apply one Core expression evaluation rule.
 
@@ -184,6 +195,10 @@ def _dispatch_core_evaluation(
         reference = machine.local_environment.lookup(
             expression.name
         )
+        recorder.emit(
+            SemanticEventKind.VARIABLE_LOOKED_UP,
+            node=expression,
+        )
         next_control = Return(reference)
         rule_id = RuleId.CORE_EVAL_VARIABLE
 
@@ -206,6 +221,7 @@ def _dispatch_core_evaluation(
             ApplyFunctionFrame(
                 argument=expression.argument,
                 environment=machine.local_environment,
+                application=expression,
             )
         )
 
@@ -229,6 +245,7 @@ def _dispatch_core_evaluation(
                 remaining_arguments=expression.arguments[1:],
                 evaluated_arguments=(),
                 environment=machine.local_environment,
+                primitive=expression,
             )
         )
 
@@ -242,6 +259,7 @@ def _dispatch_core_evaluation(
                 then_branch=expression.then_branch,
                 else_branch=expression.else_branch,
                 environment=machine.local_environment,
+                conditional=expression
             )
         )
 
@@ -252,6 +270,7 @@ def _dispatch_core_evaluation(
         return _enter_local_letrec(
             machine,
             expression,
+            recorder,
         )
 
     elif isinstance(expression, CoreCase):
@@ -259,6 +278,7 @@ def _dispatch_core_evaluation(
             CoreCaseFrame(
                 alternatives=expression.alternatives,
                 environment=machine.local_environment,
+                case_expression=expression
             )
         )
 
@@ -273,6 +293,7 @@ def _dispatch_core_evaluation(
                     field,
                     machine.local_environment,
                     machine.global_environment,
+                    on_created=recorder.record_thunk_creation,
                 )
                 for field in expression.fields
             )
@@ -358,7 +379,6 @@ def step(
             f"Unsupported control: {type(control).__name__}"
         )
 
-    # Legacy B03 controls without an entry remain unsupported.
     # Initialization is only executable for states created
     # through the valid Core initialization contract.
     if isinstance(control, InitializeCoreBindings):
@@ -381,40 +401,59 @@ def step(
     # All mutations below affect isolated successor storage.
     snapshot = state.snapshot()
 
-    if isinstance(control, InitializeCoreBindings):
-        next_machine, rule_id = _advance_global_initialization(
-            snapshot.machine_state,
-            control,
-    )
+    recorder = SemanticEventRecorder()
+    heap_recorder = HeapEffectRecorder()
+    stack_recorder = StackEffectRecorder()
 
-    elif isinstance(control, InitializeLocalBindings):
-        next_machine, rule_id = _advance_local_initialization(
-            snapshot.machine_state,
-            control,
+    with (
+        snapshot.machine_state.heap.capture_effects(
+            heap_recorder.record
+        ),
+        snapshot.machine_state.stack.capture_effects(
+            stack_recorder.record
+        ),
+    ):
+        if isinstance(control, InitializeCoreBindings):
+            next_machine, rule_id = _advance_global_initialization(
+                snapshot.machine_state,
+                control,
+                heap_recorder,
+                recorder,
         )
 
-    elif isinstance(control, Force):
-        next_machine, rule_id = _advance_force(
-            snapshot.machine_state,
-            control,
-        )
+        elif isinstance(control, InitializeLocalBindings):
+            next_machine, rule_id = _advance_local_initialization(
+                snapshot.machine_state,
+                control,
+                recorder,
+            )
 
-    elif isinstance(control, Return):
-        next_machine, rule_id = _advance_return(
-            snapshot.machine_state,
-            control,
-        )
+        elif isinstance(control, Force):
+            next_machine, rule_id = _advance_force(
+                snapshot.machine_state,
+                control,
+                recorder,
+            )
 
-    elif isinstance(control, ApplyPrimitive):
-        next_machine, rule_id = _advance_apply_primitive(
-            snapshot.machine_state,
-            control,
-        )
+        elif isinstance(control, Return):
+            next_machine, rule_id = _advance_return(
+                snapshot.machine_state,
+                control,
+                recorder,
+            )
 
-    else:
-        next_machine, rule_id = _dispatch_core_evaluation(
-        snapshot.machine_state
-    )
+        elif isinstance(control, ApplyPrimitive):
+            next_machine, rule_id = _advance_apply_primitive(
+                snapshot.machine_state,
+                control,
+                recorder,
+            )
+
+        else:
+            next_machine, rule_id = _dispatch_core_evaluation(
+            snapshot.machine_state,
+            recorder,
+        )
         
     next_machine = replace(
         next_machine,
@@ -430,13 +469,21 @@ def step(
         machine_state=next_machine,
     )
 
-    return TransitionResult(
+    transition = TransitionResult(
         previous_state_id=state.state_id,
         next_state=next_state,
         rule_id=rule_id,
         transition_kind=TransitionKind.EVALUATOR,
         phase_before=machine.phase,
         phase_after=next_machine.phase,
+        semantic_events=recorder.freeze(),
+        heap_effects=heap_recorder.freeze(),
+        stack_effects=stack_recorder.freeze(),
+    )
+
+    return accumulate_transition_metrics(
+        state,
+        transition,
     )
 
 def _stop_reason(
@@ -522,6 +569,8 @@ def _install_global_rhs(
     global_environment: Environment,
     binding: CoreBinding,
     strategy: Strategy,
+    *,
+    on_created: Callable[[HeapReference], None] | None = None,
 ) -> HeapReference:
     """Install one global RHS without evaluating its expression.
 
@@ -578,6 +627,7 @@ def _install_global_rhs(
             global_environment,
             global_environment,
             anchor_reference=reference,
+            on_created=on_created,
         )
 
     else:
@@ -592,6 +642,8 @@ def _install_global_rhs(
 def _advance_global_initialization(
     machine: MachineState,
     control: InitializeCoreBindings,
+    heap_recorder: HeapEffectRecorder,
+    recorder: SemanticEventRecorder,
 ) -> tuple[MachineState, RuleId]:
     """Apply one Core global-initialization rule.
 
@@ -661,6 +713,7 @@ def _advance_global_initialization(
             machine.global_environment,
             binding,
             machine.strategy,
+            on_created=recorder.record_thunk_creation,
         )
 
         return (
@@ -676,6 +729,12 @@ def _advance_global_initialization(
 
     # Stage 3: the global group is installed. Begin evaluating
     # the user-selected entry without forcing unrelated globals.
+    heap_recorder.record(
+        HeapBaselineRecorded(
+            slots=machine.heap.current_slots,
+        )
+    )
+
     return (
         replace(
             machine,
@@ -689,6 +748,7 @@ def _advance_global_initialization(
 def _advance_local_initialization(
     machine: MachineState,
     control: InitializeLocalBindings,
+    recorder: SemanticEventRecorder,
 ) -> tuple[MachineState, RuleId]:
     """Initialize local recursive bindings in source order."""
     if machine.strategy not in (Strategy.CBV, Strategy.CBNEED):
@@ -776,6 +836,7 @@ def _advance_local_initialization(
             machine.local_environment,
             machine.global_environment,
             anchor_reference=reference,
+            on_created=recorder.record_thunk_creation,
         )
 
         return (
@@ -840,6 +901,7 @@ def _reference_is_whnf(
 def _advance_force(
     machine: MachineState,
     control: Force,
+    recorder: SemanticEventRecorder,
 ) -> tuple[MachineState, RuleId]:
     """Demand WHNF, entering CBNeed thunks or detecting reentrant demand.
 
@@ -863,8 +925,24 @@ def _advance_force(
     value = machine.heap.get(reference).value
 
     if isinstance(value, Indirection):
+        if (
+            machine.strategy is Strategy.CBNEED
+            and value.from_thunk_update
+        ):
+            recorder.emit(
+                SemanticEventKind.THUNK_DEMANDED,
+                object_id=reference.object_id,
+            )
+            recorder.emit(
+                SemanticEventKind.SHARED_RESULT_HIT,
+                object_id=reference.object_id,
+            )
+
         return (
-            replace(machine, control=Force(value.target)),
+            replace(
+                machine,
+                control=Force(value.target),
+            ),
             RuleId.CORE_FORCE_INDIRECTION,
         )
 
@@ -934,6 +1012,16 @@ def _advance_force(
 
         machine.stack.push(update_frame)
 
+        recorder.emit(
+            SemanticEventKind.THUNK_DEMANDED,
+            object_id=reference.object_id,
+        )
+
+        recorder.emit(
+            SemanticEventKind.THUNK_FORCE_STARTED,
+            object_id=reference.object_id,
+        )
+
         return (
             replace(
                 machine,
@@ -961,6 +1049,16 @@ def _advance_force(
             raise InvalidMachineStateError(
                 "EvaluatingThunk has no active UpdateFrame"
             )
+
+        recorder.emit(
+            SemanticEventKind.THUNK_DEMANDED,
+            object_id=reference.object_id,
+        )
+
+        recorder.emit(
+            SemanticEventKind.BLACKHOLE_DETECTED,
+            object_id=reference.object_id,
+        )
 
         # Preserve the control, heap, stack and environments.
         # The enclosing step() owns the isolated successor state
@@ -1022,6 +1120,7 @@ def _advance_force(
 def _advance_return(
     machine: MachineState,
     control: Return,
+    recorder: SemanticEventRecorder,
 ) -> tuple[MachineState, RuleId]:
     """Resume a continuation or demand a root result."""
     reference = control.reference
@@ -1035,6 +1134,7 @@ def _advance_return(
                 machine,
                 control,
                 frame,
+                recorder,
             )
 
         # 2. Resume a pending global RHS evaluation.
@@ -1091,6 +1191,7 @@ def _advance_return(
                 machine,
                 control,
                 frame,
+                recorder,
             )
 
         # 6. Function position has returned.
@@ -1100,6 +1201,7 @@ def _advance_return(
                 machine,
                 control,
                 frame,
+                recorder,
             )
 
         # 7. Argument has returned.
@@ -1109,6 +1211,7 @@ def _advance_return(
                 machine,
                 control,
                 frame,
+                recorder,
             )
 
         # 8. Function body has returned.
@@ -1125,6 +1228,7 @@ def _advance_return(
                 machine,
                 control,
                 frame,
+                recorder,
             )
 
         # 10. Constructor evaluation
@@ -1141,6 +1245,7 @@ def _advance_return(
                 machine,
                 control,
                 frame,
+                recorder,
             )
 
         #12. Continueation for materailization
@@ -1184,6 +1289,7 @@ def _advance_return(
 def _advance_apply_primitive(
     machine: MachineState,
     control: ApplyPrimitive,
+    recorder: SemanticEventRecorder,
 ) -> tuple[MachineState, RuleId]:
     """Execute a primitive with fully evaluated WHNF operands."""
     operator = control.operator
@@ -1268,6 +1374,11 @@ def _advance_apply_primitive(
                 raise InvalidMachineStateError(
                     f"Unexpected primitive operator: {operator!r}"
                 )
+
+    recorder.emit(
+        SemanticEventKind.PRIMITIVE_REDUCED,
+        node=control.primitive,
+    )
 
     return (
         replace(
@@ -1394,6 +1505,7 @@ def _resume_apply_function(
     machine: MachineState,
     control: Return,
     frame: ApplyFunctionFrame,
+    recorder: SemanticEventRecorder,
 ) -> tuple[MachineState, RuleId]:
     """Demand the function, then dispatch CBV or CBNeed application.
 
@@ -1452,6 +1564,7 @@ def _resume_apply_function(
                 frame.argument,
                 frame.environment,
                 machine.global_environment,
+                on_created=recorder.record_thunk_creation,
             )
 
             partial = PartialPredefinedFunction(
@@ -1465,6 +1578,11 @@ def _resume_apply_function(
             )
 
             machine.stack.pop()
+
+            recorder.emit(
+                SemanticEventKind.FUNCTION_APPLIED,
+                node=frame.application,
+            )
 
             return (
                 replace(
@@ -1492,7 +1610,13 @@ def _resume_apply_function(
                     first_argument_reference=first_reference,
                     second_expression=frame.argument,
                     return_environment=frame.environment,
+                    application= frame.application,
                 )
+            )
+
+            recorder.emit(
+                SemanticEventKind.FUNCTION_APPLIED,
+                node=frame.application,
             )
 
             return (
@@ -1510,6 +1634,7 @@ def _resume_apply_function(
             frame.argument,
             frame.environment,
             machine.global_environment,
+            on_created=recorder.record_thunk_creation,
         )
 
         # The closure body uses the definition-site captures,
@@ -1522,6 +1647,15 @@ def _resume_apply_function(
         machine.stack.pop()
         machine.stack.push(
             RestoreEnvironmentFrame(frame.environment)
+        )
+
+        recorder.emit(
+            SemanticEventKind.FUNCTION_APPLIED,
+            node=frame.application,
+        )
+        recorder.emit(
+            SemanticEventKind.BETA_REDUCED,
+            node=function_value.lambda_expression,
         )
 
         return (
@@ -1547,6 +1681,7 @@ def _resume_apply_function(
         ApplyArgumentFrame(
             function=reference,
             return_environment=frame.environment,
+            application=frame.application,
         )
     )
 
@@ -1563,6 +1698,7 @@ def _resume_seq_first_argument(
     machine: MachineState,
     control: Return,
     frame: SeqFirstArgumentFrame,
+    recorder: SemanticEventRecorder,
 ) -> tuple[MachineState, RuleId]:
     """Complete CBNeed seq without forcing its second argument."""
 
@@ -1582,9 +1718,15 @@ def _resume_seq_first_argument(
         frame.second_expression,
         frame.return_environment,
         machine.global_environment,
+        on_created=recorder.record_thunk_creation,
     )
 
     machine.stack.pop()
+
+    recorder.emit(
+        SemanticEventKind.SEQ_REDUCED,
+        node=frame.application,
+    )
 
     return (
         replace(
@@ -1599,6 +1741,7 @@ def _resume_apply_argument(
     machine: MachineState,
     control: Return,
     frame: ApplyArgumentFrame,
+    recorder: SemanticEventRecorder,
 ) -> tuple[MachineState, RuleId]:
     """Demand the CBV argument, then enter the closure body."""
     if frame.return_environment is None:
@@ -1659,6 +1802,15 @@ def _resume_apply_argument(
         # Saturated seq returns that second argument.
         machine.stack.pop()
 
+        recorder.emit(
+            SemanticEventKind.FUNCTION_APPLIED,
+            node=frame.application,
+        )
+        recorder.emit(
+            SemanticEventKind.SEQ_REDUCED,
+            node=frame.application,
+        )
+
         return (
             replace(
                 machine,
@@ -1689,6 +1841,11 @@ def _resume_apply_argument(
 
         machine.stack.pop()
 
+        recorder.emit(
+            SemanticEventKind.FUNCTION_APPLIED,
+            node=frame.application,
+        )
+
         return (
             replace(
                 machine,
@@ -1712,6 +1869,15 @@ def _resume_apply_argument(
     machine.stack.pop()
     machine.stack.push(
         RestoreEnvironmentFrame(frame.return_environment)
+    )
+
+    recorder.emit(
+        SemanticEventKind.FUNCTION_APPLIED,
+        node=frame.application,
+    )
+    recorder.emit(
+        SemanticEventKind.BETA_REDUCED,
+        node=function_value.lambda_expression,
     )
 
     return (
@@ -1810,6 +1976,7 @@ def _resume_primitive_operand(
             control=ApplyPrimitive(
                 operator=frame.operator,
                 arguments=evaluated_arguments,
+                primitive=frame.primitive,
             ),
         ),
         RuleId.CORE_PRIM_OPERANDS_READY,
@@ -1819,6 +1986,7 @@ def _resume_if_condition(
     machine: MachineState,
     control: Return,
     frame: IfFrame,
+    recorder: SemanticEventRecorder,
 ) -> tuple[MachineState, RuleId]:
     """Demand a boolean condition and select exactly one branch."""
     reference = control.reference
@@ -1860,6 +2028,11 @@ def _resume_if_condition(
 
     # The condition continuation is finished.
     machine.stack.pop()
+
+    recorder.emit(
+        SemanticEventKind.CONDITIONAL_SELECTED,
+        node=frame.conditional,
+    )
 
     # Evaluate only the selected branch, using the lexical
     # environment of the original conditional expression.
@@ -1933,6 +2106,7 @@ def _resume_update_frame(
     machine: MachineState,
     control: Return,
     frame: UpdateFrame,
+    recorder: SemanticEventRecorder,
 ) -> tuple[MachineState, RuleId]:
     """Demand a thunk RHS result before its memoizing update."""
 
@@ -1981,13 +2155,21 @@ def _resume_update_frame(
             "Thunk cannot update to itself"
         )
 
+
     machine.heap.replace(
         frame.thunk_reference,
-        Indirection(reference),
+        Indirection(
+            reference,
+            from_thunk_update=True,
+        ),
     )
 
-    # The update is complete. Resume the suspended caller.
     machine.stack.pop()
+
+    recorder.emit(
+        SemanticEventKind.THUNK_UPDATED,
+        object_id=frame.thunk_reference.object_id,
+    )
 
     return (
         replace(
@@ -2082,6 +2264,7 @@ def _resume_core_case(
     machine: MachineState,
     control: Return,
     frame: CoreCaseFrame,
+    recorder: SemanticEventRecorder,
 ) -> tuple[MachineState, RuleId]:
     """Demand the case scrutinee before matching alternatives."""
 
@@ -2221,6 +2404,11 @@ def _resume_core_case(
         )
     )
 
+    recorder.emit(
+        SemanticEventKind.CASE_ALTERNATIVE_SELECTED,
+        node=frame.case_expression,
+    )
+
     return (
         replace(
             machine,
@@ -2279,6 +2467,7 @@ def _resume_materialization_field(
 def _enter_local_letrec(
     machine: MachineState,
     expression: CoreLetRec,
+    recorder: SemanticEventRecorder,
 ) -> tuple[MachineState, RuleId]:
     """Reserve every local binding before evaluating any RHS."""
     if machine.strategy not in (
@@ -2329,6 +2518,11 @@ def _enter_local_letrec(
     # Restore the enclosing scope when the let body returns.
     machine.stack.push(
         RestoreEnvironmentFrame(outer_environment)
+    )
+
+    recorder.emit(
+        SemanticEventKind.LET_ACTIVATED,
+        node=expression,
     )
 
     return (

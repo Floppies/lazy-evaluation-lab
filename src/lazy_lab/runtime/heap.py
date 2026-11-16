@@ -3,10 +3,18 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from types import MappingProxyType
 from typing import Mapping
+from collections.abc import Callable, Generator
+from contextlib import contextmanager
 
+
+from lazy_lab.metrics.effects import (
+    HeapEffect,
+    HeapAllocated,
+    HeapReplaced,
+)
 from .references import HeapReference, ObjectId, RuntimeRef
 
 
@@ -35,6 +43,11 @@ class Indirection(HeapObject):
     """A cell referring to another runtime reference."""
 
     target: RuntimeRef
+    from_thunk_update: bool = field(
+        default=False,
+        compare=False,
+        repr=False,
+    )
 
     @property
     def required_slots(self) -> int:
@@ -59,6 +72,7 @@ class Heap:
         self._cells: dict[ObjectId, HeapCell] = {}
         self._next_object_id = 0
         self._current_slots = 0
+        self._effect_sink: Callable[[HeapEffect], None] | None = None
 
     @property
     def next_object_id(self) -> int:
@@ -102,6 +116,15 @@ class Heap:
         self._next_object_id += 1
         self._current_slots += allocated_slots
 
+        if self._effect_sink is not None:
+            self._effect_sink(
+                HeapAllocated(
+                    object_id=object_id,
+                    allocated_slots=allocated_slots,
+                    object_type=type(value).__name__,
+                )
+            )
+
         return HeapReference(object_id)
 
     def get(self, reference: HeapReference) -> HeapCell:
@@ -137,6 +160,16 @@ class Heap:
             allocated_slots=previous.allocated_slots,
         )
 
+        if self._effect_sink is not None:
+            self._effect_sink(
+                HeapReplaced(
+                    object_id=previous.object_id,
+                    previous_object_type=type(previous.value).__name__,
+                    new_object_type=type(value).__name__,
+                )
+            )
+
+
     def clone(self) -> Heap:
         """Return an independent copy of the heap state."""
         result = Heap()
@@ -149,3 +182,24 @@ class Heap:
     def _validate_object(value: HeapObject) -> None:
         if not isinstance(value, HeapObject):
             raise TypeError("Expected a HeapObject")
+
+    @contextmanager
+    def capture_effects(
+        self,
+        sink: Callable[[HeapEffect], None],
+    ) -> Generator[None]:
+        """Temporarily attach an observer to this heap instance."""
+        if not callable(sink):
+            raise TypeError("Heap effect sink must be callable")
+
+        if self._effect_sink is not None:
+            raise RuntimeError(
+                "Heap effect capture is already active"
+            )
+
+        self._effect_sink = sink
+
+        try:
+            yield
+        finally:
+            self._effect_sink = None

@@ -9,6 +9,8 @@ from lazy_lab.core.nodes import (
     CorePrimOp,
     CoreApp,
 )
+from lazy_lab.metrics.effects import StackPopped, StackPushed
+from lazy_lab.metrics.recording import StackEffectRecorder
 from lazy_lab.runtime.closures import (
     capture_closure,
     select_free_local_names,
@@ -618,3 +620,67 @@ def test_closure_allocation_does_not_mutate_original_heap():
     assert len(original_heap.cells) == 0
 
     assert isolated_heap.current_slots == 1
+
+
+def test_stack_emits_push_pop_effects_in_order():
+    stack = Stack()
+    recorder = StackEffectRecorder()
+
+    environment = Environment()
+
+    first = ApplyFunctionFrame(
+        CoreInt(5),
+        environment,
+    )
+
+    second = ApplyArgumentFrame(
+        ImmediateInteger(3),
+    )
+
+    with stack.capture_effects(recorder.record):
+        stack.push(first)
+        stack.push(second)
+
+        assert stack.peek() is second
+
+        assert stack.pop() is second
+        assert stack.pop() is first
+
+    assert recorder.freeze() == (
+        StackPushed("ApplyFunctionFrame"),
+        StackPushed("ApplyArgumentFrame"),
+        StackPopped("ApplyArgumentFrame"),
+        StackPopped("ApplyFunctionFrame"),
+    )
+
+    assert stack.depth == 0
+
+
+def test_stack_records_only_successful_captured_operations():
+    stack = Stack()
+    recorder = StackEffectRecorder()
+
+    frame = ApplyArgumentFrame(
+        ImmediateInteger(7),
+    )
+
+    # Outside capture: no event is recorded.
+    stack.push(frame)
+
+    with stack.capture_effects(recorder.record):
+        assert stack.pop() is frame
+
+        with pytest.raises(EmptyStackError):
+            stack.pop()
+
+        with pytest.raises(TypeError):
+            stack.push(object())
+
+    # Outside capture again.
+    stack.push(frame)
+
+    assert recorder.freeze() == (
+        StackPopped("ApplyArgumentFrame"),
+    )
+
+    assert stack.depth == 1

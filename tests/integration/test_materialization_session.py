@@ -7,7 +7,6 @@ from lazy_lab.engine.core_machine import (
     create_initial_core_state,
     run_batch,
 )
-from lazy_lab.engine.result_consumer import select_result_mode
 from lazy_lab.engine.session_runner import run_session_batch
 from lazy_lab.pipeline import compile_source
 from lazy_lab.runtime.observation import (
@@ -17,6 +16,7 @@ from lazy_lab.runtime.observation import (
     CanonicalPending,
     ConstructorWHNF,
 )
+from lazy_lab.runtime.stack import UpdateFrame
 from lazy_lab.runtime.state import (
     ExecutionConfig,
     ExecutionPhase,
@@ -25,10 +25,19 @@ from lazy_lab.runtime.state import (
     ResultPolicy,
     Strategy,
     TraceMode,
+    InstrumentationState,
 )
-from lazy_lab.runtime.transitions import BatchStopReason
+from lazy_lab.runtime.transitions import BatchStopReason, RuleId, TransitionKind
 from tests.helpers.runtime_equivalence import runtime_fingerprint
-
+from lazy_lab.engine.core_machine import step
+from lazy_lab.engine.result_consumer import (
+    select_result_mode,
+    start_constructor_materialization,
+    advance_constructor_materialization,
+    request_materialization_field,
+)
+from lazy_lab.metrics.effects import StackPushed, StackPopped
+from lazy_lab.metrics.reducer import reduce_metrics
 
 def make_config(
     strategy=Strategy.CBNEED,
@@ -60,6 +69,57 @@ def complete_in_batches(state, config, batch_size):
         assert batch.stop_reason is BatchStopReason.BATCH_LIMIT
 
     pytest.fail("Session failed to reach a terminal status")
+
+
+def assert_runtime_metrics_consistent(state):
+    """Check accumulated metrics against observable runtime state."""
+
+    machine = state.machine_state
+    counters = state.instrumentation_state.counters
+
+    # Evaluator and result-consumer transitions are disjoint.
+    assert (
+        counters.evaluator_transitions
+        == machine.evaluator_transition_count
+    )
+
+    assert (
+        counters.evaluator_transitions
+        + counters.result_consumer_transitions
+        == state.transition_index
+    )
+
+    # Heap and stack accounting agree with the actual machine.
+    assert (
+        counters.current_heap_slots
+        == machine.heap.current_slots
+    )
+
+    assert counters.current_frames == machine.stack.depth
+
+    active_updates = sum(
+        isinstance(frame, UpdateFrame)
+        for frame in machine.stack.frames
+    )
+
+    assert (
+        counters.current_thunk_chain_length
+        == active_updates
+    )
+
+    # Recorded peaks must not be below current usage.
+    assert counters.peak_heap_slots >= counters.current_heap_slots
+    assert counters.peak_frames >= counters.current_frames
+    assert (
+        counters.max_thunk_chain_length
+        >= counters.current_thunk_chain_length
+    )
+
+    # Materialization accounts for successful DFS visits.
+    progress = machine.result_state.materialization
+
+    if progress is not None:
+        assert counters.result_nodes == progress.visited_nodes
 
 
 def expected_list():
@@ -107,6 +167,8 @@ def test_complete_materialization_of_finite_list(strategy):
     progress = result.machine_state.result_state.materialization
     assert progress is not None
     assert progress.visited_nodes == 5
+    assert result.instrumentation_state.counters.result_nodes == 5
+    assert_runtime_metrics_consistent(result)
 
 
 @pytest.mark.parametrize("mode", list(TraceMode))
@@ -143,6 +205,17 @@ def test_materialization_is_equivalent_across_batches(mode):
     if mode is TraceMode.METRICS_ONLY:
         assert full_trace == ()
 
+    assert (
+        uninterrupted.instrumentation_state
+        == chunked.instrumentation_state
+    )
+
+    counters = uninterrupted.instrumentation_state.counters
+
+    assert counters.result_nodes == 5
+    assert counters.current_frames == 0
+    assert counters.current_thunk_chain_length == 0
+
 
 def test_materialization_result_node_limit():
     config = replace(
@@ -170,6 +243,7 @@ def test_materialization_result_node_limit():
     progress = result.machine_state.result_state.materialization
     assert progress is not None
     assert progress.visited_nodes == 2
+    assert result.instrumentation_state.counters.result_nodes == 2
 
     assert result.canonical_result == CanonicalPartialConstructor(
         "Cons",
@@ -178,6 +252,7 @@ def test_materialization_result_node_limit():
             CanonicalPending(),
         ),
     )
+    assert_runtime_metrics_consistent(result)
 
 
 @pytest.mark.parametrize("extra_evaluator_steps", [0, 1])
@@ -240,6 +315,7 @@ def test_materialization_evaluator_budget_limit(
     assert repeated.stop_reason is BatchStopReason.TERMINAL_STATUS
     assert repeated.state is limited
     assert repeated.trace == ()
+    assert_runtime_metrics_consistent(limited)
 
 
 def test_interactive_selection_materializes_constructor():
@@ -387,3 +463,254 @@ def test_result_limit_stops_before_invalid_cons_tail(strategy):
     progress = result.machine_state.result_state.materialization
     assert progress is not None
     assert progress.visited_nodes == 2
+
+
+def test_materialization_stack_and_phase_accounting():
+    config = make_config(Strategy.CBNEED)
+
+    initial = create_initial_core_state(
+        compile_source("main = [1 + 2]"),
+        config,
+        session_id="stack-phase-metrics",
+    )
+
+    # Reach the list constructor in WHNF.
+    evaluated = run_batch(
+        initial,
+        config,
+        max_steps=250,
+    )
+
+    assert evaluated.stop_reason is BatchStopReason.WHNF_PENDING
+
+    # Begin recursive materialization.
+    started = start_constructor_materialization(
+        evaluated.state,
+        config,
+    )
+
+    assert started.transition_kind is TransitionKind.RESULT_CONSUMER
+    assert started.phase_before is ExecutionPhase.EVALUATION
+    assert started.phase_after is ExecutionPhase.RESULT_MATERIALIZATION
+
+    # Visit the Cons constructor, then encounter its
+    # unevaluated head.
+    visited = advance_constructor_materialization(
+        started.next_state,
+        config,
+    )
+
+    pending = advance_constructor_materialization(
+        visited.next_state,
+        config,
+    )
+
+    progress = pending.next_state.machine_state.result_state.materialization
+
+    assert progress is not None
+    assert progress.awaiting_whnf
+
+    # The consumer requests WHNF evaluation.
+    requested = request_materialization_field(
+        pending.next_state,
+        config,
+    )
+
+    assert requested.transition_kind is TransitionKind.RESULT_CONSUMER
+    assert requested.phase_before is ExecutionPhase.RESULT_MATERIALIZATION
+    assert requested.stack_effects == (
+        StackPushed("MaterializationDemandFrame"),
+    )
+
+    assert requested.next_state.machine_state.stack.depth == 1
+    assert pending.next_state.machine_state.stack.depth == 0
+
+    # Account for the consumer transitions.
+    metrics = InstrumentationState()
+
+    for transition in (
+        started,
+        visited,
+        pending,
+        requested,
+    ):
+        metrics = reduce_metrics(metrics, transition)
+
+    assert metrics.counters.result_consumer_transitions == 4
+    assert metrics.counters.evaluator_transitions == 0
+    assert metrics.counters.result_demand_evaluator_transitions == 0
+    assert metrics.counters.current_frames == 1
+
+    # Execute the field demand until the materialization
+    # continuation is resumed.
+    current = requested.next_state
+    evaluator_steps = 0
+
+    for _ in range(100):
+        transition = step(current, config)
+
+        assert transition.transition_kind is TransitionKind.EVALUATOR
+        assert transition.phase_before is ExecutionPhase.RESULT_MATERIALIZATION
+
+        metrics = reduce_metrics(metrics, transition)
+        evaluator_steps += 1
+        current = transition.next_state
+
+        if transition.rule_id is RuleId.CORE_MATERIALIZATION_FIELD_RESUME:
+            assert transition.stack_effects[-1] == (
+                StackPopped("MaterializationDemandFrame")
+            )
+            break
+    else:
+        pytest.fail("Materialization demand did not resume")
+
+    assert current.machine_state.stack.depth == 0
+
+    counters = metrics.counters
+
+    assert counters.current_frames == 0
+    assert counters.evaluator_transitions == evaluator_steps
+    assert counters.result_demand_evaluator_transitions == evaluator_steps
+    assert counters.result_consumer_transitions == 4
+
+    # The previous snapshots remain independent.
+    assert pending.next_state.machine_state.stack.depth == 0
+    assert requested.next_state.machine_state.stack.depth == 1
+
+
+@pytest.mark.parametrize(
+    ("policy", "expected_nodes"),
+    [
+        (ResultPolicy.WHNF_ONLY, 0),
+        (ResultPolicy.MATERIALIZE_COMPLETE_VALUE, 1),
+    ],
+)
+def test_atomic_result_node_accounting(
+    policy,
+    expected_nodes,
+):
+    config = make_config(policy=policy)
+
+    initial = create_initial_core_state(
+        compile_source("main = 42"),
+        config,
+        session_id="atomic-result-nodes",
+    )
+
+    completed, _ = complete_in_batches(
+        initial,
+        config,
+        batch_size=100,
+    )
+
+    assert completed.canonical_result == CanonicalInteger(42)
+    assert completed.instrumentation_state.counters.result_nodes == (
+        expected_nodes
+    )
+
+
+@pytest.mark.parametrize(
+    "strategy",
+    [Strategy.CBV, Strategy.CBNEED],
+)
+def test_accumulated_metrics_are_trace_mode_independent(
+    strategy,
+):
+    program = compile_source(
+        "main = (1 + 2) : [4]"
+    )
+
+    results = []
+
+    for mode in TraceMode:
+        config = replace(
+            make_config(strategy=strategy),
+            trace_mode=mode,
+        )
+
+        initial = create_initial_core_state(
+            program,
+            config,
+            session_id="metrics-trace-independence",
+        )
+
+        completed, trace = complete_in_batches(
+            initial,
+            config,
+            batch_size=11,
+        )
+
+        assert (
+            completed.machine_state.status
+            is ExecutionStatus.COMPLETED
+        )
+
+        if mode is TraceMode.METRICS_ONLY:
+            assert trace == ()
+
+        results.append(
+            completed.instrumentation_state
+        )
+
+    assert results[0] == results[1] == results[2]
+
+
+def test_resume_from_snapshot_preserves_accumulated_metrics():
+    config = make_config()
+
+    initial = create_initial_core_state(
+        compile_source("main = (1 + 2) : [4]"),
+        config,
+        session_id="metrics-snapshot-resume",
+    )
+
+    # Uninterrupted reference execution.
+    full, _ = complete_in_batches(
+        initial,
+        config,
+        batch_size=500,
+    )
+
+    # Stop approximately halfway through execution.
+    midpoint = max(1, full.transition_index // 2)
+
+    paused = run_session_batch(
+        initial,
+        config,
+        max_steps=midpoint,
+    )
+
+    assert paused.stop_reason is BatchStopReason.BATCH_LIMIT
+
+    checkpoint = paused.state
+    saved_metrics = checkpoint.instrumentation_state
+
+    # Resume twice from independent copies of the checkpoint.
+    first, _ = complete_in_batches(
+        checkpoint,
+        config,
+        batch_size=1,
+    )
+
+    second, _ = complete_in_batches(
+        checkpoint.snapshot(),
+        config,
+        batch_size=7,
+    )
+
+    assert (
+        first.instrumentation_state
+        == full.instrumentation_state
+    )
+    assert (
+        second.instrumentation_state
+        == full.instrumentation_state
+    )
+
+    assert first.canonical_result == full.canonical_result
+    assert second.canonical_result == full.canonical_result
+
+    # Resuming must not mutate the saved checkpoint.
+    assert checkpoint.instrumentation_state == saved_metrics
+    assert checkpoint.transition_index == midpoint
+    assert initial.instrumentation_state == InstrumentationState()

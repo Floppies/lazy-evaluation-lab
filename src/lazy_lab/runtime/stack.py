@@ -3,9 +3,12 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from contextlib import contextmanager
+from dataclasses import dataclass, field
+from collections.abc import Callable, Generator
 
-from lazy_lab.core.nodes import CoreAlt, CoreExpr
+from lazy_lab.core.nodes import CoreAlt, CoreApp, CoreCase, CoreExpr, CoreIf, CorePrimOp
+from lazy_lab.metrics.effects import StackEffect, StackPopped, StackPushed
 
 from .environment import Environment
 from .references import RuntimeRef, HeapReference
@@ -23,6 +26,7 @@ class ApplyFunctionFrame(StackFrame):
     argument: CoreExpr
     environment: Environment
     awaiting_whnf: bool = False
+    application: CoreApp | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -30,6 +34,7 @@ class ApplyArgumentFrame(StackFrame):
     function: RuntimeRef
     return_environment: Environment | None = None
     awaiting_whnf: bool = False
+    application: CoreApp | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -38,6 +43,10 @@ class IfFrame(StackFrame):
     else_branch: CoreExpr
     environment: Environment
     awaiting_whnf: bool = False
+    conditional: CoreIf | None = field(
+        default=None,
+        compare=False,
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -99,6 +108,11 @@ class PrimitiveOperandsFrame(StackFrame):
     environment: Environment
     awaiting_whnf: bool = False
 
+    primitive: CorePrimOp | None = field(
+        default=None,
+        compare=False,
+    )
+
 
 @dataclass(frozen=True, slots=True)
 class LocalValueInitializationFrame(StackFrame):
@@ -117,6 +131,7 @@ class SeqFirstArgumentFrame(StackFrame):
     first_argument_reference: RuntimeRef
     second_expression: CoreExpr
     return_environment: Environment
+    application: CoreApp | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -139,6 +154,10 @@ class CoreCaseFrame(StackFrame):
     awaiting_whnf: bool = False
     scrutinee_reference: RuntimeRef | None = None
     selected_alternative: CoreAlt | None = None
+    case_expression: CoreCase | None = field(
+        default=None,
+        compare=False,
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -156,6 +175,7 @@ class EmptyStackError(LookupError):
 class Stack:
     def __init__(self) -> None:
         self._frames: list[StackFrame] = []
+        self._effect_sink: Callable[[StackEffect], None] | None = None
 
     @property
     def depth(self) -> int:
@@ -170,12 +190,27 @@ class Stack:
             raise TypeError("Expected a StackFrame")
 
         self._frames.append(frame)
+        if self._effect_sink is not None:
+            self._effect_sink(
+                StackPushed(
+                    frame_type=type(frame).__name__,
+                )
+            )
 
     def pop(self) -> StackFrame:
         if not self._frames:
             raise EmptyStackError("Cannot pop an empty stack")
 
-        return self._frames.pop()
+        frame = self._frames.pop()
+
+        if self._effect_sink is not None:
+            self._effect_sink(
+                StackPopped(
+                    frame_type=type(frame).__name__,
+                )
+            )
+
+        return frame
 
     def peek(self) -> StackFrame:
         if not self._frames:
@@ -187,3 +222,24 @@ class Stack:
         result = Stack()
         result._frames = self._frames.copy()
         return result
+
+    @contextmanager
+    def capture_effects(
+        self,
+        sink: Callable[[StackEffect], None],
+    ) -> Generator[None]:
+        """Temporarily attach an observer to this stack."""
+        if not callable(sink):
+            raise TypeError("Stack effect sink must be callable")
+
+        if self._effect_sink is not None:
+            raise RuntimeError(
+                "Stack effect capture is already active"
+            )
+
+        self._effect_sink = sink
+
+        try:
+            yield
+        finally:
+            self._effect_sink = None

@@ -2,9 +2,14 @@ from dataclasses import replace
 
 import pytest
 
+from lazy_lab.core.desugar import lower_expression, lower_program
 from lazy_lab.core.nodes import (
     CoreApp,
     CoreBool,
+    CoreCase,
+    CoreCon,
+    CoreConAlt,
+    CoreDefaultAlt,
     CoreInt,
     CoreLam,
     CoreVar,
@@ -13,13 +18,35 @@ from lazy_lab.core.nodes import (
     CoreLetRec,
     CoreBinding,
 )
+from lazy_lab.engine import core_machine
 from lazy_lab.engine.core_machine import (
     EvaluatorBudgetExhaustedError,
     InvalidMachineStateError,
+    PatternMatchError,
     UnsupportedTransitionError,
+    create_initial_core_state,
     run_batch,
     step,
 )
+from lazy_lab.frontend.parser import parse_expression, parse_program
+from lazy_lab.metrics.events import (
+    EventOrigin,
+    OriginKind,
+    SemanticEvent,
+    SemanticEventKind,
+)
+from lazy_lab.metrics.effects import (
+    HeapAllocated,
+    HeapReplaced,
+    StackPopped,
+    StackPushed,
+)
+from lazy_lab.metrics.integration import accumulate_transition_metrics
+from lazy_lab.metrics.reducer import reduce_metrics
+from lazy_lab.metrics.state import InstrumentationState
+from lazy_lab.runtime.predefined import PredefinedFunction
+from lazy_lab.runtime.references import ObjectId
+from lazy_lab.runtime.transitions import TransitionResult
 from lazy_lab.runtime.control import (
     EvaluateCore,
     Return,
@@ -59,6 +86,7 @@ from lazy_lab.runtime.transitions import (
     TraceEntry,
 )
 from lazy_lab.runtime.closures import Closure
+from lazy_lab.source import SourceSpan
 
 def make_config(
     trace_mode=TraceMode.FULL,
@@ -94,6 +122,26 @@ def make_state(expression):
         session_id="test-session",
         transition_index=0,
         machine_state=machine,
+    )
+
+
+def collect_until_event(state, config, target_kind):
+    transitions = []
+
+    for _ in range(100):
+        transition = step(state, config)
+        transitions.append(transition)
+
+        if any(
+            event.kind is target_kind
+            for event in transition.semantic_events
+        ):
+            return transitions
+
+        state = transition.next_state
+
+    pytest.fail(
+        f"Expected event {target_kind} was not emitted"
     )
 
 
@@ -1114,3 +1162,1068 @@ def test_cbn_letrec_is_not_implemented_yet(strategy):
     assert original.machine_state.heap.current_slots == 0
     assert original.machine_state.stack.depth == 0
     assert original.transition_index == 0
+
+
+def test_transition_accepts_typed_instrumentation_payloads():
+    # This is a structural contract test; the evaluator does
+    # not emit these events yet.
+    original = step(
+        make_state(CoreInt(42)),
+        make_config(),
+    )
+
+    event = SemanticEvent(
+        kind=SemanticEventKind.BETA_REDUCED,
+        origin=EventOrigin(kind=OriginKind.GENERATED),
+    )
+    allocation = HeapAllocated(
+        object_id=ObjectId(10),
+        allocated_slots=1,
+        object_type="Reserved",
+    )
+    push = StackPushed("ApplyFunctionFrame")
+
+    enriched = replace(
+        original,
+        semantic_events=(event,),
+        heap_effects=(allocation,),
+        stack_effects=(push,),
+        source_origins=(event.origin,),
+    )
+
+    assert enriched.semantic_events == (event,)
+    assert enriched.heap_effects == (allocation,)
+    assert enriched.stack_effects == (push,)
+    assert enriched.source_origins == (event.origin,)
+
+    # Existing transition producers remain compatible.
+    assert original.semantic_events == ()
+    assert original.heap_effects == ()
+    assert original.stack_effects == ()
+
+    # Trace records remain compact.
+    trace = TraceEntry.from_transition(enriched)
+    assert trace.rule_id == original.rule_id
+    assert not hasattr(trace, "semantic_events")
+
+    # Untyped instrumentation payloads are rejected.
+    with pytest.raises(TypeError):
+        replace(
+            original,
+            semantic_events=("BETA_REDUCED",),
+        )
+
+
+def test_step_transports_semantic_events(monkeypatch):
+    # Inject one synthetic event to test the transport
+    # channel before production emitters are implemented.
+    expression = CoreInt(
+        42,
+        span=SourceSpan(1, 1, 1, 3),
+        origin=OriginKind.SOURCE,
+    )
+
+    original_dispatch = (
+        core_machine._dispatch_core_evaluation
+    )
+
+    def instrumented_dispatch(machine, recorder):
+        next_machine, rule_id = original_dispatch(
+            machine,
+            recorder,
+        )
+
+        recorder.emit(
+            SemanticEventKind.BETA_REDUCED,
+            node=expression,
+        )
+
+        return next_machine, rule_id
+
+    monkeypatch.setattr(
+        core_machine,
+        "_dispatch_core_evaluation",
+        instrumented_dispatch,
+    )
+
+    transition = step(
+        make_state(expression),
+        make_config(),
+    )
+
+    assert len(transition.semantic_events) == 1
+
+    event = transition.semantic_events[0]
+
+    assert event.kind is SemanticEventKind.BETA_REDUCED
+    assert event.origin.kind is OriginKind.SOURCE
+    assert event.origin.source_spans == (expression.span,)
+
+    assert transition.rule_id is RuleId.CORE_EVAL_INTEGER
+    assert transition.next_state.state_id == 1
+
+
+@pytest.mark.parametrize(
+    "strategy",
+    [Strategy.CBV, Strategy.CBNEED],
+)
+def test_seq_emits_two_applications_and_one_reduction(
+    strategy,
+):
+    inner_application = CoreApp(
+        CoreVar("seq"),
+        CoreInt(1),
+        origin=OriginKind.SOURCE,
+    )
+
+    expression = CoreApp(
+        inner_application,
+        CoreInt(2),
+        origin=OriginKind.SOURCE,
+    )
+
+    initial = make_state(expression)
+
+    heap = initial.machine_state.heap
+    seq_reference = heap.allocate(
+        PredefinedFunction("seq"),
+        allocated_slots=1,
+    )
+    environment = Environment({"seq": seq_reference})
+
+    initial = replace(
+        initial,
+        machine_state=replace(
+            initial.machine_state,
+            strategy=strategy,
+            local_environment=environment,
+            global_environment=environment,
+        ),
+    )
+
+    config = replace(
+        make_config(),
+        strategy=strategy,
+    )
+
+    transitions = collect_until_event(
+        initial,
+        config,
+        SemanticEventKind.SEQ_REDUCED,
+    )
+
+    events = [
+        event
+        for transition in transitions
+        for event in transition.semantic_events
+    ]
+
+    kinds = [event.kind for event in events]
+
+    assert kinds.count(
+        SemanticEventKind.FUNCTION_APPLIED
+    ) == 2
+    assert kinds.count(
+        SemanticEventKind.SEQ_REDUCED
+    ) == 1
+    assert kinds.count(
+        SemanticEventKind.BETA_REDUCED
+    ) == 0
+
+    partial = next(
+        transition
+        for transition in transitions
+        if transition.rule_id
+        is RuleId.CORE_PREDEFINED_PARTIAL_APPLY
+    )
+
+    expected_partial_events = (
+        [
+            SemanticEventKind.THUNK_CREATED,
+            SemanticEventKind.FUNCTION_APPLIED,
+        ]
+        if strategy is Strategy.CBNEED
+        else [
+            SemanticEventKind.FUNCTION_APPLIED,
+        ]
+    )
+
+    assert [
+        event.kind
+        for event in partial.semantic_events
+    ] == expected_partial_events
+
+    seq_event = next(
+        event for event in events
+        if event.kind is SemanticEventKind.SEQ_REDUCED
+    )
+
+    assert seq_event.origin.kind is OriginKind.SOURCE
+
+
+def test_variable_lookup_emits_one_semantic_event():
+    span = SourceSpan(1, 1, 1, 2)
+
+    expression = CoreVar(
+        "x",
+        span=span,
+        origin=OriginKind.SOURCE,
+    )
+
+    environment = Environment({
+        "x": ImmediateInteger(42),
+    })
+
+    initial = make_state(expression)
+    initial = replace(
+        initial,
+        machine_state=replace(
+            initial.machine_state,
+            local_environment=environment,
+        ),
+    )
+
+    transition = step(initial, make_config())
+
+    assert [
+        event.kind
+        for event in transition.semantic_events
+    ] == [SemanticEventKind.VARIABLE_LOOKED_UP]
+
+    event = transition.semantic_events[0]
+
+    assert event.origin.kind is OriginKind.SOURCE
+    assert event.origin.source_spans == (span,)
+    assert transition.rule_id is RuleId.CORE_EVAL_VARIABLE
+
+
+@pytest.mark.parametrize(
+    "strategy",
+    [Strategy.CBV, Strategy.CBNEED],
+)
+def test_letrec_emits_one_activation_per_group(strategy):
+    expression = CoreLetRec(
+        bindings=(
+            CoreBinding("x", CoreInt(1)),
+            CoreBinding("y", CoreInt(2)),
+        ),
+        body=CoreVar("x"),
+        origin=OriginKind.GENERATED,
+    )
+
+    initial = make_state(expression)
+    initial = replace(
+        initial,
+        machine_state=replace(
+            initial.machine_state,
+            strategy=strategy,
+        ),
+    )
+
+    config = replace(
+        make_config(),
+        strategy=strategy,
+    )
+
+    transition = step(initial, config)
+
+    assert transition.rule_id is RuleId.CORE_LETREC_RESERVE_SCOPE
+
+    assert [
+        event.kind
+        for event in transition.semantic_events
+    ] == [SemanticEventKind.LET_ACTIVATED]
+
+    assert (
+        transition.semantic_events[0].origin.kind
+        is OriginKind.GENERATED
+    )
+
+
+@pytest.mark.parametrize(
+    "strategy",
+    [Strategy.CBV, Strategy.CBNEED],
+)
+@pytest.mark.parametrize(
+    "operator,arguments",
+    [
+        ("+", (CoreInt(1), CoreInt(2))),
+        ("negate", (CoreInt(3),)),
+    ],
+)
+def test_primitive_emits_event_only_when_executed(
+    strategy,
+    operator,
+    arguments,
+):
+    span = SourceSpan(1, 1, 1, 8)
+
+    expression = CorePrimOp(
+        operator,
+        arguments,
+        span=span,
+        origin=OriginKind.SOURCE,
+    )
+
+    initial = make_state(expression)
+    initial = replace(
+        initial,
+        machine_state=replace(
+            initial.machine_state,
+            strategy=strategy,
+        ),
+    )
+
+    config = replace(
+        make_config(),
+        strategy=strategy,
+    )
+
+    transitions = collect_until_event(
+        initial,
+        config,
+        SemanticEventKind.PRIMITIVE_REDUCED,
+    )
+
+    primitive_events = [
+        event
+        for transition in transitions
+        for event in transition.semantic_events
+        if event.kind is SemanticEventKind.PRIMITIVE_REDUCED
+    ]
+
+    assert len(primitive_events) == 1
+    assert transitions[-1].rule_id is RuleId.CORE_PRIM_EXECUTE
+
+    event = primitive_events[0]
+
+    assert event.origin.kind is OriginKind.SOURCE
+    assert event.origin.source_spans == (span,)
+
+
+@pytest.mark.parametrize(
+    "strategy",
+    [Strategy.CBV, Strategy.CBNEED],
+)
+@pytest.mark.parametrize(
+    "condition, expected_rule",
+    [
+        (True, RuleId.CORE_IF_SELECT_THEN),
+        (False, RuleId.CORE_IF_SELECT_ELSE),
+    ],
+)
+def test_conditional_selection_event(
+    strategy,
+    condition,
+    expected_rule,
+):
+    span = SourceSpan(1, 1, 1, 25)
+
+    expression = CoreIf(
+        CoreBool(condition),
+        CoreInt(10),
+        CoreInt(20),
+        span=span,
+        origin=OriginKind.SOURCE,
+    )
+
+    initial = make_state(expression)
+    initial = replace(
+        initial,
+        machine_state=replace(
+            initial.machine_state,
+            strategy=strategy,
+        ),
+    )
+    config = replace(make_config(), strategy=strategy)
+
+    transitions = collect_until_event(
+        initial,
+        config,
+        SemanticEventKind.CONDITIONAL_SELECTED,
+    )
+
+    selected = transitions[-1]
+
+    assert selected.rule_id is expected_rule
+
+    events = [
+        event
+        for transition in transitions
+        for event in transition.semantic_events
+        if event.kind is SemanticEventKind.CONDITIONAL_SELECTED
+    ]
+
+    assert len(events) == 1
+    assert events[0].origin.kind is OriginKind.SOURCE
+    assert events[0].origin.source_spans == (span,)
+
+    expected_value = 10 if condition else 20
+    assert selected.next_state.machine_state.control == (
+        EvaluateCore(CoreInt(expected_value))
+    )
+
+    # Entering the selected branch is not another selection.
+    following = step(selected.next_state, config)
+
+    assert not any(
+        event.kind is SemanticEventKind.CONDITIONAL_SELECTED
+        for event in following.semantic_events
+    )
+
+
+@pytest.mark.parametrize(
+    "strategy",
+    [Strategy.CBV, Strategy.CBNEED],
+)
+@pytest.mark.parametrize(
+    "scrutinee, expected_rule",
+    [
+        (
+            CoreCon("Nil", ()),
+            RuleId.CORE_CASE_SELECT_CONSTRUCTOR,
+        ),
+        (
+            CoreInt(9),
+            RuleId.CORE_CASE_SELECT_DEFAULT,
+        ),
+    ],
+)
+def test_case_selection_preserves_generated_provenance(
+    strategy,
+    scrutinee,
+    expected_rule,
+):
+    span = SourceSpan(2, 1, 2, 12)
+
+    expression = CoreCase(
+        scrutinee,
+        (
+            CoreConAlt("Nil", (), CoreInt(1)),
+            CoreDefaultAlt("value", CoreInt(2)),
+        ),
+        span=span,
+        origin=OriginKind.GENERATED,
+    )
+
+    initial = make_state(expression)
+    initial = replace(
+        initial,
+        machine_state=replace(
+            initial.machine_state,
+            strategy=strategy,
+        ),
+    )
+    config = replace(make_config(), strategy=strategy)
+
+    transitions = collect_until_event(
+        initial,
+        config,
+        SemanticEventKind.CASE_ALTERNATIVE_SELECTED,
+    )
+
+    selected = transitions[-1]
+
+    assert selected.rule_id is expected_rule
+
+    events = [
+        event
+        for transition in transitions
+        for event in transition.semantic_events
+        if event.kind is SemanticEventKind.CASE_ALTERNATIVE_SELECTED
+    ]
+
+    assert len(events) == 1
+    assert events[0].origin.kind is OriginKind.GENERATED
+    assert events[0].origin.source_spans == (span,)
+
+    # Entering the selected alternative must not count again.
+    following = step(selected.next_state, config)
+
+    assert not any(
+        event.kind is SemanticEventKind.CASE_ALTERNATIVE_SELECTED
+        for event in following.semantic_events
+    )
+
+
+def test_non_exhaustive_case_does_not_emit_selection():
+    expression = CoreCase(
+        CoreCon("Nil", ()),
+        (
+            CoreConAlt(
+                "Cons",
+                ("head", "tail"),
+                CoreInt(1),
+            ),
+        ),
+    )
+
+    current = make_state(expression)
+    config = make_config()
+
+    for _ in range(20):
+        try:
+            transition = step(current, config)
+        except PatternMatchError:
+            break
+
+        assert not any(
+            event.kind is SemanticEventKind.CASE_ALTERNATIVE_SELECTED
+            for event in transition.semantic_events
+        )
+
+        current = transition.next_state
+    else:
+        pytest.fail("Expected non-exhaustive case failure")
+
+
+@pytest.mark.parametrize(
+    "strategy",
+    [Strategy.CBV, Strategy.CBNEED],
+)
+def test_real_core_events_reduce_to_expected_metrics(strategy):
+    expression = lower_expression(
+        parse_expression(
+            "let { x = 1 + 2 } in if True then x else 0"
+        )
+    )
+
+    initial = make_state(expression)
+    current = replace(
+        initial,
+        machine_state=replace(
+            initial.machine_state,
+            strategy=strategy,
+        ),
+    )
+
+    config = replace(
+        make_config(step_limit=200),
+        strategy=strategy,
+    )
+
+    metrics = InstrumentationState()
+    events = []
+
+    for _ in range(120):
+        transition = step(current, config)
+
+        metrics = reduce_metrics(metrics, transition)
+        events.extend(transition.semantic_events)
+        current = transition.next_state
+
+        counters = metrics.counters
+
+        if (
+            counters.let_reductions == 1
+            and counters.conditional_reductions == 1
+            and counters.primitive_reductions == 1
+            and counters.variable_lookups == 1
+        ):
+            break
+    else:
+        pytest.fail("Expected semantic events were not emitted")
+
+    counters = metrics.counters
+
+    assert counters.semantic_reductions == 3
+    assert counters.variable_lookups == 1
+    assert counters.function_applications == 0
+    assert counters.beta_reductions == 0
+
+    core_event_kinds = {
+        SemanticEventKind.LET_ACTIVATED,
+        SemanticEventKind.CONDITIONAL_SELECTED,
+        SemanticEventKind.VARIABLE_LOOKED_UP,
+        SemanticEventKind.PRIMITIVE_REDUCED,
+    }
+
+    assert all(
+        event.origin.kind is OriginKind.SOURCE
+        for event in events
+        if event.kind in core_event_kinds
+    )
+
+    assert (
+        counters.evaluator_transitions
+        == current.machine_state.evaluator_transition_count
+    )
+
+    # The reducer must not mutate the initial metrics.
+    assert InstrumentationState().counters.semantic_reductions == 0
+
+
+@pytest.mark.parametrize(
+    "strategy",
+    [Strategy.CBV, Strategy.CBNEED],
+)
+def test_generated_case_counts_as_real_core_reduction(strategy):
+    program = lower_program(
+        parse_program(
+            "f [] = 0\n"
+            "f (h:t) = h\n"
+            "main = f [5]"
+        )
+    )
+
+    config = replace(
+        make_config(step_limit=200),
+        strategy=strategy,
+    )
+
+    current = create_initial_core_state(
+        program,
+        config,
+        session_id="semantic-metrics-test",
+    )
+
+    metrics = InstrumentationState()
+    case_events = []
+
+    for _ in range(150):
+        transition = step(current, config)
+
+        metrics = reduce_metrics(metrics, transition)
+        current = transition.next_state
+
+        case_events.extend(
+            event
+            for event in transition.semantic_events
+            if event.kind
+            is SemanticEventKind.CASE_ALTERNATIVE_SELECTED
+        )
+
+        if case_events:
+            break
+    else:
+        pytest.fail("Generated CoreCase was not selected")
+
+    assert len(case_events) == 1
+    assert case_events[0].origin.kind is OriginKind.GENERATED
+
+    assert metrics.counters.case_reductions == 1
+    assert metrics.counters.function_applications == 1
+    assert metrics.counters.beta_reductions == 1
+
+    # Both reductions contribute to Core semantic work.
+    assert metrics.counters.semantic_reductions >= 2
+
+
+def test_transition_carries_heap_allocation_effect():
+    global_env = Environment()
+    local_env = global_env.extend({
+        "x": ImmediateInteger(10),
+    })
+
+    expression = CoreLam("argument", CoreVar("x"))
+    original = make_state(expression)
+
+    original = replace(
+        original,
+        machine_state=replace(
+            original.machine_state,
+            local_environment=local_env,
+            global_environment=global_env,
+        ),
+    )
+
+    transition = step(original, make_config())
+
+    assert transition.rule_id is RuleId.CORE_EVAL_LAMBDA
+    assert len(transition.heap_effects) == 1
+
+    effect = transition.heap_effects[0]
+
+    assert isinstance(effect, HeapAllocated)
+    assert effect.allocated_slots == 2
+    assert effect.object_type == "Closure"
+
+    reference = (
+        transition.next_state.machine_state.control.reference
+    )
+
+    assert effect.object_id == reference.object_id
+
+    # The original snapshot remains untouched.
+    assert original.machine_state.heap.current_slots == 0
+    assert transition.next_state.machine_state.heap.current_slots == 2
+
+    # The pure reducer accounts for the emitted effect.
+    metrics = reduce_metrics(
+        InstrumentationState(),
+        transition,
+    )
+
+    assert metrics.counters.total_allocations == 1
+    assert metrics.counters.current_heap_slots == 2
+    assert metrics.counters.peak_heap_slots == 2
+
+    assert transition.next_state.instrumentation_state == metrics
+    assert original.instrumentation_state == InstrumentationState()
+
+
+def test_letrec_transitions_preserve_heap_effect_order():
+    expression = CoreLetRec(
+        (
+            CoreBinding(
+                "f",
+                CoreLam("x", CoreVar("x")),
+            ),
+        ),
+        CoreVar("f"),
+    )
+
+    initial = make_state(expression)
+    config = make_config()
+
+    reservation = step(initial, config)
+
+    assert reservation.rule_id is RuleId.CORE_LETREC_RESERVE_SCOPE
+
+    reservation_effects = reservation.heap_effects
+
+    assert len(reservation_effects) == 1
+    assert isinstance(reservation_effects[0], HeapAllocated)
+    assert reservation_effects[0].object_type == "Reserved"
+
+    installation = step(reservation.next_state, config)
+
+    assert installation.rule_id is RuleId.CORE_LETREC_INSTALL_FUNCTION
+
+    effects = installation.heap_effects
+
+    assert len(effects) == 2
+    assert isinstance(effects[0], HeapAllocated)
+    assert isinstance(effects[1], HeapReplaced)
+
+    assert effects[0].object_type == "Closure"
+    assert effects[1].previous_object_type == "Reserved"
+    assert effects[1].new_object_type == "Indirection"
+
+    # Replacement preserves the previously reserved identity.
+    assert (
+        effects[1].object_id
+        == reservation_effects[0].object_id
+    )
+
+    # No effects from the previous transition are repeated.
+    assert all(
+        effect.object_id != reservation_effects[0].object_id
+        for effect in effects
+        if isinstance(effect, HeapAllocated)
+    )
+
+    metrics = InstrumentationState()
+
+    metrics = reduce_metrics(metrics, reservation)
+    metrics = reduce_metrics(metrics, installation)
+
+    assert metrics.counters.total_allocations == 2
+    assert metrics.counters.current_heap_slots == 2
+    assert metrics.counters.peak_heap_slots == 2
+
+    assert initial.machine_state.heap.current_slots == 0
+    assert reservation.next_state.machine_state.heap.current_slots == 1
+    assert installation.next_state.machine_state.heap.current_slots == 2
+
+
+def test_evaluator_transition_records_stack_effects():
+    expression = CoreApp(
+        CoreLam("x", CoreVar("x")),
+        CoreInt(7),
+    )
+
+    config = make_config()
+    initial = make_state(expression)
+
+    # Enter application: push function continuation.
+    first = step(initial, config)
+
+    assert first.rule_id is RuleId.CORE_EVAL_APPLICATION
+    assert first.stack_effects == (
+        StackPushed("ApplyFunctionFrame"),
+    )
+
+    assert first.next_state.machine_state.stack.depth == 1
+    assert initial.machine_state.stack.depth == 0
+
+    # Evaluate lambda: no stack changes.
+    second = step(first.next_state, config)
+
+    assert second.rule_id is RuleId.CORE_EVAL_LAMBDA
+    assert second.stack_effects == ()
+
+    # Request function WHNF: pop and push a continuation.
+    third = step(second.next_state, config)
+
+    assert third.rule_id is RuleId.CORE_APPLY_REQUIRE_FUNCTION_WHNF
+    assert third.stack_effects == (
+        StackPopped("ApplyFunctionFrame"),
+        StackPushed("ApplyFunctionFrame"),
+    )
+
+    assert third.next_state.machine_state.stack.depth == 1
+
+    # The pure reducer preserves intermediate operations.
+    metrics = InstrumentationState()
+
+    for transition in (first, second, third):
+        metrics = reduce_metrics(metrics, transition)
+
+    assert metrics.counters.pushes == 2
+    assert metrics.counters.pops == 1
+    assert metrics.counters.current_frames == 1
+    assert metrics.counters.peak_frames == 1
+
+    assert third.next_state.instrumentation_state == metrics
+    assert initial.instrumentation_state == InstrumentationState()
+
+
+@pytest.mark.parametrize(
+    "strategy",
+    [Strategy.CBV, Strategy.CBNEED],
+)
+def test_stack_metrics_match_runtime_across_trace_modes(strategy):
+    expression = CoreApp(
+        CoreLam("x", CoreVar("x")),
+        CoreInt(7),
+    )
+
+    results = []
+
+    for mode in TraceMode:
+        initial = make_state(expression)
+
+        state = replace(
+            initial,
+            machine_state=replace(
+                initial.machine_state,
+                strategy=strategy,
+            ),
+        )
+
+        config = replace(
+            make_config(trace_mode=mode, step_limit=200),
+            strategy=strategy,
+        )
+
+        metrics = InstrumentationState()
+        replayed_depth = 0
+        observed_peak = 0
+
+        for _ in range(200):
+            if (
+                core_machine._stop_reason(state, config)
+                is BatchStopReason.WHNF_PENDING
+            ):
+                break
+
+            transition = step(state, config)
+
+            for effect in transition.stack_effects:
+                if isinstance(effect, StackPushed):
+                    replayed_depth += 1
+                else:
+                    assert isinstance(effect, StackPopped)
+                    replayed_depth -= 1
+
+                assert replayed_depth >= 0
+                observed_peak = max(
+                    observed_peak,
+                    replayed_depth,
+                )
+
+            metrics = reduce_metrics(metrics, transition)
+            state = transition.next_state
+
+            assert (
+                metrics.counters.current_frames
+                == state.machine_state.stack.depth
+            )
+
+            assert metrics.counters.peak_frames == observed_peak
+
+        else:
+            pytest.fail("Evaluation did not reach WHNF")
+
+        assert state.machine_state.stack.depth == 0
+        assert metrics.counters.current_frames == 0
+        assert metrics.counters.pushes > 0
+        assert metrics.counters.pops > 0
+
+        results.append((
+            metrics.counters.pushes,
+            metrics.counters.pops,
+            metrics.counters.peak_frames,
+            metrics.counters.evaluator_transitions,
+        ))
+
+    assert results[0] == results[1] == results[2]
+
+
+def test_local_thunk_creation_uses_reserved_anchor():
+    expression = CoreLetRec(
+        (CoreBinding("x", CoreInt(9)),),
+        CoreVar("x"),
+    )
+
+    config = make_config()
+    initial = make_state(expression)
+
+    reserved = step(initial, config)
+    installed = step(reserved.next_state, config)
+
+    anchor = (
+        reserved.next_state.machine_state
+        .local_environment.lookup("x")
+    )
+
+    events = [
+        event for event in installed.semantic_events
+        if event.kind is SemanticEventKind.THUNK_CREATED
+    ]
+
+    assert installed.rule_id is RuleId.CORE_LETREC_INSTALL_THUNK
+    assert len(events) == 1
+    assert events[0].object_id == anchor.object_id
+
+    metrics = reduce_metrics(
+        InstrumentationState(),
+        installed,
+    )
+
+    assert metrics.counters.thunks_created == 1
+    assert metrics.counters.thunks_never_forced == 1
+
+
+def test_lazy_constructor_emits_one_creation_per_field():
+    expression = CoreCon(
+        "Cons",
+        (
+            CoreInt(1),
+            CoreCon("Nil", ()),
+        ),
+    )
+
+    transition = step(
+        make_state(expression),
+        make_config(),
+    )
+
+    creation_events = [
+        event for event in transition.semantic_events
+        if event.kind is SemanticEventKind.THUNK_CREATED
+    ]
+
+    assert len(creation_events) == 2
+
+    machine = transition.next_state.machine_state
+    constructor_ref = machine.control.reference
+    constructor = machine.heap.get(constructor_ref).value
+
+    assert {
+        event.object_id for event in creation_events
+    } == {
+        reference.object_id
+        for reference in constructor.fields
+    }
+
+    assert len({
+        event.object_id for event in creation_events
+    }) == 2
+
+
+def test_transition_metrics_are_attached_immutably():
+    initial = make_state(CoreInt(42))
+
+    successor = replace(
+        initial,
+        state_id=1,
+        transition_index=1,
+    )
+
+    raw_transition = TransitionResult(
+        previous_state_id=initial.state_id,
+        next_state=successor,
+        rule_id=RuleId.CORE_EVAL_INTEGER,
+        transition_kind=TransitionKind.EVALUATOR,
+        phase_before=ExecutionPhase.EVALUATION,
+        phase_after=ExecutionPhase.EVALUATION,
+    )
+
+    finalized = accumulate_transition_metrics(
+        initial,
+        raw_transition,
+    )
+
+    assert (
+        finalized.next_state.instrumentation_state
+        .counters.evaluator_transitions
+    ) == 1
+
+    # The original objects remain unchanged.
+    assert (
+        initial.instrumentation_state
+        .counters.evaluator_transitions
+    ) == 0
+
+    assert (
+        raw_transition.next_state.instrumentation_state
+        .counters.evaluator_transitions
+    ) == 0
+
+    # The operational state is preserved.
+    assert (
+        finalized.next_state.machine_state
+        is raw_transition.next_state.machine_state
+    )
+
+    assert finalized.rule_id is raw_transition.rule_id
+    assert finalized.semantic_events == raw_transition.semantic_events
+    assert finalized.heap_effects == raw_transition.heap_effects
+    assert finalized.stack_effects == raw_transition.stack_effects
+
+
+def test_step_persists_metrics_without_double_counting():
+    expression = CoreApp(
+        CoreLam("x", CoreVar("x")),
+        CoreInt(7),
+    )
+
+    initial = make_state(expression)
+    config = make_config()
+
+    first = step(initial, config)
+    second = step(first.next_state, config)
+
+    first_metrics = (
+        first.next_state.instrumentation_state
+    )
+    second_metrics = (
+        second.next_state.instrumentation_state
+    )
+
+    assert first_metrics.counters.evaluator_transitions == 1
+    assert second_metrics.counters.evaluator_transitions == 2
+
+    # First transition pushes an application frame.
+    assert first_metrics.counters.pushes == 1
+
+    # The next transition evaluates the lambda and
+    # allocates its closure.
+    assert second_metrics.counters.pushes == 1
+    assert second_metrics.counters.total_allocations == 1
+
+    # The second transition is reduced against the
+    # first accumulated instrumentation state.
+    assert second_metrics == reduce_metrics(
+        first_metrics,
+        second,
+    )
+
+    # Earlier states remain unchanged.
+    assert (
+        initial.instrumentation_state
+        == InstrumentationState()
+    )
+    assert first_metrics.counters.evaluator_transitions == 1

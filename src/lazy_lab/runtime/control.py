@@ -3,10 +3,10 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import TypeAlias
 
-from lazy_lab.core.nodes import CoreBinding, CoreExpr
+from lazy_lab.core.nodes import CoreBinding, CoreExpr, CorePrimOp
 
 from .references import RuntimeRef
 
@@ -49,6 +49,10 @@ class ApplyPrimitive:
 
     operator: str
     arguments: tuple[RuntimeRef, ...]
+    primitive: CorePrimOp | None = field(
+        default=None,
+        compare=False,
+    )
 
 
 CoreControl: TypeAlias = (

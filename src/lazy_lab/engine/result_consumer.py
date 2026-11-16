@@ -29,6 +29,10 @@ from lazy_lab.runtime.transitions import (
     TransitionKind,
     TransitionResult,
 )
+from lazy_lab.metrics.recording import StackEffectRecorder
+from lazy_lab.metrics.integration import (
+    accumulate_transition_metrics,
+)
 
 
 class InvalidResultObservationError(ValueError):
@@ -133,13 +137,18 @@ def consume_whnf_result(
         canonical_result=canonical,
     )
 
-    return TransitionResult(
+    transition = TransitionResult(
         previous_state_id=state.state_id,
         next_state=next_state,
         rule_id=RuleId.RESULT_OBSERVE_WHNF,
         transition_kind=TransitionKind.RESULT_CONSUMER,
         phase_before=machine.phase,
         phase_after=next_machine.phase,
+    )
+
+    return accumulate_transition_metrics(
+        state,
+        transition,
     )
 
 def select_result_mode(
@@ -222,13 +231,18 @@ def select_result_mode(
         machine_state=next_machine,
     )
 
-    return TransitionResult(
+    transition = TransitionResult(
         previous_state_id=state.state_id,
         next_state=next_state,
         rule_id=RuleId.RESULT_SELECT_MODE,
         transition_kind=TransitionKind.RESULT_CONSUMER,
         phase_before=machine.phase,
         phase_after=next_machine.phase,
+    )
+
+    return accumulate_transition_metrics(
+        state,
+        transition,
     )
 
 
@@ -310,11 +324,13 @@ def consume_materialized_result(
         )
     ):
         raise InvalidResultObservationError(
-            "Complete constructor materialization is not implemented yet"
+            "Constructor results require the dedicated "
+            "constructor materialization protocol"
         )
 
-    # The current runtime supports only atomic or opaque
-    # WHNF results. No recursive traversal is necessary.
+    # This helper handles atomic or opaque WHNF results only.
+    # Recursive constructor traversal uses the separate
+    # constructor materialization protocol.
     canonical = observe_whnf(machine.heap, reference)
 
     # No additional evaluator work is performed.
@@ -341,13 +357,19 @@ def consume_materialized_result(
         canonical_result=canonical,
     )
 
-    return TransitionResult(
+    transition = TransitionResult(
         previous_state_id=state.state_id,
         next_state=next_state,
         rule_id=RuleId.RESULT_MATERIALIZE_ATOMIC,
         transition_kind=TransitionKind.RESULT_CONSUMER,
         phase_before=machine.phase,
         phase_after=next_machine.phase,
+        result_nodes_delta=1,
+    )
+
+    return accumulate_transition_metrics(
+        state,
+        transition,
     )
 
 def start_constructor_materialization(
@@ -436,7 +458,7 @@ def start_constructor_materialization(
         transition_index=state.transition_index + 1,
         machine_state=next_machine,
     )
-    return TransitionResult(
+    transition = TransitionResult(
         previous_state_id=state.state_id,
         next_state=next_state,
         rule_id=RuleId.RESULT_MATERIALIZE_START,
@@ -445,6 +467,10 @@ def start_constructor_materialization(
         phase_after=next_machine.phase,
     )
 
+    return accumulate_transition_metrics(
+        state,
+        transition,
+    )
 
 def _constructor_materialization_progress(
     state: ExecutionState,
@@ -522,6 +548,12 @@ def advance_constructor_materialization(
         progress,
         node_limit=config.result_node_limit,
     )
+
+    nodes_visited = (
+        next_progress.visited_nodes
+        - progress.visited_nodes
+    )
+
     snapshot = state.snapshot()
     next_machine = replace(
         snapshot.machine_state,
@@ -536,15 +568,20 @@ def advance_constructor_materialization(
         transition_index=state.transition_index + 1,
         machine_state=next_machine,
     )
-    return TransitionResult(
+    transition = TransitionResult(
         previous_state_id=state.state_id,
         next_state=next_state,
         rule_id=RuleId.RESULT_MATERIALIZE_ADVANCE,
         transition_kind=TransitionKind.RESULT_CONSUMER,
         phase_before=machine.phase,
         phase_after=next_machine.phase,
+        result_nodes_delta=nodes_visited,
     )
 
+    return accumulate_transition_metrics(
+        state,
+        transition,
+    )
 
 def complete_constructor_materialization(
     state: ExecutionState,
@@ -574,7 +611,7 @@ def complete_constructor_materialization(
         machine_state=next_machine,
         canonical_result=progress.completed_value,
     )
-    return TransitionResult(
+    transition = TransitionResult(
         previous_state_id=state.state_id,
         next_state=next_state,
         rule_id=RuleId.RESULT_MATERIALIZE_COMPLETE,
@@ -583,6 +620,10 @@ def complete_constructor_materialization(
         phase_after=next_machine.phase,
     )
 
+    return accumulate_transition_metrics(
+        state,
+        transition,
+    )
 
 def finish_limited_materialization(
     state: ExecutionState,
@@ -627,7 +668,7 @@ def finish_limited_materialization(
         machine_state=next_machine,
         canonical_result=canonical,
     )
-    return TransitionResult(
+    transition = TransitionResult(
         previous_state_id=state.state_id,
         next_state=next_state,
         rule_id=rule_id,
@@ -636,6 +677,10 @@ def finish_limited_materialization(
         phase_after=next_machine.phase,
     )
 
+    return accumulate_transition_metrics(
+        state,
+        transition,
+    )
 
 def request_materialization_field(
     state: ExecutionState,
@@ -670,13 +715,17 @@ def request_materialization_field(
 
     snapshot = state.snapshot()
     next_machine = snapshot.machine_state
+    stack_recorder = StackEffectRecorder()
 
-    next_machine.stack.push(
-        MaterializationDemandFrame(
-            root_reference=progress.root_reference,
-            return_environment=next_machine.local_environment,
+    with next_machine.stack.capture_effects(
+        stack_recorder.record
+    ):
+        next_machine.stack.push(
+            MaterializationDemandFrame(
+                root_reference=progress.root_reference,
+                return_environment=next_machine.local_environment,
+            )
         )
-    )
 
     next_machine = replace(
         next_machine,
@@ -690,11 +739,17 @@ def request_materialization_field(
         machine_state=next_machine,
     )
 
-    return TransitionResult(
+    transition = TransitionResult(
         previous_state_id=state.state_id,
         next_state=next_state,
         rule_id=RuleId.RESULT_MATERIALIZE_REQUEST_FIELD_WHNF,
         transition_kind=TransitionKind.RESULT_CONSUMER,
         phase_before=machine.phase,
         phase_after=next_machine.phase,
+        stack_effects=stack_recorder.freeze(),
+    )
+
+    return accumulate_transition_metrics(
+        state,
+        transition,
     )

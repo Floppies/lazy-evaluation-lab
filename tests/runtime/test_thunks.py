@@ -852,3 +852,74 @@ def test_anchor_cannot_be_replaced_by_oversized_payload():
     assert successor.get(anchor_ref).allocated_slots == 1
     assert successor.current_slots == heap.current_slots
     assert successor.next_object_id == heap.next_object_id
+
+
+def test_thunk_creation_hook_uses_stable_anchor():
+    heap = Heap()
+    environment = Environment()
+    created = []
+
+    fresh = allocate_thunk(
+        heap,
+        CoreInt(10),
+        environment,
+        environment,
+        on_created=created.append,
+    )
+
+    reserved = heap.allocate(
+        Reserved(),
+        allocated_slots=1,
+    )
+
+    installed = allocate_thunk(
+        heap,
+        CoreInt(20),
+        environment,
+        environment,
+        anchor_reference=reserved,
+        on_created=created.append,
+    )
+
+    assert created == [fresh, reserved]
+    assert installed is reserved
+
+    assert isinstance(
+        heap.get(fresh).value,
+        PendingThunk,
+    )
+    assert isinstance(
+        heap.get(reserved).value,
+        PendingThunk,
+    )
+
+
+def test_failed_thunk_installation_does_not_notify():
+    heap = Heap()
+    environment = Environment()
+    created = []
+
+    anchor = heap.allocate(
+        Reserved(),
+        allocated_slots=1,
+    )
+
+    allocate_thunk(
+        heap,
+        CoreInt(10),
+        environment,
+        environment,
+        anchor_reference=anchor,
+    )
+
+    with pytest.raises(ValueError):
+        allocate_thunk(
+            heap,
+            CoreInt(20),
+            environment,
+            environment,
+            anchor_reference=anchor,
+            on_created=created.append,
+        )
+
+    assert created == []

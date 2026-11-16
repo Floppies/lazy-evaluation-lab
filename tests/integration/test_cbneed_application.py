@@ -4,6 +4,9 @@
 import pytest
 from dataclasses import replace
 
+from lazy_lab.metrics.events import SemanticEventKind
+from lazy_lab.metrics.reducer import reduce_metrics
+from lazy_lab.metrics.state import InstrumentationState
 from lazy_lab.pipeline import compile_source
 from lazy_lab.engine.core_machine import (
     create_initial_core_state,
@@ -1740,6 +1743,11 @@ def test_cbneed_follows_indirection_chain_without_compression():
         ),
     )
 
+    first = step(force_state, config)
+
+    assert first.rule_id is RuleId.CORE_FORCE_INDIRECTION
+    assert first.semantic_events == ()
+
     slots_before = heap.current_slots
     next_id_before = heap.next_object_id
 
@@ -2148,3 +2156,133 @@ def test_nested_updates_can_resume_from_same_snapshot():
         checkpoint_machine.heap.get(y_ref).value,
         EvaluatingThunk,
     )
+
+
+def test_cbneed_update_and_sharing_events_use_same_anchor():
+    program = compile_source(
+        r"main = (\x -> x + x) (20 + 1)"
+    )
+    config = make_cbneed_config()
+
+    initial = create_initial_core_state(
+        program,
+        config,
+        session_id="sharing-event-accounting",
+    )
+
+    _, body_state = advance_to_next_cbneed_body(
+        initial, config
+    )
+
+    x_ref = (
+        body_state.machine_state
+        .local_environment.lookup("x")
+    )
+
+    current = body_state
+    observed = []
+
+    for _ in range(150):
+        transition = step(current, config)
+
+        anchor_events = [
+            event
+            for event in transition.semantic_events
+            if event.object_id == x_ref.object_id
+        ]
+
+        observed.extend(anchor_events)
+        current = transition.next_state
+
+        if any(
+            event.kind is SemanticEventKind.SHARED_RESULT_HIT
+            for event in anchor_events
+        ):
+            break
+    else:
+        pytest.fail("Shared result hit was not reached")
+
+    assert [event.kind for event in observed] == [
+        SemanticEventKind.THUNK_DEMANDED,
+        SemanticEventKind.THUNK_FORCE_STARTED,
+        SemanticEventKind.THUNK_UPDATED,
+        SemanticEventKind.THUNK_DEMANDED,
+        SemanticEventKind.SHARED_RESULT_HIT,
+    ]
+
+    updated = current.machine_state.heap.get(x_ref).value
+
+    assert isinstance(updated, Indirection)
+    assert updated.from_thunk_update
+    assert updated.target == ImmediateInteger(21)
+
+    # The original snapshot remains unevaluated.
+    assert isinstance(
+        body_state.machine_state.heap.get(x_ref).value,
+        PendingThunk,
+    )
+
+
+@pytest.mark.parametrize("mode", list(TraceMode))
+def test_thunk_chain_metrics_match_active_update_frames(mode):
+    config = replace(
+        make_cbneed_config(),
+        trace_mode=mode,
+        execution_step_limit=300,
+    )
+
+    initial = create_initial_core_state(
+        compile_source(
+            r"main = (\x -> (\y -> y + 1) x) (20 + 1)"
+        ),
+        config,
+        session_id="thunk-chain-metrics",
+    )
+
+    # Determine the complete evaluation boundary.
+    finished = run_batch(
+        initial,
+        config,
+        max_steps=300,
+    )
+
+    assert finished.stop_reason is BatchStopReason.WHNF_PENDING
+
+    current = initial
+    metrics = InstrumentationState()
+    observed_peak = 0
+
+    for _ in range(finished.state.transition_index):
+        transition = step(current, config)
+        metrics = reduce_metrics(metrics, transition)
+        current = transition.next_state
+
+        active_updates = sum(
+            isinstance(frame, UpdateFrame)
+            for frame in current.machine_state.stack.frames
+        )
+
+        observed_peak = max(
+            observed_peak,
+            active_updates,
+        )
+
+        assert (
+            metrics.counters.current_thunk_chain_length
+            == active_updates
+        )
+
+        assert (
+            metrics.counters.max_thunk_chain_length
+            >= observed_peak
+        )
+
+    assert current.machine_state.stack.depth == 0
+
+    counters = metrics.counters
+
+    assert counters.current_thunk_chain_length == 0
+    assert counters.max_thunk_chain_length == 3
+    assert counters.thunks_forced == 3
+    assert counters.thunks_updated == 3
+    assert counters.blackholes == 0

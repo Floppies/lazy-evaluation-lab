@@ -3,6 +3,7 @@ import pytest
 from dataclasses import replace
 
 from lazy_lab.core.nodes import CoreBinding, CoreInt
+from lazy_lab.engine import core_machine
 from lazy_lab.engine.core_machine import (
     _reserve_global_scope,
     _install_global_rhs,
@@ -12,6 +13,10 @@ from lazy_lab.engine.core_machine import (
     EvaluatorBudgetExhaustedError,
     UninitializedLocalBindingError,
 )
+from lazy_lab.metrics.effects import HeapAllocated, HeapBaselineRecorded
+from lazy_lab.metrics.events import SemanticEventKind
+from lazy_lab.metrics.reducer import reduce_metrics
+from lazy_lab.metrics.state import InstrumentationState
 from lazy_lab.pipeline import compile_source
 from lazy_lab.runtime.environment import (
     UnboundNameError,
@@ -1286,3 +1291,193 @@ def test_cbv_letrec_preserves_anchor_identity_and_slot_accounting():
 
     assert machine.stack.depth == 0
     assert machine.local_environment is machine.global_environment
+
+
+@pytest.mark.parametrize(
+    "strategy",
+    [Strategy.CBV, Strategy.CBNEED],
+)
+def test_heap_baseline_recorded_once_after_global_initialization(
+    strategy,
+):
+    program = compile_source(
+        "answer = 42\n"
+        "main = answer"
+    )
+
+    config = make_config(strategy)
+
+    state = create_initial_core_state(
+        program,
+        config,
+        session_id="heap-baseline-test",
+    )
+
+    metrics = InstrumentationState()
+    baseline_effects = []
+
+    # Reservation + one installation per binding + entry.
+    initialization_steps = len(program.bindings) + 2
+
+    for index in range(initialization_steps):
+        transition = step(state, config)
+
+        effects = [
+            effect
+            for effect in transition.heap_effects
+            if isinstance(effect, HeapBaselineRecorded)
+        ]
+
+        if index < initialization_steps - 1:
+            assert effects == []
+        else:
+            assert transition.rule_id is RuleId.CORE_INIT_ENTER_ENTRY
+            assert len(effects) == 1
+
+        baseline_effects.extend(effects)
+
+        metrics = reduce_metrics(metrics, transition)
+        state = transition.next_state
+
+    assert len(baseline_effects) == 1
+
+    baseline = baseline_effects[0]
+
+    assert baseline.slots == state.machine_state.heap.current_slots
+    assert metrics.baseline_slots == baseline.slots
+    assert metrics.counters.current_heap_slots == baseline.slots
+    assert metrics.counters.peak_heap_slots == baseline.slots
+    assert metrics.additional_peak_over_baseline == 0
+
+    assert state.machine_state.phase is ExecutionPhase.EVALUATION
+
+
+@pytest.mark.parametrize(
+    "strategy",
+    [Strategy.CBV, Strategy.CBNEED],
+)
+def test_heap_metrics_match_actual_heap_during_execution(strategy):
+    program = compile_source(
+        "main = let { x = 1 } in x"
+    )
+
+    config = make_config(strategy)
+
+    initial = create_initial_core_state(
+        program,
+        config,
+        session_id="heap-metrics-integration",
+    )
+
+    current = initial
+    metrics = InstrumentationState()
+
+    observed_peak = 0
+    allocated_ids = set()
+    baselines = []
+
+    for _ in range(100):
+        transition = step(current, config)
+
+        next_state = transition.next_state
+        heap = next_state.machine_state.heap
+
+        for effect in transition.heap_effects:
+            if isinstance(effect, HeapAllocated):
+                assert effect.object_id not in allocated_ids
+                allocated_ids.add(effect.object_id)
+
+            elif isinstance(effect, HeapBaselineRecorded):
+                baselines.append(effect)
+
+                assert (
+                    transition.phase_after
+                    is ExecutionPhase.EVALUATION
+                )
+
+        metrics = reduce_metrics(metrics, transition)
+
+        # Independently inspect actual allocated capacity.
+        actual_slots = sum(
+            cell.allocated_slots
+            for cell in heap.cells.values()
+        )
+
+        observed_peak = max(observed_peak, actual_slots)
+
+        counters = metrics.counters
+
+        assert counters.current_heap_slots == actual_slots
+        assert counters.peak_heap_slots == observed_peak
+
+        assert counters.total_allocations == len(
+            allocated_ids
+        )
+
+        assert counters.total_allocations == len(heap.cells)
+
+        current = next_state
+
+        if (
+            core_machine._stop_reason(current, config)
+            is BatchStopReason.WHNF_PENDING
+        ):
+            break
+    else:
+        pytest.fail("Execution did not reach WHNF")
+
+    assert len(baselines) == 1
+    assert metrics.baseline_slots == baselines[0].slots
+
+    # The local let allocates after global initialization.
+    assert (
+        metrics.counters.peak_heap_slots
+        > metrics.baseline_slots
+    )
+
+    assert metrics.additional_peak_over_baseline == (
+        metrics.counters.peak_heap_slots
+        - metrics.baseline_slots
+    )
+
+    # Historical execution state remains untouched.
+    assert initial.machine_state.heap.current_slots == 0
+    assert initial.transition_index == 0
+
+
+@pytest.mark.parametrize(
+    "strategy",
+    [Strategy.CBV, Strategy.CBNEED],
+)
+def test_global_thunk_creation_emits_stable_anchor_event(strategy):
+    program = compile_source(
+        "answer = 42\n"
+        "main = answer"
+    )
+    config = make_config(strategy)
+
+    initial = create_initial_core_state(
+        program,
+        config,
+        session_id="global-thunk-creation",
+    )
+
+    reserved = step(initial, config)
+    installed = step(reserved.next_state, config)
+
+    anchor = (
+        installed.next_state.machine_state
+        .global_environment.lookup("answer")
+    )
+
+    creation_events = [
+        event
+        for event in installed.semantic_events
+        if event.kind is SemanticEventKind.THUNK_CREATED
+    ]
+
+    if strategy is Strategy.CBNEED:
+        assert len(creation_events) == 1
+        assert creation_events[0].object_id == anchor.object_id
+    else:
+        assert creation_events == []

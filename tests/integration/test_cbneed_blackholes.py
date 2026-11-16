@@ -4,6 +4,9 @@ from dataclasses import replace
 import pytest
 
 from lazy_lab.engine.core_machine import InvalidMachineStateError, create_initial_core_state, run_batch, step
+from lazy_lab.metrics.events import SemanticEventKind
+from lazy_lab.metrics.reducer import reduce_metrics
+from lazy_lab.metrics.state import InstrumentationState
 from lazy_lab.pipeline import compile_source
 from lazy_lab.runtime.control import Force, Return
 from lazy_lab.runtime.heap import Reserved
@@ -820,3 +823,151 @@ def test_cbneed_evaluating_thunk_without_update_frame_is_invalid():
         checkpoint.machine_state.heap.get(main_ref).value,
         EvaluatingThunk,
     )
+
+
+def test_reentrant_demand_does_not_start_second_force():
+    config = make_cbneed_config()
+
+    initial = create_initial_core_state(
+        compile_source("main = main"),
+        config,
+        session_id="reentrant-thunk-demand",
+    )
+
+    current = initial
+    events = []
+
+    for _ in range(100):
+        transition = step(current, config)
+        events.extend(transition.semantic_events)
+        current = transition.next_state
+
+        if transition.rule_id is RuleId.CORE_BLACKHOLE_DETECTED:
+            break
+    else:
+        pytest.fail("Expected blackhole was not reached")
+
+    anchor = current.machine_state.global_environment.lookup(
+        "main"
+    )
+
+    anchor_events = [
+        event.kind
+        for event in events
+        if event.object_id == anchor.object_id
+    ]
+
+    assert anchor_events == [
+        SemanticEventKind.THUNK_CREATED,
+        SemanticEventKind.THUNK_DEMANDED,
+        SemanticEventKind.THUNK_FORCE_STARTED,
+        SemanticEventKind.THUNK_DEMANDED,
+        SemanticEventKind.BLACKHOLE_DETECTED,
+    ]
+
+    assert (
+        current.machine_state.status
+        is ExecutionStatus.BLACKHOLE_DETECTED
+    )
+
+
+@pytest.mark.parametrize(
+    ("source", "expected_forces"),
+    [
+        ("main = main", 1),
+        (
+            "main = a\n"
+            "a = b\n"
+            "b = a",
+            3,
+        ),
+    ],
+)
+def test_blackhole_metrics_preserve_anchor_identity(
+    source,
+    expected_forces,
+):
+    config = make_cbneed_config()
+
+    current = create_initial_core_state(
+        compile_source(source),
+        config,
+        session_id="blackhole-metrics",
+    )
+
+    metrics = InstrumentationState()
+    events = []
+
+    for _ in range(150):
+        transition = step(current, config)
+
+        metrics = reduce_metrics(metrics, transition)
+        events.extend(transition.semantic_events)
+
+        current = transition.next_state
+
+        if transition.rule_id is RuleId.CORE_BLACKHOLE_DETECTED:
+            break
+    else:
+        pytest.fail("Expected a blackhole")
+
+    # A terminal reentrant demand produces exactly
+    # one demand and one blackhole event.
+    assert [
+        event.kind
+        for event in transition.semantic_events
+    ] == [
+        SemanticEventKind.THUNK_DEMANDED,
+        SemanticEventKind.BLACKHOLE_DETECTED,
+    ]
+
+    control = current.machine_state.control
+
+    assert isinstance(control, Force)
+
+    anchor = control.reference
+
+    assert all(
+        event.object_id == anchor.object_id
+        for event in transition.semantic_events
+    )
+
+    assert isinstance(
+        current.machine_state.heap.get(anchor).value,
+        EvaluatingThunk,
+    )
+
+    assert any(
+        isinstance(frame, UpdateFrame)
+        and frame.thunk_reference == anchor
+        for frame in current.machine_state.stack.frames
+    )
+
+    created_ids = {
+        event.object_id
+        for event in events
+        if event.kind is SemanticEventKind.THUNK_CREATED
+    }
+
+    forced_ids = [
+        event.object_id
+        for event in events
+        if event.kind is SemanticEventKind.THUNK_FORCE_STARTED
+    ]
+
+    # Every first force belongs to a created thunk,
+    # and no thunk begins evaluation twice.
+    assert len(forced_ids) == expected_forces
+    assert len(set(forced_ids)) == expected_forces
+    assert set(forced_ids) <= created_ids
+
+    counters = metrics.counters
+
+    assert counters.thunks_created == expected_forces
+    assert counters.thunks_forced == expected_forces
+    assert counters.thunk_demands == expected_forces + 1
+
+    assert counters.blackholes == 1
+    assert counters.thunks_updated == 0
+    assert counters.shared_result_hits == 0
+    assert counters.thunks_never_forced == 0

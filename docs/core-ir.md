@@ -4,7 +4,7 @@
 
 Core is the intermediate representation intended to sit between the surface Abstract Syntax Tree (AST) and evaluation. It makes functions, applications, recursive bindings, and constructor inspection explicit.
 
-The current implementation provides immutable nodes, explicit structural validation, and Surface-to-Core desugaring. Separate Surface and Core name checkers verify lexical visibility; see [Name resolution](name-resolution.md). The Core evaluator executes the supported CBV and CBNeed subsets and provides canonical result observation; see the [Core evaluation contract](core-evaluation-contract.md). CBNeed includes deferred evaluation, memoization, sharing and blackhole detection. CBN evaluation and executable constructors/case remain deferred.
+The current implementation provides immutable nodes, explicit structural validation, and Surface-to-Core desugaring. Separate Surface and Core name checkers verify lexical visibility; see [Name resolution](name-resolution.md). The Core evaluator executes the supported CBV and CBNeed subsets and provides canonical result observation; see the [Core evaluation contract](core-evaluation-contract.md). CBNeed includes deferred evaluation, memoization, sharing and blackhole detection. CBN evaluation remains deferred. Constructor and case execution are supported by the Core CBV and CBNeed evaluators.
 
 Core does not select an evaluation strategy. The same expression can be used by call-by-value (CBV), call-by-name (CBN), and call-by-need (CBNeed) evaluators.
 
@@ -171,6 +171,25 @@ Source spans use one-based coordinates, an inclusive start, and an exclusive end
 
 Spans are optional and excluded from structural equality. Two otherwise identical Core nodes compare equal even when their source locations differ.
 
+Every Core node also accepts an optional keyword-only `origin`
+field using `OriginKind`. Its default is `UNKNOWN`, and its
+value does not participate in structural equality.
+
+Provenance and source spans are independent: a generated
+Core node may retain a source span identifying the syntax
+responsible for its creation.
+
+Frontend desugaring assigns `SOURCE` to Core constructs
+directly representing source-authored expressions and
+parameters. It assigns `GENERATED` to auxiliary structures
+introduced for list literals and pattern matching, including
+constructor chains, case expressions, temporary parameters,
+and auxiliary recursive bindings.
+
+Core nodes created directly without explicit provenance
+retain `UNKNOWN`. Source spans and provenance remain
+independent metadata and do not affect structural equality.
+
 ## Representation Boundaries
 
 Core, a future STG-like representation, and runtime objects remain separate representations with different responsibilities.
@@ -195,8 +214,14 @@ Desugaring does not evaluate expressions, perform name resolution, eliminate unu
 - Validation does not perform type checking; `CoreApp(CoreInt(1), CoreInt(2))` is structurally valid.
 - Validation does not check pattern-match exhaustiveness or reachability.
 - Constructors are restricted to `Nil` and `Cons`.
-- Name checking is implemented separately in `lazy_lab.semantics`. Runtime evaluation supports the CBV and CBNeed subsets; CBN, constructors and case execution remain deferred.
-- Structural tests verify generated Core shapes; operational equivalence and the instrumentation cost of generated aliases still require evaluator tests.
+- Name checking is implemented separately in
+  `lazy_lab.semantics`. Runtime evaluation supports Core
+  CBV and CBNeed, including constructors and case expressions.
+  CBN execution remains deferred.
+- Structural tests verify the generated Core shapes, while
+  runtime and integration tests cover supported CBV and CBNeed
+  execution. Comparable cost accounting for generated Core
+  operations requires completion of the metrics integration.
 
 ## Surface-to-Core Desugaring
 

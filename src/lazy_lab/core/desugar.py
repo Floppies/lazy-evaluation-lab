@@ -4,7 +4,7 @@ from itertools import groupby
 
 from lazy_lab.ast import nodes as surface
 from lazy_lab.core import nodes as core
-from lazy_lab.source import SourceSpan
+from lazy_lab.source import OriginKind, SourceSpan
 from lazy_lab.core.names import FreshNameSupply
 
 class DesugaringError(ValueError):
@@ -24,21 +24,24 @@ class DesugaringError(ValueError):
         super().__init__(message)
 
 def _curry(
-        parameters: tuple[str, ...],
-        body: core.CoreExpr,
-        span: SourceSpan | None,
-    ) -> core.CoreExpr:
-        """Wrap an expression in nested unary Core lambdas."""
-        result = body
+    parameters: tuple[str, ...],
+    body: core.CoreExpr,
+    span: SourceSpan | None,
+    *,
+    origin: OriginKind = OriginKind.SOURCE,
+) -> core.CoreExpr:
+    """Wrap an expression in nested unary Core lambdas."""
+    result = body
 
-        for parameter in reversed(parameters):
-            result = core.CoreLam(
-                parameter=parameter,
-                body=result,
-                span=span,
-            )
+    for parameter in reversed(parameters):
+        result = core.CoreLam(
+            parameter=parameter,
+            body=result,
+            span=span,
+            origin=origin,
+        )
 
-        return result
+    return result
 
 def _children(
     expr: surface.Expr,
@@ -116,19 +119,32 @@ def _lower_expr(expr: surface.Expr) -> core.CoreExpr:
         values = _take_results(results, len(children))
 
         if isinstance(node, surface.IntLiteral):
-            lowered = core.CoreInt(node.value, span=node.span)
+            lowered = core.CoreInt(
+                node.value,
+                span=node.span,
+                origin=OriginKind.SOURCE,
+            )
 
         elif isinstance(node, surface.BoolLiteral):
-            lowered = core.CoreBool(node.value, span=node.span)
+            lowered = core.CoreBool(
+                node.value,
+                span=node.span,
+                origin=OriginKind.SOURCE,
+            )
 
         elif isinstance(node, surface.Var):
-            lowered = core.CoreVar(node.name, span=node.span)
+            lowered = core.CoreVar(
+                node.name,
+                span=node.span,
+                origin=OriginKind.SOURCE,
+            )
 
         elif isinstance(node, surface.UnaryOp):
             lowered = core.CorePrimOp(
                 "negate",
                 values,
                 span=node.span,
+                origin=OriginKind.SOURCE,
             )
 
         elif isinstance(node, surface.BinaryOp):
@@ -137,12 +153,14 @@ def _lower_expr(expr: surface.Expr) -> core.CoreExpr:
                     "Cons",
                     values,
                     span=node.span,
+                    origin=OriginKind.SOURCE,
                 )
             else:
                 lowered = core.CorePrimOp(
                     node.operator,
                     values,
                     span=node.span,
+                    origin=OriginKind.SOURCE,
                 )
 
         elif isinstance(node, surface.Application):
@@ -150,6 +168,7 @@ def _lower_expr(expr: surface.Expr) -> core.CoreExpr:
                 values[0],
                 values[1],
                 span=node.span,
+                origin=OriginKind.SOURCE,
             )
 
         elif isinstance(node, surface.LambdaExpr):
@@ -165,6 +184,7 @@ def _lower_expr(expr: surface.Expr) -> core.CoreExpr:
                 values[1],
                 values[2],
                 span=node.span,
+                origin=OriginKind.SOURCE,
             )
 
         elif isinstance(node, surface.LetExpr):
@@ -177,6 +197,7 @@ def _lower_expr(expr: surface.Expr) -> core.CoreExpr:
                         binding.span,
                     ),
                     span=binding.span,
+                    origin=OriginKind.SOURCE,
                 )
                 for binding, rhs in zip(
                     node.bindings,
@@ -189,6 +210,7 @@ def _lower_expr(expr: surface.Expr) -> core.CoreExpr:
                 bindings,
                 values[-1],
                 span=node.span,
+                origin=OriginKind.SOURCE,
             )
 
         elif isinstance(node, surface.ListLiteral):
@@ -196,6 +218,7 @@ def _lower_expr(expr: surface.Expr) -> core.CoreExpr:
                 "Nil",
                 (),
                 span=node.span,
+                origin=OriginKind.GENERATED,
             )
 
             for element in reversed(values):
@@ -203,6 +226,7 @@ def _lower_expr(expr: surface.Expr) -> core.CoreExpr:
                     "Cons",
                     (element, lowered),
                     span=node.span,
+                    origin=OriginKind.GENERATED,
                 )
 
         else:
@@ -258,6 +282,7 @@ def _lower_global_group(
         name=first.name,
         rhs=rhs,
         span=first.span,
+        origin=OriginKind.SOURCE,
     )
 
 def _lower_equation_body(
@@ -280,8 +305,10 @@ def _lower_equation_body(
                     rhs=core.CoreVar(
                         name=arguments[index],
                         span=pattern.span,
+                        origin=OriginKind.GENERATED,
                     ),
                     span=pattern.span,
+                    origin=OriginKind.GENERATED,
                 )
             )
 
@@ -294,6 +321,7 @@ def _lower_equation_body(
         bindings=tuple(bindings),
         body=body,
         span=equation.span,
+        origin=OriginKind.GENERATED,
     )
 
 def _lower_function_equations(
@@ -371,6 +399,7 @@ def _lower_function_equations(
                     binder=names.fresh("match"),
                     body=body,
                     span=pattern.span,
+                    origin=OriginKind.GENERATED,
                 )
             )
 
@@ -403,6 +432,7 @@ def _lower_function_equations(
                 binders=binders,
                 body=body,
                 span=pattern.span,
+                origin=OriginKind.GENERATED,
             )
         )
 
@@ -410,15 +440,18 @@ def _lower_function_equations(
         scrutinee=core.CoreVar(
             name=arguments[-1],
             span=first.parameters[-1].span,
+            origin=OriginKind.GENERATED,
         ),
         alternatives=tuple(alternatives),
         span=first.parameters[-1].span,
+        origin=OriginKind.GENERATED,
     )
 
     return _curry(
         parameters=arguments,
         body=case,
         span=first.span,
+        origin=OriginKind.GENERATED,
     )
 
 def lower_expression(
@@ -455,4 +488,5 @@ def lower_program(
     return core.CoreProgram(
         bindings=tuple(bindings),
         span=program.span,
+        origin=OriginKind.SOURCE,
     )

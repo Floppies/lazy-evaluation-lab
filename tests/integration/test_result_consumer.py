@@ -998,7 +998,7 @@ def test_constructor_is_not_considered_fully_materialized():
 
     with pytest.raises(
         InvalidResultObservationError,
-        match="Complete constructor materialization",
+        match="Constructor results require the dedicated constructor materialization protocol",
     ):
         consume_materialized_result(result.state, config)
 

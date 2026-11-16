@@ -174,7 +174,7 @@ class TransitionResult:
                     f"{field_name} must contain "
                     "valid typed instrumentation records"
                 )
-            
+
         if (
             type(self.result_nodes_delta) is not int
             or self.result_nodes_delta < 0

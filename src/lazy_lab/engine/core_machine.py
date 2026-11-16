@@ -397,7 +397,7 @@ def step(
         raise EvaluatorBudgetExhaustedError(
             "Evaluator step limit reached"
         )
-    
+
     # All mutations below affect isolated successor storage.
     snapshot = state.snapshot()
 
@@ -468,7 +468,7 @@ def step(
         transition_index=state.transition_index + 1,
         machine_state=next_machine,
     )
-    
+
     transition = TransitionResult(
         previous_state_id=state.state_id,
         next_state=next_state,
@@ -1049,7 +1049,7 @@ def _advance_force(
             raise InvalidMachineStateError(
                 "EvaluatingThunk has no active UpdateFrame"
             )
-        
+
         recorder.emit(
             SemanticEventKind.THUNK_DEMANDED,
             object_id=reference.object_id,

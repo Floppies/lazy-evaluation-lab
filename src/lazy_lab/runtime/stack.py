@@ -112,7 +112,7 @@ class PrimitiveOperandsFrame(StackFrame):
         default=None,
         compare=False,
     )
-    
+
 
 @dataclass(frozen=True, slots=True)
 class LocalValueInitializationFrame(StackFrame):
@@ -243,4 +243,3 @@ class Stack:
             yield
         finally:
             self._effect_sink = None
-

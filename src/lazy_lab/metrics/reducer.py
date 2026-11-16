@@ -84,7 +84,7 @@ def reduce_metrics(
         is TransitionKind.RESULT_CONSUMER
     ):
         bump("result_consumer_transitions")
-    
+
     for event in transition.semantic_events:
         field_name = _CORE_EVENT_COUNTERS.get(event.kind)
 
@@ -206,4 +206,3 @@ def reduce_metrics(
         counters=updated_counters,
         baseline_slots=baseline_slots,
     )
-

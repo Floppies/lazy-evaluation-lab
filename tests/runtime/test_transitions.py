@@ -1730,7 +1730,7 @@ def test_real_core_events_reduce_to_expected_metrics(strategy):
     assert counters.variable_lookups == 1
     assert counters.function_applications == 0
     assert counters.beta_reductions == 0
-    
+
     core_event_kinds = {
         SemanticEventKind.LET_ACTIVATED,
         SemanticEventKind.CONDITIONAL_SELECTED,

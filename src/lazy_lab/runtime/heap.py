@@ -203,4 +203,3 @@ class Heap:
             yield
         finally:
             self._effect_sink = None
-

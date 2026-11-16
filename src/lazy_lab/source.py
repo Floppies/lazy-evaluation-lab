@@ -14,7 +14,7 @@ class SourceSpan:
     start_column: int
     end_line: int
     end_column: int
-    
+
 
 class OriginKind(StrEnum):
     """Provenance of a source or intermediate operation."""

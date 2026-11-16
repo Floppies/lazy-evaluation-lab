@@ -16,6 +16,10 @@ from lazy_lab.runtime.state import (
     Strategy,
     TraceMode,
 )
+from lazy_lab.engine.session_runner import run_session_batch
+from lazy_lab.engine.result_consumer import select_result_mode
+from lazy_lab.runtime.state import ResultPolicy
+from lazy_lab.runtime.transitions import BatchResult, TransitionResult
 
 
 @dataclass(slots=True)
@@ -98,3 +102,53 @@ def create_interactive_session(
         live_state=initial_state,
         read_cursor_index=initial_state.transition_index,
     )
+
+def _replace_live_state(
+    session: InteractiveSession,
+    next_state: ExecutionState,
+) -> None:
+    """Replace the live head while preserving cursor semantics."""
+
+    was_following = (
+        session.read_cursor_index
+        == session.live_state.transition_index
+    )
+
+    session.live_state = next_state
+
+    if (
+        was_following
+        or session.config.trace_mode is TraceMode.METRICS_ONLY
+    ):
+        session.read_cursor_index = next_state.transition_index
+
+def step_interactive_session(
+    session: InteractiveSession,
+) -> BatchResult:
+    """Advance the live session by at most one logical transition."""
+
+    result = run_session_batch(
+        session.live_state,
+        session.config,
+        max_steps=1,
+    )
+
+    _replace_live_state(session, result.state)
+
+    return result
+
+def select_interactive_result_mode(
+    session: InteractiveSession,
+    selected_mode: ResultPolicy,
+) -> TransitionResult:
+    """Apply an explicit result-mode selection to the live head."""
+
+    transition = select_result_mode(
+        session.live_state,
+        session.config,
+        selected_mode,
+    )
+
+    _replace_live_state(session, transition.next_state)
+
+    return transition

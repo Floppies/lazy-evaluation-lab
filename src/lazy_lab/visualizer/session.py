@@ -129,15 +129,7 @@ def step_interactive_session(
 ) -> BatchResult:
     """Advance the live session by at most one logical transition."""
 
-    result = run_session_batch(
-        session.live_state,
-        session.config,
-        max_steps=1,
-    )
-
-    _replace_live_state(session, result.state)
-
-    return result
+    return run_interactive_batch(session, max_steps=1)
 
 def select_interactive_result_mode(
     session: InteractiveSession,
@@ -152,6 +144,9 @@ def select_interactive_result_mode(
     )
 
     _replace_live_state(session, transition.next_state)
+
+    # Result selection does not implicitly resume automatic execution.
+    session.auto_run_requested = False
 
     return transition
 

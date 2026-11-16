@@ -101,8 +101,8 @@ The descriptions follow the **Gantt B** plan and its milestone acceptance criter
 | B07.10 | Metrics and Run Data Export | Completed |
 | B07.11 | Integration, Regressions and Final Audit | Completed |
 | B08 | Interactive Visualizer | In Progress |
-| B08.1 | Interactive Visualization Contract | In Progress |
-| B08.2 | Execution Session Controller | Pending |
+| B08.1 | Interactive Visualization Contract | Completed |
+| B08.2 | Execution Session Controller | Completed |
 | B08.3 | History Retention and Replay | Pending |
 | B08.4 | Passive State Projections | Pending |
 | B08.5 | Source and Core Inspection | Pending |

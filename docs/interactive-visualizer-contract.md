@@ -85,3 +85,88 @@ Retained snapshots must preserve stable `ObjectId` identities, machine state, co
 The visualizer may derive differences between retained snapshots for presentation. These differences are not execution events and must not update the simulated machine or its metrics.
 
 History storage and visualization operate in host memory. Their costs are excluded from the abstract heap and execution metrics defined in `docs/metrics-contract.md`.
+
+## 3. Pre-Run Configuration and Session Operations
+
+The interactive application separates program preparation, pre-run configuration, session creation, execution commands, and passive inspection.
+
+No execution session is created until the program and its selected configuration have been validated.
+
+### 3.1 Pre-Run Configuration
+
+Before creating an execution session, the user selects:
+
+- **Program:** source code and an entry binding, defaulting to `main`.
+- **Evaluation strategy:** Core CBV or CBNeed.
+- **Result policy:** `WHNF_ONLY`, `MATERIALIZE_COMPLETE_VALUE`, or `ASK_AT_WHNF`.
+- **Trace mode:** `FULL`, `EVENTS`, or `METRICS_ONLY`.
+- **Execution limits:** `execution_step_limit` and `result_node_limit`.
+- **Event capture filters:** selected event categories when using `EVENTS`.
+
+Only implemented evaluation strategies may be selected. CBN and STG execution are not supported in B08.
+
+The execution configuration is validated before session creation and remains fixed throughout the run.
+
+Event capture filters are controller-level settings, separate from `ExecutionConfig`. They determine which transitions are retained in `EVENTS` mode without influencing execution semantics.
+
+The number of transitions requested in a batch is a command parameter rather than a fixed execution configuration field.
+
+Changing the program, entry binding, strategy, result policy, trace mode, or execution limits requires creating a new run.
+
+### 3.2 Execution Commands
+
+The controller supports the following logical operations:
+
+- **Compile:** transform source code into validated Core or return compilation diagnostics without executing the program.
+- **Create session:** initialize a new run using the selected program, configuration, and event capture filters.
+- **Step:** advance the live head by at most one logical transition, including evaluator and result-consumer transitions.
+- **Run batch:** execute a bounded number of transitions from the live head, returning the resulting state and stop reason.
+- **Pause:** stop requesting additional batches without changing the abstract machine.
+- **Select result mode:** record an explicit observation choice under `ASK_AT_WHNF` using the existing `select_result_mode()` operation.
+- **Reset:** create a new run from the selected program and configuration.
+
+Execution commands always operate on the live head, independently of the current read cursor.
+
+The controller must preserve the distinction between `ExecutionStatus` and `BatchStopReason`. In particular, `WHNF_PENDING`, `BATCH_LIMIT`, and `EVALUATOR_BUDGET` must not be presented as interchangeable terminal statuses.
+
+An unresolved `ASK_AT_WHNF` choice must not trigger automatic result materialization or additional evaluation.
+
+### 3.3 Passive Inspection
+
+Passive inspection includes selecting retained historical states, navigating the available history, reading machine control and stack frames, inspecting heap objects, viewing source/Core provenance, and displaying accumulated metrics.
+
+These operations must not:
+
+- Execute evaluator or result-consumer transitions.
+- Force thunks or follow indirections through evaluation.
+- Allocate or replace simulated heap objects.
+- Modify execution counters or canonical results.
+- Replace the live head with a historical state.
+
+Snapshot differences may be computed for visualization, but they are derived observations rather than machine effects.
+
+### 3.4 Capture Filter Updates
+
+In `EVENTS` mode, capture filters may be modified while execution is paused.
+
+Changes apply only to subsequent transitions and cannot recover previously discarded states.
+
+Changing filters must not alter the execution configuration, instrumentation, or live machine state.
+
+### 3.5 Errors and Execution Boundaries
+
+Compilation failures, invalid configuration, unavailable historical states, invalid commands, and runtime terminal conditions must remain distinguishable.
+
+The controller must respect the existing execution-step and result-node limits.
+
+A terminal execution remains inspectable but cannot be advanced by ordinary execution commands.
+
+The API may translate controller errors into structured responses, but it must not hide terminal states or fabricate successful results.
+
+### 3.6 Scope
+
+B08 provides an in-memory interactive session model with bounded execution and passive inspection.
+
+The contract does not require persistent session storage, branching execution, authentication, distributed workers, or additional evaluation strategies.
+
+Exact HTTP routes, JSON response schemas, and frontend component structure are defined during their respective implementation tasks.

@@ -125,6 +125,22 @@ The controller supports the following logical operations:
 - **Select result mode:** record an explicit observation choice under `ASK_AT_WHNF` using the existing `select_result_mode()` operation.
 - **Reset:** create a new run from the selected program and configuration.
 
+Automatic execution is controlled through a session-level
+`auto_run_requested` flag. Requesting play enables subsequent
+bounded batch requests; pausing disables them.
+
+The controller does not schedule background execution.
+The client is responsible for requesting further batches
+while automatic execution remains enabled.
+
+Automatic execution is disabled when the session reaches a
+terminal status, requires an explicit WHNF result-mode
+selection, or exhausts its evaluator budget.
+
+Manual step and batch commands remain available while
+automatic execution is paused, subject to the existing
+execution boundaries.
+
 Execution commands always operate on the live head, independently of the current read cursor.
 
 The controller must preserve the distinction between `ExecutionStatus` and `BatchStopReason`. In particular, `WHNF_PENDING`, `BATCH_LIMIT`, and `EVALUATOR_BUDGET` must not be presented as interchangeable terminal statuses.

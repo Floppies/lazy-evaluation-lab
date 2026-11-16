@@ -12,6 +12,7 @@ from lazy_lab.pipeline import compile_source
 from lazy_lab.runtime.state import (
     ExecutionConfig,
     ExecutionState,
+    ExecutionStatus,
     MachineKind,
     Strategy,
     TraceMode,
@@ -19,7 +20,7 @@ from lazy_lab.runtime.state import (
 from lazy_lab.engine.session_runner import run_session_batch
 from lazy_lab.engine.result_consumer import select_result_mode
 from lazy_lab.runtime.state import ResultPolicy
-from lazy_lab.runtime.transitions import BatchResult, TransitionResult
+from lazy_lab.runtime.transitions import BatchResult, BatchStopReason, TransitionResult
 
 
 @dataclass(slots=True)
@@ -34,6 +35,7 @@ class InteractiveSession:
     capture_categories: frozenset[str]
     live_state: ExecutionState
     read_cursor_index: int
+    auto_run_requested: bool = False
 
 
 def create_interactive_session(
@@ -152,3 +154,65 @@ def select_interactive_result_mode(
     _replace_live_state(session, transition.next_state)
 
     return transition
+
+def run_interactive_batch(
+    session: InteractiveSession,
+    *,
+    max_steps: int,
+) -> BatchResult:
+    """Run a bounded batch from the live execution state."""
+
+    result = run_session_batch(
+        session.live_state,
+        session.config,
+        max_steps=max_steps,
+    )
+
+    _replace_live_state(session, result.state)
+
+    if (
+        result.stop_reason in (
+            BatchStopReason.WHNF_PENDING,
+            BatchStopReason.EVALUATOR_BUDGET,
+            BatchStopReason.TERMINAL_STATUS,
+        )
+        or result.state.machine_state.status
+        is not ExecutionStatus.RUNNING
+    ):
+        session.auto_run_requested = False
+
+    return result
+
+def request_auto_run(
+    session: InteractiveSession,
+) -> None:
+    """Allow the client to request successive bounded batches."""
+
+    if (
+        session.live_state.machine_state.status
+        is not ExecutionStatus.RUNNING
+    ):
+        raise ValueError(
+            "Cannot start automatic execution of a terminal session"
+        )
+
+    session.auto_run_requested = True
+
+def pause_interactive_session(
+    session: InteractiveSession,
+) -> None:
+    """Stop automatic batch requests without changing machine state."""
+
+    session.auto_run_requested = False
+
+def reset_interactive_session(
+    session: InteractiveSession,
+) -> InteractiveSession:
+    """Create a fresh run with the same program and configuration."""
+
+    return create_interactive_session(
+        session.source,
+        session.config,
+        entry=session.entry,
+        capture_categories=session.capture_categories,
+    )

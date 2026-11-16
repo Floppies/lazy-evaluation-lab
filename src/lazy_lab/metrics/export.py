@@ -81,7 +81,6 @@ class RunRecord:
             and self.canonical_result is not None
         )
 
-
 def build_run_record(
     run: ComparisonRun,
     *,
@@ -115,61 +114,132 @@ def build_run_record(
 def _canonical_to_data(
     value: PartialCanonicalValue | None,
 ) -> dict[str, object] | None:
-    """Encode canonical values without runtime references."""
+    """Encode canonical values using an explicit traversal stack."""
 
-    if value is None:
-        return None
+    root: list[dict[str, object] | None] = [None]
+    pending = [(value, root, 0)]
 
-    if isinstance(value, CanonicalInteger):
-        return {
-            "kind": "integer",
-            "value": value.value,
-        }
+    while pending:
+        current, target, index = pending.pop()
 
-    if isinstance(value, CanonicalBoolean):
-        return {
-            "kind": "boolean",
-            "value": value.value,
-        }
+        if current is None:
+            encoded = None
 
-    if isinstance(value, OpaqueFunction):
-        return {"kind": "opaque_function"}
+        elif isinstance(current, CanonicalInteger):
+            encoded = {
+                "kind": "integer",
+                "value": current.value,
+            }
 
-    if isinstance(value, ConstructorWHNF):
-        return {
-            "kind": "constructor_whnf",
-            "tag": value.tag,
-            "arity": value.arity,
-        }
+        elif isinstance(current, CanonicalBoolean):
+            encoded = {
+                "kind": "boolean",
+                "value": current.value,
+            }
 
-    if isinstance(value, CanonicalPending):
-        return {"kind": "pending"}
+        elif isinstance(current, OpaqueFunction):
+            encoded = {"kind": "opaque_function"}
 
-    if isinstance(value, CanonicalPartialConstructor):
-        return {
-            "kind": "partial_constructor",
-            "tag": value.tag,
-            "fields": [
-                _canonical_to_data(field)
-                for field in value.fields
-            ],
-            "unvisited_fields": value.unvisited_fields,
-        }
+        elif isinstance(current, ConstructorWHNF):
+            encoded = {
+                "kind": "constructor_whnf",
+                "tag": current.tag,
+                "arity": current.arity,
+            }
 
-    if isinstance(value, CanonicalConstructor):
-        return {
-            "kind": "constructor",
-            "tag": value.tag,
-            "fields": [
-                _canonical_to_data(field)
-                for field in value.fields
-            ],
-        }
+        elif isinstance(current, CanonicalPending):
+            encoded = {"kind": "pending"}
 
-    raise TypeError(
-        f"Unsupported canonical result: {type(value).__name__}"
-    )
+        elif isinstance(
+            current,
+            (CanonicalConstructor, CanonicalPartialConstructor),
+        ):
+            children = [None] * len(current.fields)
 
+            encoded = {
+                "kind": (
+                    "partial_constructor"
+                    if isinstance(current, CanonicalPartialConstructor)
+                    else "constructor"
+                ),
+                "tag": current.tag,
+                "fields": children,
+            }
+
+            if isinstance(current, CanonicalPartialConstructor):
+                encoded["unvisited_fields"] = current.unvisited_fields
+
+            for child_index in range(len(current.fields) - 1, -1, -1):
+                pending.append((
+                    current.fields[child_index],
+                    children,
+                    child_index,
+                ))
+
+        else:
+            raise TypeError(
+                f"Unsupported canonical result: {type(current).__name__}"
+            )
+
+        target[index] = encoded
+
+    return root[0]
+
+def _json_dumps_iterative(value: object) -> str:
+    """Encode JSON-compatible data without recursive container traversal."""
+
+    output = StringIO()
+    pending = [("value", value)]
+
+    while pending:
+        operation, item = pending.pop()
+
+        if operation == "text":
+            output.write(item)
+            continue
+
+        if isinstance(item, dict):
+            output.write("{")
+            pairs = sorted(item.items())
+            pending.append(("text", "}"))
+
+            for i in range(len(pairs) - 1, -1, -1):
+                key, child = pairs[i]
+
+                if i < len(pairs) - 1:
+                    pending.append(("text", ","))
+
+                pending.append(("value", child))
+                pending.append(("text", ":"))
+                pending.append((
+                    "text",
+                    json.dumps(key, ensure_ascii=False),
+                ))
+
+            continue
+
+        if isinstance(item, list):
+            output.write("[")
+            pending.append(("text", "]"))
+
+            for i in range(len(item) - 1, -1, -1):
+                if i < len(item) - 1:
+                    pending.append(("text", ","))
+
+                pending.append(("value", item[i]))
+
+            continue
+
+        # Standard library handles escaping and scalar types.
+        output.write(
+            json.dumps(
+                item,
+                ensure_ascii=False,
+                allow_nan=False,
+            )
+        )
+
+    return output.getvalue()
 
 def run_record_to_dict(record: RunRecord) -> dict[str, object]:
     """Convert a run record into JSON-compatible values."""
@@ -213,18 +283,12 @@ def run_record_to_dict(record: RunRecord) -> dict[str, object]:
         },
     }
 
-
 def run_record_to_json(record: RunRecord) -> str:
     """Serialize one run record to deterministic JSON."""
 
-    return json.dumps(
-        run_record_to_dict(record),
-        ensure_ascii=False,
-        sort_keys=True,
-        indent=2,
-        allow_nan=False,
+    return _json_dumps_iterative(
+        run_record_to_dict(record)
     )
-
 
 def run_records_to_csv(
     records: Iterable[RunRecord],

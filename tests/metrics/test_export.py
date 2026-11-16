@@ -391,3 +391,88 @@ def test_json_and_csv_preserve_real_execution_metrics(strategy):
         )
 
     assert run_records_to_csv(records) == csv_output
+
+
+def test_iterative_json_matches_standard_encoder():
+    from lazy_lab.metrics.export import _json_dumps_iterative
+
+    payload = {
+        "text": 'Hello "world"\nCórdoba',
+        "values": [1, True, None, {"nested": [2, 3]}],
+        "empty": [],
+    }
+
+    expected = json.dumps(
+        payload,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+        allow_nan=False,
+    )
+
+    assert _json_dumps_iterative(payload) == expected
+
+
+def test_deep_canonical_tree_encoding_is_iterative():
+    from lazy_lab.metrics.export import _canonical_to_data
+    from lazy_lab.runtime.observation import CanonicalConstructor
+
+    value = CanonicalConstructor("Nil", ())
+
+    for index in range(1200):
+        value = CanonicalConstructor(
+            "Cons",
+            (CanonicalInteger(index), value),
+        )
+
+    encoded = _canonical_to_data(value)
+
+    current = encoded
+    depth = 0
+
+    while current["tag"] == "Cons":
+        assert current["kind"] == "constructor"
+        assert len(current["fields"]) == 2
+
+        current = current["fields"][1]
+        depth += 1
+
+    assert depth == 1200
+    assert current == {
+        "kind": "constructor",
+        "tag": "Nil",
+        "fields": [],
+    }
+
+
+def test_deep_json_serialization():
+    from lazy_lab.metrics.export import _json_dumps_iterative
+    from lazy_lab.runtime.observation import CanonicalConstructor
+
+    value = CanonicalConstructor("Nil", ())
+
+    for index in range(1200):
+        value = CanonicalConstructor(
+            "Cons",
+            (CanonicalInteger(index), value),
+        )
+
+    record = RunRecord(
+        workload_id="deep-list",
+        session_id="deep-export",
+        transition_index=10,
+        config=make_config(),
+        effective_result_policy=ResultPolicy.MATERIALIZE_COMPLETE_VALUE,
+        status=ExecutionStatus.COMPLETED,
+        stop_reason=None,
+        canonical_result=value,
+        instrumentation=InstrumentationState(),
+    )
+
+    serialized = run_record_to_json(record)
+
+    assert serialized == run_record_to_json(record)
+    assert serialized.count('"tag":"Cons"') == 1200
+    assert serialized.count('"tag":"Nil"') == 1
+    assert '"schema_version":1' in serialized
+    assert '"workload_id":"deep-list"' in serialized

@@ -323,3 +323,37 @@ stop reason from the machine status.
 
 Projecting the same unchanged state must produce equivalent
 output and leave all runtime structures and metrics unchanged.
+
+### 4.2 Control and Stack Projection
+
+The control and stack projection exposes the current
+abstract-machine control and its ordered continuation frames.
+
+Control and frame records use explicit type names and
+JSON-compatible field summaries.
+
+Runtime references preserve their logical identity:
+
+- Heap references expose stable `ObjectId` values.
+- Immediate integers and booleans expose their values.
+- References are never forced or dereferenced through evaluation.
+
+Core expressions and alternatives are represented by their
+node types without recursively serializing their syntax trees.
+Detailed source and Core representations belong to B08.5.
+
+Lexical environments expose only shallow structural metadata.
+The projection does not recursively traverse environment
+parent chains or inspect referenced heap objects.
+
+Tuple fields may expose their lengths or, for runtime-reference
+tuples, their immediate reference values and identities.
+
+Stack frames are ordered from bottom to top. The final frame
+is explicitly identified as the top of the stack.
+
+Control and stack projections must be deterministic for an
+unchanged state, JSON-compatible, and free of execution effects.
+
+Detailed heap object contents and memory relationships are
+handled separately by B08.6.

@@ -96,6 +96,24 @@ When no following transition exists, the event window remains incomplete. The co
 
 `EVENTS` does not reconstruct discarded states through deterministic re-execution and does not implement checkpoint-based replay.
 
+#### Event Window Assembly
+
+Selective event-window capture consumes consecutive successful transitions through the existing transition observer.
+
+For a matching transition at logical index `i`, the capture controller retains the preceding state at `i - 1` and the resulting state at `i`. It then requests retention of the state at `i + 1` when the next transition is observed.
+
+The following state is retained even if its transition does not match any currently selected category.
+
+Consecutive matching transitions may open overlapping windows. Shared states are retained only once, using the history store's logical transition indices.
+
+Each selected transition records the set of categories responsible for its capture. These reasons are presentation metadata and do not alter the original semantic events or instrumentation counters.
+
+Changing capture filters applies only to subsequent transitions. A pending successor capture from an earlier event remains valid and must still be completed when its transition occurs.
+
+When execution ends or pauses before a required successor is produced, the window remains incomplete. No missing state is fabricated or reconstructed.
+
+The event-window capture component does not own the live execution state, select result modes, or perform machine transitions. Its integration with session commands is handled by the interactive session controller.
+
 ### METRICS_ONLY
 
 `METRICS_ONLY` retains the live execution state and accumulated metrics without retaining a navigable historical state sequence.
@@ -135,6 +153,32 @@ Unavailable historical indices produce an explicit lookup failure. The store mus
 Snapshot retention and retrieval are passive host-side operations. They must not produce machine transitions, update execution metrics, or change the live head.
 
 The history store does not execute transitions or select capture categories. Transition matching and event-window assembly are separate responsibilities.
+
+### Session History Integration and Navigation
+
+The interactive session controller connects execution commands to history retention through the transition observer.
+
+Each successful transition updates the live head and is processed according to the configured retention policy:
+
+- `FULL` retains the successor state for every transition, including explicit result-mode selection.
+- `EVENTS` forwards transitions to the selective event-window capture component.
+- `METRICS_ONLY` advances the live head without retaining historical snapshots.
+
+The initial state is retained in `FULL` mode when the session is created. In `EVENTS` mode, historical snapshots are retained only when required by selected capture windows.
+
+Explicit `ASK_AT_WHNF` result-mode selections are reported to the history observer even though they occur outside the evaluator and session batch runners.
+
+The read cursor identifies the state selected for inspection. Historical navigation succeeds only when the requested transition index is retained or refers to the current live head.
+
+The live head is always inspectable in every trace mode. Historical inspection returns an independent snapshot and must not modify the live head, heap, stack, instrumentation, or execution configuration.
+
+When historical navigation requests an unavailable state, the controller reports an explicit error and preserves the current read cursor.
+
+Returning to the live head changes only the read cursor.
+
+Event capture filters may be updated while automatic execution is paused. Updated filters apply only to future transitions and do not reinterpret previous capture decisions.
+
+Reset creates a new session identity, a new live state, and an independent history store. Historical snapshots are never reused across execution runs.
 
 ## 3. Pre-Run Configuration and Session Operations
 

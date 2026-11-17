@@ -22,6 +22,11 @@ from lazy_lab.engine.result_consumer import select_result_mode
 from lazy_lab.runtime.state import ResultPolicy
 from lazy_lab.runtime.transitions import BatchResult, BatchStopReason, TransitionResult
 from lazy_lab.visualizer.capture import validate_capture_categories
+from lazy_lab.visualizer.history import (
+    HistoryStore,
+    HistoryStateUnavailableError,
+)
+from lazy_lab.visualizer.windows import EventWindowCapture
 
 
 @dataclass(slots=True)
@@ -36,6 +41,9 @@ class InteractiveSession:
     capture_categories: frozenset[str]
     live_state: ExecutionState
     read_cursor_index: int
+
+    history: HistoryStore
+    event_capture: EventWindowCapture | None = None
     auto_run_requested: bool = False
 
 
@@ -88,6 +96,23 @@ def create_interactive_session(
         entry=entry,
     )
 
+    history = HistoryStore(
+        session_id=session_id,
+        trace_mode=config.trace_mode,
+    )
+
+    if config.trace_mode is TraceMode.FULL:
+        history.retain(initial_state)
+
+    event_capture = (
+        EventWindowCapture(
+            history=history,
+            selected_categories=capture_categories,
+        )
+        if config.trace_mode is TraceMode.EVENTS
+        else None
+    )
+
     return InteractiveSession(
         session_id=session_id,
         source=source,
@@ -97,6 +122,8 @@ def create_interactive_session(
         capture_categories=capture_categories,
         live_state=initial_state,
         read_cursor_index=initial_state.transition_index,
+        history=history,
+        event_capture=event_capture,
     )
 
 def _replace_live_state(
@@ -118,6 +145,34 @@ def _replace_live_state(
     ):
         session.read_cursor_index = next_state.transition_index
 
+def _observe_session_transition(
+    session: InteractiveSession,
+    previous_state: ExecutionState,
+    transition: TransitionResult,
+) -> None:
+    """Record a successful transition and advance the live head."""
+
+    if previous_state is not session.live_state:
+        raise RuntimeError(
+            "Observed transition does not start at the live head"
+        )
+
+    if session.config.trace_mode is TraceMode.FULL:
+        session.history.retain(transition.next_state)
+
+    elif session.config.trace_mode is TraceMode.EVENTS:
+        assert session.event_capture is not None
+
+        session.event_capture.observe_transition(
+            previous_state,
+            transition,
+        )
+
+    _replace_live_state(
+        session,
+        transition.next_state,
+    )
+
 def step_interactive_session(
     session: InteractiveSession,
 ) -> BatchResult:
@@ -129,17 +184,23 @@ def select_interactive_result_mode(
     session: InteractiveSession,
     selected_mode: ResultPolicy,
 ) -> TransitionResult:
-    """Apply an explicit result-mode selection to the live head."""
+    """Apply and record an explicit result-mode selection."""
+
+    previous_state = session.live_state
 
     transition = select_result_mode(
-        session.live_state,
+        previous_state,
         session.config,
         selected_mode,
     )
 
-    _replace_live_state(session, transition.next_state)
+    _observe_session_transition(
+        session,
+        previous_state,
+        transition,
+    )
 
-    # Result selection does not implicitly resume automatic execution.
+    # A result-mode selection never resumes automatic execution.
     session.auto_run_requested = False
 
     return transition
@@ -149,15 +210,20 @@ def run_interactive_batch(
     *,
     max_steps: int,
 ) -> BatchResult:
-    """Run a bounded batch from the live execution state."""
+    """Execute a bounded batch with session history observation."""
 
     result = run_session_batch(
         session.live_state,
         session.config,
         max_steps=max_steps,
+        on_transition=lambda previous, transition: (
+            _observe_session_transition(
+                session,
+                previous,
+                transition,
+            )
+        ),
     )
-
-    _replace_live_state(session, result.state)
 
     if (
         result.stop_reason in (
@@ -205,3 +271,82 @@ def reset_interactive_session(
         entry=session.entry,
         capture_categories=session.capture_categories,
     )
+
+def available_session_indices(
+    session: InteractiveSession,
+) -> tuple[int, ...]:
+    """List retained indices together with the live-head index."""
+
+    return tuple(sorted({
+        *session.history.available_indices,
+        session.live_state.transition_index,
+    }))
+
+def get_inspected_state(
+    session: InteractiveSession,
+) -> ExecutionState:
+    """Return a passive copy of the state selected by the cursor."""
+
+    if (
+        session.read_cursor_index
+        == session.live_state.transition_index
+    ):
+        return session.live_state.snapshot()
+
+    return session.history.get_snapshot(
+        session.read_cursor_index
+    )
+
+def select_historical_state(
+    session: InteractiveSession,
+    transition_index: int,
+) -> ExecutionState:
+    """Move the read cursor only when the requested state exists."""
+
+    if (
+        type(transition_index) is not int
+        or transition_index < 0
+    ):
+        raise ValueError(
+            "Transition index must be a non-negative integer"
+        )
+
+    if transition_index == session.live_state.transition_index:
+        state = session.live_state.snapshot()
+    else:
+        state = session.history.get_snapshot(transition_index)
+
+    session.read_cursor_index = transition_index
+    return state
+
+def follow_live_head(
+    session: InteractiveSession,
+) -> ExecutionState:
+    """Return the read cursor to the current live execution state."""
+
+    session.read_cursor_index = (
+        session.live_state.transition_index
+    )
+
+    return session.live_state.snapshot()
+
+def update_interactive_capture_categories(
+    session: InteractiveSession,
+    categories: frozenset[str],
+) -> None:
+    """Change EVENTS filters for future transitions only."""
+
+    if session.config.trace_mode is not TraceMode.EVENTS:
+        raise ValueError(
+            "Capture filters require EVENTS trace mode"
+        )
+
+    if session.auto_run_requested:
+        raise RuntimeError(
+            "Pause automatic execution before updating filters"
+        )
+
+    assert session.event_capture is not None
+
+    session.event_capture.update_categories(categories)
+    session.capture_categories = categories

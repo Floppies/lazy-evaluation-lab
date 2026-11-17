@@ -114,6 +114,28 @@ The visualizer may derive differences between retained snapshots for presentatio
 
 History storage and visualization operate in host memory. Their costs are excluded from the abstract heap and execution metrics defined in `docs/metrics-contract.md`.
 
+### Snapshot Storage and Isolation
+
+The interactive history store is scoped to a single execution run and identifies retained states by their logical `transition_index`.
+
+The store accepts explicit snapshot retention requests. The session controller determines which states must be retained according to the configured trace mode:
+
+- In `FULL`, the controller retains the initial state and every successful successor state.
+- In `EVENTS`, the controller retains only states required by selected event windows.
+- In `METRICS_ONLY`, the history store retains no historical snapshots. The current state and accumulated metrics remain available through the live session.
+
+Retaining an already stored logical state is idempotent. The store must not create duplicate copies for overlapping capture windows.
+
+A retained snapshot is independent of the caller-owned heap and stack. Historical retrieval also returns an independent copy, preventing inspection from mutating the stored state.
+
+States from different sessions cannot be mixed. Conflicting state identities for the same logical transition index are rejected.
+
+Unavailable historical indices produce an explicit lookup failure. The store must not approximate, reconstruct, or silently substitute missing states.
+
+Snapshot retention and retrieval are passive host-side operations. They must not produce machine transitions, update execution metrics, or change the live head.
+
+The history store does not execute transitions or select capture categories. Transition matching and event-window assembly are separate responsibilities.
+
 ## 3. Pre-Run Configuration and Session Operations
 
 The interactive application separates program preparation, pre-run configuration, session creation, execution commands, and passive inspection.

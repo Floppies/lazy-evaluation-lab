@@ -396,3 +396,35 @@ HTTP or frontend presentation.
 Repeated projection of an unchanged state must produce
 equivalent output without modifying the simulated heap,
 stack, result state, or instrumentation.
+
+### 4.4 Synchronized Session Projection
+
+The interactive session projection combines execution
+overview, control and stack, metrics, and canonical result
+from one selected ExecutionState.
+
+The inspected state is obtained once using the session's
+read cursor. All returned panels therefore refer to the
+same logical transition index.
+
+Session navigation metadata includes the read cursor,
+live-head transition index, available historical indices,
+trace mode, and automatic execution request state.
+
+When the read cursor references a historical snapshot,
+the projection uses that retained state without changing
+the live execution head.
+
+When the read cursor follows the live head, the projection
+uses an independent snapshot of the current state.
+
+In METRICS_ONLY, the live head remains available for
+inspection even though no historical snapshots are retained.
+
+The combined projection does not execute transitions,
+allocate abstract heap objects, force references, update
+metrics, or alter session navigation.
+
+The projection is independent of HTTP and React. Its
+JSON-compatible structure serves as the data contract
+for subsequent API and frontend implementation.

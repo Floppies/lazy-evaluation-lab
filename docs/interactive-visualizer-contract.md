@@ -280,3 +280,46 @@ B08 provides an in-memory interactive session model with bounded execution and p
 The contract does not require persistent session storage, branching execution, authentication, distributed workers, or additional evaluation strategies.
 
 Exact HTTP routes, JSON response schemas, and frontend component structure are defined during their respective implementation tasks.
+
+## 4. Passive State Projections
+
+Visual state projections provide read-only, JSON-compatible
+representations of execution states.
+
+Projections must not execute transitions, force thunks,
+dereference heap objects through evaluation, modify stack
+frames, update instrumentation, or alter the live head.
+
+The projection layer is independent of HTTP endpoints
+and frontend components.
+
+### 4.1 Execution Overview
+
+The execution overview exposes:
+
+- Session identity, state identity, and logical transition index.
+- The execution configuration, including strategy, result
+  policy, trace mode, and execution limits.
+- Machine status, phase, and control type.
+- Evaluator transition count, stack depth, current heap
+  slots, and current heap object count.
+- The explicitly selected result mode, when available.
+- Whether a canonical result has already been produced.
+
+The overview does not expose mutable runtime objects.
+All returned values must be JSON-compatible primitives
+or containers.
+
+The control type is reported without recursively
+serializing its internal Core expressions or references.
+Detailed control and stack projections are defined separately.
+
+The presence of a canonical result is reported without
+performing WHNF observation or initiating materialization.
+
+`ExecutionStatus` is preserved independently of
+`BatchStopReason`. A projection must not infer a command
+stop reason from the machine status.
+
+Projecting the same unchanged state must produce equivalent
+output and leave all runtime structures and metrics unchanged.

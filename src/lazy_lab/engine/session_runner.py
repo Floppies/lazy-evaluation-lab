@@ -3,6 +3,8 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
+
 from lazy_lab.engine.core_machine import run_batch
 from lazy_lab.engine.result_consumer import (
     advance_constructor_materialization,
@@ -29,6 +31,7 @@ from lazy_lab.runtime.transitions import (
     BatchResult,
     BatchStopReason,
     TraceEntry,
+    TransitionResult,
 )
 
 
@@ -37,6 +40,9 @@ def run_session_batch(
     config: ExecutionConfig,
     *,
     max_steps: int,
+    on_transition: Callable[
+        [ExecutionState, TransitionResult], None
+    ] | None = None,
 ) -> BatchResult:
     """Run at most max_steps evaluator and consumer transitions."""
     if type(max_steps) is not int or max_steps < 1:
@@ -60,7 +66,12 @@ def run_session_batch(
                 raise InvalidResultObservationError("Missing materialization state")
 
             if machine.stack.depth > 0:
-                evaluated = run_batch(current, config, max_steps=remaining)
+                evaluated = run_batch(
+                    current,
+                    config,
+                    max_steps=remaining,
+                    on_transition=on_transition,
+                )
                 current = evaluated.state
                 trace.extend(evaluated.trace)
 
@@ -86,7 +97,12 @@ def run_session_batch(
                 transition = advance_constructor_materialization(current, config)
 
         else:
-            evaluated = run_batch(current, config, max_steps=remaining)
+            evaluated = run_batch(
+                current,
+                config,
+                max_steps=remaining,
+                on_transition=on_transition,
+            )
             current = evaluated.state
             trace.extend(evaluated.trace)
             if evaluated.stop_reason is not BatchStopReason.WHNF_PENDING:
@@ -121,6 +137,10 @@ def run_session_batch(
             else:
                 raise InvalidResultObservationError("Unsupported result mode")
 
+        if on_transition is not None:
+            on_transition(current, transition)
+
         current = transition.next_state
+
         if config.trace_mode is not TraceMode.METRICS_ONLY:
             trace.append(TraceEntry.from_transition(transition))

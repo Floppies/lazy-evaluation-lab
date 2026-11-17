@@ -1393,6 +1393,9 @@ def run_batch(
     config: ExecutionConfig,
     *,
     max_steps: int,
+    on_transition: Callable[
+        [ExecutionState, TransitionResult], None
+    ] | None = None,
 ) -> BatchResult:
     """Execute a bounded batch of supported transitions."""
     if type(max_steps) is not int or max_steps < 1:
@@ -1414,6 +1417,10 @@ def run_batch(
             )
 
         transition = step(current, config)
+
+        if on_transition is not None:
+            on_transition(current, transition)
+
         current = transition.next_state
 
         if config.trace_mode is not TraceMode.METRICS_ONLY:

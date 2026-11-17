@@ -103,7 +103,7 @@ The descriptions follow the **Gantt B** plan and its milestone acceptance criter
 | B08 | Interactive Visualizer | In Progress |
 | B08.1 | Interactive Visualization Contract | Completed |
 | B08.2 | Execution Session Controller | Completed |
-| B08.3 | History Retention and Replay | Pending |
+| B08.3 | History Retention and Replay | In Progress |
 | B08.4 | Passive State Projections | Pending |
 | B08.5 | Source and Core Inspection | Pending |
 | B08.6 | Heap Table and Memory Graph Projection | Pending |

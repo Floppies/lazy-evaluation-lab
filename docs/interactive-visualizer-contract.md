@@ -38,6 +38,14 @@ Retention and inspection must not affect evaluation semantics, transition orderi
 
 `TraceEntry` provides lightweight transition metadata but does not retain intermediate execution states or complete instrumentation payloads. Selective capture therefore requires observing actual transitions during execution.
 
+Transition observation is provided through an optional synchronous callback at the existing evaluator and session-runner boundaries.
+
+Each successful transition is reported exactly once with its preceding `ExecutionState` and original `TransitionResult`, independently of the configured trace mode.
+
+The observer is read-only and must not mutate machine state, influence evaluation, or produce additional instrumentation events. When no observer is registered, execution behavior remains unchanged.
+
+Explicit result-mode selections performed outside the batch runners must be reported separately by the interactive session controller.
+
 ### FULL
 
 `FULL` retains the initial execution state and one snapshot after every successful logical transition.

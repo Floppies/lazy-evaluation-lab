@@ -3,8 +3,9 @@
 
 from __future__ import annotations
 
-from dataclasses import fields, is_dataclass
+from dataclasses import asdict, fields, is_dataclass
 
+from lazy_lab.metrics.export import canonical_value_to_data
 from lazy_lab.runtime.state import (
     ExecutionConfig,
     ExecutionState,
@@ -212,6 +213,38 @@ def project_execution_overview(
             ),
             "canonical_result_available": (
                 state.canonical_result is not None
+            ),
+        },
+    }
+
+def project_metrics_and_result(
+    state: ExecutionState,
+) -> dict[str, object]:
+    """Project accumulated metrics and the existing canonical result."""
+
+    if not isinstance(state, ExecutionState):
+        raise TypeError("Expected an ExecutionState")
+
+    instrumentation = state.instrumentation_state
+    counters = instrumentation.counters
+
+    return {
+        "metrics": {
+            "counters": asdict(counters),
+            "derived": {
+                "semantic_reductions": counters.semantic_reductions,
+                "current_frames": counters.current_frames,
+                "thunks_never_forced": counters.thunks_never_forced,
+                "additional_peak_over_baseline": (
+                    instrumentation.additional_peak_over_baseline
+                ),
+            },
+            "baseline_slots": instrumentation.baseline_slots,
+        },
+        "result": {
+            "available": state.canonical_result is not None,
+            "canonical": canonical_value_to_data(
+                state.canonical_result
             ),
         },
     }

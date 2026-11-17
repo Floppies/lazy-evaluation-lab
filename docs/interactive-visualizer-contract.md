@@ -357,3 +357,42 @@ unchanged state, JSON-compatible, and free of execution effects.
 
 Detailed heap object contents and memory relationships are
 handled separately by B08.6.
+
+### 4.3 Metrics and Canonical Result Projection
+
+The metrics and result projection exposes the accumulated
+instrumentation and canonical result already present in an
+`ExecutionState`.
+
+The metrics representation includes:
+
+- All stored `MetricCounters` fields.
+- Derived semantic reductions and current stack frames.
+- The number of created thunks that have not been forced.
+- The initialization heap baseline and additional peak
+  heap usage relative to that baseline.
+
+Derived values use the existing instrumentation properties.
+The projection must not recalculate counters from operational
+rules or infer metric events from `RuleId`.
+
+Canonical results reuse the existing B07 serialization logic.
+Supported values include integers, booleans, opaque functions,
+constructor WHNF, complete constructors, pending occurrences,
+and partial constructors.
+
+An unavailable canonical result is represented explicitly as
+`null`. The projection must not request WHNF observation,
+force references, or initiate materialization to produce one.
+
+A result limited by execution or materialization budgets
+preserves its existing partial canonical representation.
+The projection does not silently treat partial results
+as complete results.
+
+Projection output is JSON-compatible and independent of
+HTTP or frontend presentation.
+
+Repeated projection of an unchanged state must produce
+equivalent output without modifying the simulated heap,
+stack, result state, or instrumentation.

@@ -185,6 +185,16 @@ def _canonical_to_data(
 
     return root[0]
 
+def canonical_value_to_data(
+    value: PartialCanonicalValue | None,
+) -> dict[str, object] | None:
+    """Convert an existing canonical value to JSON-compatible data.
+
+    This is a passive conversion. It does not evaluate runtime
+    references or request additional result materialization.
+    """
+    return _canonical_to_data(value)
+
 def _json_dumps_iterative(value: object) -> str:
     """Encode JSON-compatible data without recursive container traversal."""
 

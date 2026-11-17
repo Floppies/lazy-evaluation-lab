@@ -21,6 +21,7 @@ from lazy_lab.engine.session_runner import run_session_batch
 from lazy_lab.engine.result_consumer import select_result_mode
 from lazy_lab.runtime.state import ResultPolicy
 from lazy_lab.runtime.transitions import BatchResult, BatchStopReason, TransitionResult
+from lazy_lab.visualizer.capture import validate_capture_categories
 
 
 @dataclass(slots=True)
@@ -67,14 +68,7 @@ def create_interactive_session(
     if not entry:
         raise ValueError("Entry must not be empty")
 
-    if not isinstance(capture_categories, frozenset):
-        raise TypeError("Capture categories must be a frozenset")
-
-    if any(
-        type(category) is not str or not category
-        for category in capture_categories
-    ):
-        raise ValueError("Invalid capture category")
+    validate_capture_categories(capture_categories)
 
     if (
         config.trace_mode is not TraceMode.EVENTS

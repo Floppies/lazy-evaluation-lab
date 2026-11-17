@@ -46,6 +46,26 @@ The observer is read-only and must not mutate machine state, influence evaluatio
 
 Explicit result-mode selections performed outside the batch runners must be reported separately by the interactive session controller.
 
+### Event Capture Categories
+
+Five supported capture categories are defined for `EVENTS` mode:
+
+- **`thunks`:** transitions emitting any of the Call-by-Need lifecycle events: `THUNK_CREATED`, `THUNK_DEMANDED`, `THUNK_FORCE_STARTED`, `THUNK_UPDATED`, `SHARED_RESULT_HIT`, or `BLACKHOLE_DETECTED`.
+- **`materialization`:** transitions whose `phase_before` or `phase_after` is `RESULT_MATERIALIZATION`.
+- **`heap`:** transitions containing `HeapAllocated` or `HeapReplaced` effects. `HeapBaselineRecorded` alone does not qualify as a heap modification.
+- **`stack`:** transitions containing at least one typed stack effect.
+- **`reductions`:** transitions emitting one of the six semantic reduction events contributing to `semanticReductions`: `BETA_REDUCED`, `LET_ACTIVATED`, `PRIMITIVE_REDUCED`, `CONDITIONAL_SELECTED`, `CASE_ALTERNATIVE_SELECTED`, or `SEQ_REDUCED`.
+
+`FUNCTION_APPLIED` and `VARIABLE_LOOKED_UP` do not independently qualify as semantic reductions.
+
+Category matching examines explicit transition payloads and phase metadata. `RuleId` alone must not imply the occurrence of a semantic event.
+
+A transition may match multiple selected categories. The classifier returns the set of matching categories, allowing the history store to retain one snapshot window with multiple capture reasons.
+
+An empty category selection matches no transitions. Unsupported category names are rejected during session configuration.
+
+Category matching is passive and must not modify the transition, the execution state, or accumulated metrics.
+
 ### FULL
 
 `FULL` retains the initial execution state and one snapshot after every successful logical transition.

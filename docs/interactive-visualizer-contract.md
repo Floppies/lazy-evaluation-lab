@@ -428,3 +428,37 @@ metrics, or alter session navigation.
 The projection is independent of HTTP and React. Its
 JSON-compatible structure serves as the data contract
 for subsequent API and frontend implementation.
+
+## 5. Source and Core Inspection
+
+### 5.1 Static Source/Core Projection
+
+The visualizer exposes the original source text and a
+structural projection of its compiled Core program.
+
+Each Core node includes:
+
+- A deterministic structural node identifier.
+- Its Core node kind.
+- Its existing OriginKind.
+- Its original SourceSpan, when available.
+- Scalar descriptive attributes.
+- Ordered links to its structural children.
+
+Node identifiers are based on positions within the Core
+tree. They are not Python object identities, runtime
+state identifiers, or simulated heap ObjectIds.
+
+SourceSpan coordinates preserve the frontend convention:
+one-based lines and columns, with an exclusive end position.
+
+Missing spans remain unavailable. Generated Core nodes
+retain their GENERATED provenance even when their spans
+refer to source expressions.
+
+The projection does not execute, evaluate, force, or
+materialize runtime values. It does not traverse heap
+objects or runtime environments.
+
+Active-expression resolution and source highlighting
+are separate operations implemented in subsequent tasks.

@@ -124,3 +124,40 @@ def project_source_and_core(
             "nodes": records,
         },
     }
+
+def find_core_node_ids(
+    program: CoreProgram,
+    target: CoreNode,
+) -> tuple[str, ...]:
+    """Find all structural paths containing the exact Core node.
+
+    Matching uses object identity, not structural equality.
+    Multiple paths are returned when a node instance is shared.
+    """
+    if not isinstance(program, CoreProgram):
+        raise TypeError("Expected a CoreProgram")
+
+    if not isinstance(target, CoreNode):
+        raise TypeError("Expected a CoreNode")
+
+    pending: list[tuple[str, CoreNode]] = [
+        ("core", program)
+    ]
+    matches: list[str] = []
+
+    while pending:
+        node_id, node = pending.pop()
+
+        if node is target:
+            matches.append(node_id)
+
+        # Reuse the same child traversal and path conventions
+        # used by the static Source/Core projection.
+        _, children = _describe_node(node, node_id)
+
+        for role, child in reversed(children):
+            pending.append(
+                (f"{node_id}/{role}", child)
+            )
+
+    return tuple(matches)

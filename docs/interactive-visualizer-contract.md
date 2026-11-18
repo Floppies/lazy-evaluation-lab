@@ -462,3 +462,38 @@ objects or runtime environments.
 
 Active-expression resolution and source highlighting
 are separate operations implemented in subsequent tasks.
+
+### 5.2 Active Core Expression Resolution
+
+The visualizer identifies a Core expression directly
+associated with the inspected machine control when one
+is available.
+
+`EvaluateCore` exposes its expression. `ApplyPrimitive`
+may expose its originating `CorePrimOp`.
+
+Other controls, including `Force` and `Return`, do not
+independently identify an active Core expression.
+Their projection must not invent a source location.
+
+Active expression resolution uses object identity within
+the compiled Core tree rather than structural equality.
+Structurally equal but distinct expression occurrences
+must retain different structural node identifiers.
+
+The resolver returns one of four statuses:
+
+- `resolved`: exactly one structural node matches.
+- `unmapped`: the expression is absent from the program tree.
+- `ambiguous`: the same node instance occupies multiple paths.
+- `no_expression`: the control exposes no active Core expression.
+
+Only unambiguous matches return a Core node identifier.
+
+Generated runtime expressions that are absent from the
+compiled program remain unmapped. The resolver must not
+guess their origin from matching syntax or source spans.
+
+Resolution is passive. It does not execute transitions,
+force references, inspect the heap, modify instrumentation,
+or alter the session's read cursor.

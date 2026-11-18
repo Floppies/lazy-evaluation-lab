@@ -652,3 +652,39 @@ unchanged state.
 
 The graph must remain JSON-compatible and must not modify
 the simulated heap, execution state, or instrumentation.
+
+### 6.3 Passive Memory Graph Roots
+
+Memory roots represent explicit heap references retained
+outside stored heap objects.
+
+Root projection includes references from:
+
+- Local and global lexical environments.
+- Machine control.
+- Explicit continuation stack frames and saved environments.
+- Result state and materialization continuations.
+
+Environment parent chains are traversed iteratively.
+All retained bindings are represented, including bindings
+shadowed by a more local scope.
+
+Each root has a deterministic identifier, source category,
+structural role, and target ObjectId.
+
+Multiple roots may reference the same heap object.
+These references are not deduplicated.
+
+Immediate values do not generate heap roots.
+
+Root extraction does not dereference heap addresses,
+evaluate Core expressions, force thunks, or modify
+the machine state.
+
+The projection reports explicit references only.
+It does not perform garbage collection, mark objects,
+or compute reachability.
+
+Root records are separate from heap-to-heap graph edges.
+Their integration into the complete memory graph belongs
+to subsequent visualization work.

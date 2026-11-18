@@ -105,8 +105,8 @@ The descriptions follow the **Gantt B** plan and its milestone acceptance criter
 | B08.2 | Execution Session Controller | Completed |
 | B08.3 | History Retention and Replay | Completed |
 | B08.4 | Passive State Projections | Completed |
-| B08.5 | Source and Core Inspection | In Progress |
-| B08.6 | Heap Table and Memory Graph Projection | Pending |
+| B08.5 | Source and Core Inspection | Completed |
+| B08.6 | Heap Table and Memory Graph Projection | In Progress |
 | B08.7 | Minimal FastAPI Session API | Pending |
 | B08.8 | React/TypeScript App Foundation | Pending |
 | B08.9 | Step, Run and Replay Controls | Pending |

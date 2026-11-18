@@ -13,6 +13,12 @@ from lazy_lab.visualizer.session import (
     available_session_indices,
     get_inspected_state,
 )
+from lazy_lab.visualizer.source_core import (
+    project_source_and_core,
+)
+from lazy_lab.visualizer.source_highlighting import (
+    project_source_highlighting,
+)
 
 
 def project_interactive_session(
@@ -23,7 +29,8 @@ def project_interactive_session(
     if not isinstance(session, InteractiveSession):
         raise TypeError("Expected an InteractiveSession")
 
-    # Obtain the selected state once for all projections.
+    # Resolve the read cursor once. All dynamic panels use
+    # exactly the same inspected state.
     inspected = get_inspected_state(session)
 
     read_index = inspected.transition_index
@@ -50,5 +57,13 @@ def project_interactive_session(
         ),
         "metrics_result": project_metrics_and_result(
             inspected,
+        ),
+        "source_core": project_source_and_core(
+            session.source,
+            session.core_program,
+        ),
+        "source_highlighting": project_source_highlighting(
+            inspected,
+            session.core_program,
         ),
     }

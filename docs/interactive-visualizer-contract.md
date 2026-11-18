@@ -726,3 +726,38 @@ silently substitute a different historical index.
 
 The operation is deterministic for unchanged inputs,
 JSON-compatible, and free of machine execution effects.
+
+### 6.5 Synchronized Memory Session Projection
+
+The interactive session projection includes synchronized
+heap table, memory graph, root, and snapshot difference data.
+
+Heap table, graph, and roots are derived from the same
+inspected ExecutionState used by all other dynamic panels.
+
+The automatic memory difference compares the inspected
+state only against its immediately preceding logical state,
+when that exact preceding snapshot was retained.
+
+If the inspected state is the initial state, the difference
+is unavailable with reason `initial_state`.
+
+If the preceding logical state was not retained, the
+difference is unavailable with reason
+`previous_state_not_retained`.
+
+The projection does not substitute the closest available
+historical snapshot or reconstruct discarded states.
+
+In FULL mode, adjacent snapshot differences are generally
+available after the initial state.
+
+In EVENTS mode, availability depends on retained event
+windows. In METRICS_ONLY, historical differences are
+unavailable.
+
+Moving the read cursor changes the memory state being
+inspected. It does not replace the live execution head.
+
+All memory projections are passive, JSON-compatible,
+and independent of frontend layout or rendering.

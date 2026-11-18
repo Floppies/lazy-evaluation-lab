@@ -3,6 +3,11 @@
 
 from __future__ import annotations
 
+from lazy_lab.runtime.state import ExecutionState
+from lazy_lab.visualizer.heap_diff import project_heap_snapshot_diff
+from lazy_lab.visualizer.heap_graph import project_memory_graph
+from lazy_lab.visualizer.heap_roots import project_memory_roots
+from lazy_lab.visualizer.heap_table import project_heap_table
 from lazy_lab.visualizer.projections import (
     project_control_and_stack,
     project_execution_overview,
@@ -13,24 +18,55 @@ from lazy_lab.visualizer.session import (
     available_session_indices,
     get_inspected_state,
 )
-from lazy_lab.visualizer.source_core import (
-    project_source_and_core,
-)
+from lazy_lab.visualizer.source_core import project_source_and_core
 from lazy_lab.visualizer.source_highlighting import (
     project_source_highlighting,
 )
 
 
+def _project_adjacent_heap_diff(
+    session: InteractiveSession,
+    inspected: ExecutionState,
+) -> dict[str, object]:
+    """Compare against T-1 only when that exact state was retained."""
+
+    index = inspected.transition_index
+
+    if index == 0:
+        return {
+            "available": False,
+            "reason": "initial_state",
+            "comparison": None,
+        }
+
+    previous_index = index - 1
+
+    if previous_index not in session.history.available_indices:
+        return {
+            "available": False,
+            "reason": "previous_state_not_retained",
+            "comparison": None,
+        }
+
+    previous = session.history.get_snapshot(previous_index)
+
+    return {
+        "available": True,
+        "reason": None,
+        "comparison": project_heap_snapshot_diff(
+            previous,
+            inspected,
+        ),
+    }
+
 def project_interactive_session(
     session: InteractiveSession,
 ) -> dict[str, object]:
-    """Project all visual panels from one inspected state."""
+    """Project every dynamic panel from one inspected state."""
 
     if not isinstance(session, InteractiveSession):
         raise TypeError("Expected an InteractiveSession")
 
-    # Resolve the read cursor once. All dynamic panels use
-    # exactly the same inspected state.
     inspected = get_inspected_state(session)
 
     read_index = inspected.transition_index
@@ -52,12 +88,8 @@ def project_interactive_session(
             inspected,
             session.config,
         ),
-        "control_stack": project_control_and_stack(
-            inspected,
-        ),
-        "metrics_result": project_metrics_and_result(
-            inspected,
-        ),
+        "control_stack": project_control_and_stack(inspected),
+        "metrics_result": project_metrics_and_result(inspected),
         "source_core": project_source_and_core(
             session.source,
             session.core_program,
@@ -66,4 +98,13 @@ def project_interactive_session(
             inspected,
             session.core_program,
         ),
+        "memory": {
+            "heap_table": project_heap_table(inspected),
+            "heap_graph": project_memory_graph(inspected),
+            "roots": project_memory_roots(inspected),
+            "diff": _project_adjacent_heap_diff(
+                session,
+                inspected,
+            ),
+        },
     }

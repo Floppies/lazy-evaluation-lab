@@ -688,3 +688,41 @@ or compute reachability.
 Root records are separate from heap-to-heap graph edges.
 Their integration into the complete memory graph belongs
 to subsequent visualization work.
+
+### 6.4 Passive Snapshot Memory Differences
+
+Heap snapshot differences compare two ordered ExecutionStates
+from the same in-memory execution session.
+
+The projection identifies:
+
+- Created heap cells.
+- Updated contents at stable ObjectIds.
+- Removed heap cells.
+- Unchanged heap cells.
+
+Update detection uses the identity of immutable HeapObject
+instances retained through the runtime's snapshot cloning
+mechanism. The comparison is intended for snapshots produced
+by the same in-memory execution session.
+
+Each changed cell is described by ObjectId, change category,
+and shallow before/after metadata.
+
+Results include the compared transition indices, whether
+the states are adjacent, and the change in allocated heap slots.
+
+Comparisons across nonconsecutive retained states describe
+net differences over an interval. They must not be presented
+as effects of a single transition.
+
+Snapshot differences are not SemanticEvents or HeapEffects.
+They do not update counters, infer execution rules, or imply
+that garbage collection occurred.
+
+Unavailable comparison snapshots must be reported explicitly.
+The projection must not reconstruct discarded states or
+silently substitute a different historical index.
+
+The operation is deterministic for unchanged inputs,
+JSON-compatible, and free of machine execution effects.

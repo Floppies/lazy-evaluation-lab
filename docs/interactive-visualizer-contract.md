@@ -617,3 +617,38 @@ allocated_slots and required_slots.
 
 All output is JSON-compatible, deterministic for an
 unchanged state, and free of abstract-machine effects.
+
+### 6.2 Passive Memory Graph Nodes and Edges
+
+The memory graph is a passive projection of explicit
+references between simulated heap cells.
+
+Each graph node represents one stored HeapCell and preserves
+its stable ObjectId, object kind, allocated slots, and
+required slots.
+
+Directed edges identify the source ObjectId, target ObjectId,
+and the structural role of the reference.
+
+Edges are derived from:
+
+- Thunk anchors referencing their payloads.
+- ThunkPayload and Closure captured-local references.
+- ConstructorValue fields.
+- Indirection targets.
+- PartialPredefinedFunction applied arguments.
+
+Immediate values are not represented as heap nodes.
+Their values remain available in the heap table projection.
+
+The graph does not follow references, force thunks, execute
+transitions, or invent missing target objects.
+
+Graph roots and reachability are not computed by this
+projection. Root extraction belongs to B08.6.3.
+
+Node and edge ordering must be deterministic for an
+unchanged state.
+
+The graph must remain JSON-compatible and must not modify
+the simulated heap, execution state, or instrumentation.

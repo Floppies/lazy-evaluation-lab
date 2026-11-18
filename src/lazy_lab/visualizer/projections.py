@@ -45,6 +45,12 @@ def _project_reference(
 
     raise TypeError("Unsupported runtime reference")
 
+def project_runtime_reference(
+    reference: HeapReference | ImmediateInteger | ImmediateBoolean,
+) -> dict[str, object]:
+    """Project a runtime reference without dereferencing it."""
+    return _project_reference(reference)
+
 def _project_shallow_value(value: object) -> object:
     """Project one control/frame field without recursive traversal."""
 

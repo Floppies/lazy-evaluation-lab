@@ -532,3 +532,88 @@ heap or stack, or change execution metrics.
 
 Visual styling and editor-specific selection behavior
 are defined during frontend implementation.
+
+### 5.4 Synchronized Source/Core Session Inspection
+
+The interactive session projection combines the static
+Source/Core tree with active-expression and source-highlighting
+metadata from the currently inspected ExecutionState.
+
+The static Source/Core representation is derived from the
+session's original source and compiled CoreProgram. Its
+structural identifiers remain stable throughout the run.
+
+All dynamic information, including active Core expression
+and source highlighting, is computed from the same inspected
+state used by execution, control, stack, and metrics panels.
+
+When the read cursor points to a retained historical state,
+highlighting reflects that historical state rather than
+the current live execution head.
+
+The static Core tree and the active-expression projection
+use the same structural identifier convention. A resolved
+active node must refer to a node present in the static tree.
+
+Generated Core expressions retain their provenance.
+Source highlighting must not present generated Core
+operations as literal source expressions.
+
+Source/Core inspection remains available in all trace
+modes, including METRICS_ONLY. Historical inspection
+continues to respect each mode's retention policy.
+
+Static tree serialization may be separated from dynamic
+state responses at the API boundary if necessary to reduce
+payload size. Such separation must preserve node identities
+and projection semantics.
+
+Inspection is passive and must not alter execution state,
+heap, stack, result observation, instrumentation, history
+retention, or read-cursor position.
+
+## 6. Heap Table and Memory Graph Projection
+
+### 6.1 Passive Heap Table
+
+The heap table presents the stored cells of an inspected
+ExecutionState without modifying the simulated heap.
+
+Cells are ordered deterministically by stable ObjectId.
+
+Each row exposes:
+
+- ObjectId.
+- Current heap object kind.
+- Allocated slots retained by the cell.
+- Required slots for the currently stored object.
+- Shallow, type-specific descriptive fields.
+
+The table supports Reserved, Indirection, PendingGlobal,
+ThunkPayload, PendingThunk, EvaluatingThunk, Closure,
+ConstructorValue, PredefinedFunction, and
+PartialPredefinedFunction.
+
+Call-by-Need thunk anchors and payloads are represented
+as separate heap cells with distinct ObjectIds.
+
+Updating an anchor changes its stored object kind but
+does not change its ObjectId or reserved allocation size.
+
+Runtime references are projected without dereferencing
+their targets. Constructor fields, thunk payload references,
+and indirection targets preserve reference identities.
+
+Captured local environments expose binding names only
+in the table projection. Their reference relationships
+are handled by the memory graph.
+
+The table does not recursively serialize Core expressions,
+force thunks, calculate reachability, or reconstruct
+previous heap states.
+
+The projection preserves the distinction between
+allocated_slots and required_slots.
+
+All output is JSON-compatible, deterministic for an
+unchanged state, and free of abstract-machine effects.

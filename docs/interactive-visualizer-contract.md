@@ -497,3 +497,38 @@ guess their origin from matching syntax or source spans.
 Resolution is passive. It does not execute transitions,
 force references, inspect the heap, modify instrumentation,
 or alter the session's read cursor.
+
+### 5.3 Source Provenance and Highlighting
+
+Source highlighting metadata is derived from the active
+Core expression and its existing provenance.
+
+Only an unambiguously resolved Core expression may
+provide source highlighting metadata.
+
+The projection distinguishes three display modes:
+
+- `direct`: a SOURCE-origin expression with an available
+  SourceSpan. Its span identifies a direct source region.
+- `context`: a GENERATED-origin expression with an
+  available SourceSpan. The span identifies associated
+  source context, not an explicitly written Core node.
+- `none`: no reliable direct or contextual source
+  highlighting is available.
+
+INTERNAL and UNKNOWN origins do not produce source
+highlighting, even when a span is present.
+
+Missing spans remain missing. Unmapped or ambiguous
+expressions do not trigger heuristic source matching.
+
+The projection preserves the original one-based source
+coordinates and exclusive end position without converting
+them to editor-specific offsets.
+
+Highlighting metadata is passive. It does not evaluate
+Core expressions, follow runtime references, modify the
+heap or stack, or change execution metrics.
+
+Visual styling and editor-specific selection behavior
+are defined during frontend implementation.

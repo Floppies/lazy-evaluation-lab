@@ -792,3 +792,34 @@ outside the scope of B08.
 
 HTTP session operations and error mapping are defined
 in subsequent API implementation tasks.
+
+### 7.2 Session Creation and Inspection
+
+POST /api/sessions creates an interactive Core execution
+session from validated source code and execution settings.
+
+The request supports CBV and CBNeed, result policy, trace
+mode, execution limits, entry binding, and optional capture
+categories.
+
+MachineKind is fixed to CORE in B08.
+
+Session creation compiles the source and initializes the
+machine without executing evaluator transitions.
+
+A successful creation returns HTTP 201 with the initial
+synchronized session projection.
+
+GET /api/sessions/{session_id} returns the currently
+selected session projection without changing execution state.
+
+Both endpoints use the existing visualizer controller and
+projection modules. They do not duplicate evaluator logic.
+
+The registry retains sessions only in process memory.
+
+Invalid requests and source-compilation failures produce
+HTTP 422. Unknown session IDs produce HTTP 404.
+
+Execution, reset, historical navigation, and result-mode
+selection endpoints are implemented in subsequent tasks.

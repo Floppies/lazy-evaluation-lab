@@ -761,3 +761,34 @@ inspected. It does not replace the live execution head.
 
 All memory projections are passive, JSON-compatible,
 and independent of frontend layout or rendering.
+
+## 7. Minimal HTTP Session API
+
+### 7.1 API Foundation and Session Registry
+
+The HTTP API is implemented as a thin FastAPI adapter over
+the existing interactive session controller.
+
+The application owns an in-memory SessionRegistry containing
+InteractiveSession instances indexed by session ID.
+
+Registry operations support adding, retrieving, and
+replacing sessions after an explicit reset.
+
+The registry does not execute transitions or perform
+state projections. Those responsibilities remain in
+the visualizer controller and projection modules.
+
+Each application instance owns an independent registry.
+
+The initial HTTP endpoint is GET /api/health, which returns
+a static health response without creating or modifying
+sessions.
+
+The API is intended for a local, single-process educational
+application. Persistent storage, distributed coordination,
+authentication, and concurrent mutation guarantees are
+outside the scope of B08.
+
+HTTP session operations and error mapping are defined
+in subsequent API implementation tasks.

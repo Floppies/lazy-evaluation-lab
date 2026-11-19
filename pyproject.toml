@@ -10,9 +10,15 @@ requires-python = ">=3.11"
 dependencies = []
 
 [project.optional-dependencies]
+api = [
+    "fastapi>=0.115,<1",
+    "uvicorn>=0.30,<1",
+]
 dev = [
     "pytest>=8.0",
-    "pytest-cov"
+    "pytest-cov",
+    "httpx2>=2.0",
+    "fastapi>=0.115,<1",
 ]
 
 [tool.setuptools.packages.find]

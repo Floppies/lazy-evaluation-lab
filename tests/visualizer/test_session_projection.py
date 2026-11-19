@@ -64,6 +64,7 @@ def test_initial_session_projection_is_synchronized(
         "available_indices": [0],
         "auto_run_requested": False,
         "trace_mode": mode.value,
+        "capture_categories": [],
     }
 
     assert projection["execution"]["transition_index"] == 0

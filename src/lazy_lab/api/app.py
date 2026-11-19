@@ -9,12 +9,19 @@ from lazy_lab.api.registry import (
     SessionNotFoundError,
     SessionRegistry,
 )
-from lazy_lab.api.schemas import SessionCreateRequest, RunRequest, ResultModeRequest
+from lazy_lab.api.schemas import (
+    SessionCreateRequest,
+    RunRequest,
+    ResultModeRequest,
+    HistorySelectRequest,
+    CaptureFiltersRequest,
+)
 from lazy_lab.runtime.state import (
     ExecutionConfig,
     MachineKind,
     Strategy,
     ResultPolicy,
+    TraceMode,
 )
 from lazy_lab.visualizer.session import (
     InteractiveSession,
@@ -25,12 +32,18 @@ from lazy_lab.visualizer.session import (
     run_interactive_batch,
     select_interactive_result_mode,
     step_interactive_session,
+    follow_live_head,
+    select_historical_state,
+    update_interactive_capture_categories,
 )
 from lazy_lab.visualizer.session_projection import (
     project_interactive_session,
 )
 from lazy_lab.engine.result_consumer import (
     InvalidResultObservationError,
+)
+from lazy_lab.visualizer.history import (
+    HistoryStateUnavailableError,
 )
 
 
@@ -238,6 +251,89 @@ def create_app() -> FastAPI:
             rule_id=transition.rule_id.value,
         )
 
+    @app.post("/api/sessions/{session_id}/history/select")
+    def select_history(
+        session_id: str,
+        request: HistorySelectRequest,
+    ) -> dict[str, object]:
+        """Inspect an exact retained historical state."""
+
+        session = _session_or_404(session_id)
+
+        try:
+            select_historical_state(
+                session,
+                request.transition_index,
+            )
+        except HistoryStateUnavailableError as exc:
+            raise HTTPException(
+                status_code=404,
+                detail=str(exc),
+            ) from exc
+
+        return _command_response(
+            session,
+            "history-select",
+            selected_transition_index=request.transition_index,
+        )
+
+    @app.post("/api/sessions/{session_id}/history/live")
+    def select_live_head(
+        session_id: str,
+    ) -> dict[str, object]:
+        """Return the read cursor to the live execution head."""
+
+        session = _session_or_404(session_id)
+
+        follow_live_head(session)
+
+        return _command_response(
+            session,
+            "history-live",
+        )
+
+    @app.post("/api/sessions/{session_id}/capture-filters")
+    def update_capture_filters(
+        session_id: str,
+        request: CaptureFiltersRequest,
+    ) -> dict[str, object]:
+        """Change event capture categories for future transitions."""
+
+        session = _session_or_404(session_id)
+
+        if session.config.trace_mode is not TraceMode.EVENTS:
+            raise HTTPException(
+                status_code=409,
+                detail="Capture filters require EVENTS trace mode",
+            )
+
+        if session.auto_run_requested:
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    "Pause automatic execution before "
+                    "updating capture filters"
+                ),
+            )
+
+        try:
+            update_interactive_capture_categories(
+                session,
+                request.categories,
+            )
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=422,
+                detail=str(exc),
+            ) from exc
+
+        return _command_response(
+            session,
+            "capture-filters",
+            selected_categories=sorted(
+                session.capture_categories
+            ),
+        )
 
     return app
 

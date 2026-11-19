@@ -60,3 +60,19 @@ class ResultModeRequest(BaseModel):
         "WHNF_ONLY",
         "MATERIALIZE_COMPLETE_VALUE",
     ]
+
+
+class HistorySelectRequest(BaseModel):
+    """Select an exact retained logical transition index."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    transition_index: int = Field(ge=0, strict=True)
+
+
+class CaptureFiltersRequest(BaseModel):
+    """Configure future event-window capture categories."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    categories: frozenset[str]

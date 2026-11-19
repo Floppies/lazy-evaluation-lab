@@ -83,6 +83,7 @@ def project_interactive_session(
             ),
             "auto_run_requested": session.auto_run_requested,
             "trace_mode": session.config.trace_mode.value,
+            "capture_categories": sorted(session.capture_categories),
         },
         "execution": project_execution_overview(
             inspected,

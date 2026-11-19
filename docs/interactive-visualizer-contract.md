@@ -864,3 +864,41 @@ states return HTTP 409.
 Command endpoints reuse the existing visualizer controller.
 They must not independently implement evaluator transitions,
 history retention, or result observation semantics.
+
+### 7.4 Historical Navigation, Capture Filters, and HTTP Errors
+
+The API exposes historical inspection and event capture
+configuration through:
+
+- POST /api/sessions/{session_id}/history/select
+- POST /api/sessions/{session_id}/history/live
+- POST /api/sessions/{session_id}/capture-filters
+
+Historical selection requires an exact retained logical
+transition index or the current live-head index.
+
+Unavailable historical snapshots return HTTP 404 without
+changing the session read cursor.
+
+Returning to the live head updates only the read cursor.
+It does not execute transitions or change machine state.
+
+Capture filters are configurable only for EVENTS sessions
+while automatic execution is paused.
+
+Filter changes affect future transition observation only.
+Existing event windows and retained snapshots are preserved.
+
+The currently selected capture categories are exposed
+as session navigation metadata. They represent current
+session configuration, not historical execution state.
+
+HTTP status mapping distinguishes invalid requests (422),
+missing resources or snapshots (404), and operations
+conflicting with the session's current state (409).
+
+All endpoints delegate to existing controller operations
+and return synchronized session projections.
+
+Historical navigation and capture filter updates must not
+modify the live execution state or its instrumentation.

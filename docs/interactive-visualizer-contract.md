@@ -823,3 +823,44 @@ HTTP 422. Unknown session IDs produce HTTP 404.
 
 Execution, reset, historical navigation, and result-mode
 selection endpoints are implemented in subsequent tasks.
+
+### 7.3 Interactive Execution Commands
+
+The API exposes the existing session controller through
+the following POST endpoints:
+
+- /api/sessions/{session_id}/step
+- /api/sessions/{session_id}/run
+- /api/sessions/{session_id}/pause
+- /api/sessions/{session_id}/reset
+- /api/sessions/{session_id}/result-mode
+
+Step executes at most one logical transition and cancels
+any pending automatic-run request.
+
+Run executes exactly one bounded batch request. A batch
+stop reason is reported separately from machine status.
+The HTTP endpoint does not start a background worker or
+perform unlimited execution.
+
+Pause clears the automatic-run request flag. It does not
+retroactively interrupt an executing HTTP request.
+
+Reset creates a fresh InteractiveSession with a new session
+ID and atomically replaces the old registry entry after
+successful construction and projection.
+
+Result-mode selection requires ASK_AT_WHNF and an observable
+root WHNF. It records a transition but does not itself
+materialize the selected result.
+
+Command responses include command metadata and the
+synchronized session projection.
+
+Invalid request bodies return HTTP 422. Unknown sessions
+return HTTP 404. Invalid execution or result-selection
+states return HTTP 409.
+
+Command endpoints reuse the existing visualizer controller.
+They must not independently implement evaluator transitions,
+history retention, or result observation semantics.

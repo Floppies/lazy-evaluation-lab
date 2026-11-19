@@ -36,3 +36,27 @@ class SessionCreateRequest(BaseModel):
     capture_categories: frozenset[str] = Field(
         default_factory=frozenset,
     )
+
+
+class RunRequest(BaseModel):
+    """Parameters for one bounded execution batch."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    max_steps: int = Field(
+        default=100,
+        gt=0,
+        le=1000,
+        strict=True,
+    )
+
+
+class ResultModeRequest(BaseModel):
+    """Explicit result choice at an observable WHNF."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    mode: Literal[
+        "WHNF_ONLY",
+        "MATERIALIZE_COMPLETE_VALUE",
+    ]

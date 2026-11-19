@@ -251,6 +251,12 @@ def _json_dumps_iterative(value: object) -> str:
 
     return output.getvalue()
 
+
+def json_dumps_iterative(value: object) -> str:
+    """Serialize finite, acyclic JSON-compatible data without recursion."""
+    return _json_dumps_iterative(value)
+
+
 def run_record_to_dict(record: RunRecord) -> dict[str, object]:
     """Convert a run record into JSON-compatible values."""
 

@@ -125,6 +125,10 @@ class PatternMatchError(RuntimeError):
     """No CoreCase alternative matches the scrutinee WHNF."""
 
 
+class RuntimeTypeError(TypeError):
+    """A user program supplied a value of an invalid runtime type."""
+
+
 def _validate_configuration(
     state: ExecutionState,
     config: ExecutionConfig,
@@ -1328,7 +1332,7 @@ def _advance_apply_primitive(
                 ImmediateBoolean,
             )
         ):
-            raise TypeError(
+            raise RuntimeTypeError(
                 f"Primitive {operator!r} requires operands "
                 "of the same primitive type"
             )
@@ -1344,7 +1348,7 @@ def _advance_apply_primitive(
             isinstance(argument, ImmediateInteger)
             for argument in arguments
         ):
-            raise TypeError(
+            raise RuntimeTypeError(
                 f"Primitive {operator!r} requires integer operands"
             )
 
@@ -1543,7 +1547,7 @@ def _resume_apply_function(
         )
 
     if not isinstance(reference, HeapReference):
-        raise TypeError("Cannot apply a non-function value")
+        raise RuntimeTypeError("Cannot apply a non-function value")
 
     function_value = machine.heap.get(reference).value
 
@@ -1555,7 +1559,7 @@ def _resume_apply_function(
             PartialPredefinedFunction,
         ),
     ):
-        raise TypeError("Cannot apply a non-function value")
+        raise RuntimeTypeError("Cannot apply a non-function value")
 
     if machine.strategy is Strategy.CBNEED:
         if isinstance(function_value, PredefinedFunction):
@@ -1632,7 +1636,7 @@ def _resume_apply_function(
             )
 
         if not isinstance(function_value, Closure):
-            raise TypeError("Cannot apply a non-function value")
+            raise RuntimeTypeError("Cannot apply a non-function value")
 
         # Capture the argument's original lexical call-site
         # references without evaluating its Core expression.
@@ -2017,7 +2021,7 @@ def _resume_if_condition(
     # Second return: the WHNF demand must have completed.
     # In the current subset, booleans are immediate values.
     if not isinstance(reference, ImmediateBoolean):
-        raise TypeError(
+        raise RuntimeTypeError(
             "If condition must evaluate to a Boolean"
         )
 

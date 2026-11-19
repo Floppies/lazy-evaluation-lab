@@ -1,6 +1,6 @@
 # Interactive Visualizer Contract
 
-**Status:** Active B08 design contract.  
+**Status:** Active B08 design contract.
 **Scope:** Interactive Core CBV and CBNeed execution, session coordination, history retention, and passive state inspection. CBN, STG, GC, and object-lifetime visualization are outside the current scope.
 
 ## 1. Session Identity and State Separation
@@ -848,7 +848,7 @@ retroactively interrupt an executing HTTP request.
 
 Reset creates a fresh InteractiveSession with a new session
 ID and atomically replaces the old registry entry after
-successful construction and projection.
+successful construction, projection, and HTTP serialization.
 
 Result-mode selection requires ASK_AT_WHNF and an observable
 root WHNF. It records a transition but does not itself
@@ -860,6 +860,19 @@ synchronized session projection.
 Invalid request bodies return HTTP 422. Unknown sessions
 return HTTP 404. Invalid execution or result-selection
 states return HTTP 409.
+
+Expected program execution errors (invalid runtime types,
+non-exhaustive patterns, and premature strict local binding
+demands) return HTTP 409 with `detail.code` set to
+`runtime_execution_error` and a diagnostic `detail.message`.
+They clear automatic-run requests and preserve all completed
+transitions and the last valid state for inspection. They do
+not synthesize transitions or change execution status.
+
+All responses containing projections use the existing iterative
+JSON serializer, preserving nested canonical results without
+recursive FastAPI/Pydantic serialization. Session creation and
+reset finish serialization before changing the registry.
 
 Command endpoints reuse the existing visualizer controller.
 They must not independently implement evaluator transitions,
@@ -902,3 +915,31 @@ and return synchronized session projections.
 
 Historical navigation and capture filter updates must not
 modify the live execution state or its instrumentation.
+
+### 7.5 HTTP API Integration and Validation
+
+The minimal HTTP API provides session creation, passive
+inspection, bounded execution commands, result-mode
+selection, historical navigation, and capture filter updates.
+
+Integration tests verify that:
+
+- Sessions are created without evaluator transitions.
+- HTTP commands delegate to the existing session controller.
+- Historical inspection does not modify the live execution head.
+- Execution continues from the live head independently of
+  the selected historical read cursor.
+- Result-mode selection preserves ASK_AT_WHNF semantics.
+- Capture filter changes affect future transitions only.
+- Reset creates an independent execution run.
+- Session projections remain JSON-compatible.
+
+API responses preserve the separation between command
+metadata, execution status, and batch stop reasons.
+
+The B08 HTTP API is limited to an in-memory, single-process
+educational application. It does not provide persistent
+sessions, authentication, or concurrent mutation guarantees.
+
+Frontend implementation and visual interaction behavior
+are addressed in subsequent B08 work packages.

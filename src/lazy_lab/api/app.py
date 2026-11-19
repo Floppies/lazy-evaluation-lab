@@ -3,7 +3,14 @@
 
 from __future__ import annotations
 
-from fastapi import FastAPI, HTTPException, status
+from fastapi import FastAPI, HTTPException, Response, status
+
+from lazy_lab.engine.core_machine import (
+    PatternMatchError,
+    RuntimeTypeError,
+    UninitializedLocalBindingError,
+)
+from lazy_lab.metrics.export import json_dumps_iterative
 
 from lazy_lab.api.registry import (
     SessionNotFoundError,
@@ -47,6 +54,20 @@ from lazy_lab.visualizer.history import (
 )
 
 
+def _json_response(
+    payload: dict[str, object],
+    *,
+    status_code: int = status.HTTP_200_OK,
+) -> Response:
+    """Serialize the complete payload before handing bytes to FastAPI."""
+    content = json_dumps_iterative(payload)
+    return Response(
+        content=content,
+        status_code=status_code,
+        media_type="application/json",
+    )
+
+
 def create_app() -> FastAPI:
     """Create an isolated API application and session registry."""
 
@@ -67,7 +88,7 @@ def create_app() -> FastAPI:
     )
     def create_session(
         request: SessionCreateRequest,
-    ) -> dict[str, object]:
+    ) -> Response:
         """Create and inspect a session without executing it."""
 
         config = ExecutionConfig(
@@ -92,17 +113,20 @@ def create_app() -> FastAPI:
                 detail=str(exc),
             ) from exc
 
-        # Project successfully before registering the session.
-        projection = project_interactive_session(session)
+        # Finish projection and serialization before registering the session.
+        response = _json_response(
+            project_interactive_session(session),
+            status_code=status.HTTP_201_CREATED,
+        )
 
         app.state.registry.add(session)
 
-        return projection
+        return response
 
     @app.get("/api/sessions/{session_id}")
     def inspect_session(
         session_id: str,
-    ) -> dict[str, object]:
+    ) -> Response:
         """Read the selected state without advancing execution."""
 
         try:
@@ -113,7 +137,7 @@ def create_app() -> FastAPI:
                 detail=str(exc),
             ) from exc
 
-        return project_interactive_session(session)
+        return _json_response(project_interactive_session(session))
 
     def _session_or_404(session_id: str) -> InteractiveSession:
         """Resolve a registered session for HTTP commands."""
@@ -129,18 +153,20 @@ def create_app() -> FastAPI:
         session: InteractiveSession,
         command: str,
         **metadata: object,
-    ) -> dict[str, object]:
+    ) -> Response:
         """Return command metadata and the synchronized projection."""
-        return {
-            "command": {
-                "kind": command,
-                **metadata,
-            },
-            "projection": project_interactive_session(session),
-        }
+        return _json_response(
+            {
+                "command": {
+                    "kind": command,
+                    **metadata,
+                },
+                "projection": project_interactive_session(session),
+            }
+        )
 
     @app.post("/api/sessions/{session_id}/step")
-    def step_session(session_id: str) -> dict[str, object]:
+    def step_session(session_id: str) -> Response:
         """Execute at most one logical transition."""
 
         session = _session_or_404(session_id)
@@ -149,7 +175,21 @@ def create_app() -> FastAPI:
         pause_interactive_session(session)
 
         before = session.live_state.transition_index
-        result = step_interactive_session(session)
+        try:
+            result = step_interactive_session(session)
+        except (
+            RuntimeTypeError,
+            PatternMatchError,
+            UninitializedLocalBindingError,
+        ) as exc:
+            pause_interactive_session(session)
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "code": "runtime_execution_error",
+                    "message": str(exc),
+                },
+            ) from exc
 
         return _command_response(
             session,
@@ -164,7 +204,7 @@ def create_app() -> FastAPI:
     def run_session(
         session_id: str,
         request: RunRequest,
-    ) -> dict[str, object]:
+    ) -> Response:
         """Execute one bounded batch, never an unbounded loop."""
 
         session = _session_or_404(session_id)
@@ -179,10 +219,24 @@ def create_app() -> FastAPI:
 
         before = session.live_state.transition_index
 
-        result = run_interactive_batch(
-            session,
-            max_steps=request.max_steps,
-        )
+        try:
+            result = run_interactive_batch(
+                session,
+                max_steps=request.max_steps,
+            )
+        except (
+            RuntimeTypeError,
+            PatternMatchError,
+            UninitializedLocalBindingError,
+        ) as exc:
+            pause_interactive_session(session)
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "code": "runtime_execution_error",
+                    "message": str(exc),
+                },
+            ) from exc
 
         return _command_response(
             session,
@@ -194,7 +248,7 @@ def create_app() -> FastAPI:
         )
 
     @app.post("/api/sessions/{session_id}/pause")
-    def pause_session(session_id: str) -> dict[str, object]:
+    def pause_session(session_id: str) -> Response:
         """Clear the automatic-run request flag."""
 
         session = _session_or_404(session_id)
@@ -204,13 +258,13 @@ def create_app() -> FastAPI:
         return _command_response(session, "pause")
 
     @app.post("/api/sessions/{session_id}/reset")
-    def reset_session(session_id: str) -> dict[str, object]:
+    def reset_session(session_id: str) -> Response:
         """Replace a session with a fresh run."""
 
         previous = _session_or_404(session_id)
         replacement = reset_interactive_session(previous)
 
-        # Project before modifying the registry.
+        # Finish projection and serialization before modifying the registry.
         response = _command_response(
             replacement,
             "reset",
@@ -228,7 +282,7 @@ def create_app() -> FastAPI:
     def choose_result_mode(
         session_id: str,
         request: ResultModeRequest,
-    ) -> dict[str, object]:
+    ) -> Response:
         """Record an explicit result-mode selection at WHNF."""
 
         session = _session_or_404(session_id)
@@ -255,7 +309,7 @@ def create_app() -> FastAPI:
     def select_history(
         session_id: str,
         request: HistorySelectRequest,
-    ) -> dict[str, object]:
+    ) -> Response:
         """Inspect an exact retained historical state."""
 
         session = _session_or_404(session_id)
@@ -280,7 +334,7 @@ def create_app() -> FastAPI:
     @app.post("/api/sessions/{session_id}/history/live")
     def select_live_head(
         session_id: str,
-    ) -> dict[str, object]:
+    ) -> Response:
         """Return the read cursor to the live execution head."""
 
         session = _session_or_404(session_id)
@@ -296,7 +350,7 @@ def create_app() -> FastAPI:
     def update_capture_filters(
         session_id: str,
         request: CaptureFiltersRequest,
-    ) -> dict[str, object]:
+    ) -> Response:
         """Change event capture categories for future transitions."""
 
         session = _session_or_404(session_id)
